@@ -8,6 +8,8 @@ members = [
     "crates/lattice-api",
     "crates/lattice-cli",
     "crates/lattice-checkpoint",
+    "crates/lattice-test-harness",
+    "crates/lattice-acceptance",
 ]
 
 [workspace.package]
@@ -53,9 +55,18 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Async traits
+async-trait = "0.1"
+
 # HTTP (for REST gateway, storage API integration)
 reqwest = { version = "0.12", features = ["json"] }
 axum = "0.7"
+
+# Testing
+proptest = "1"
+tokio-test = "0.4"
+cucumber = "0.22"
+wiremock = "0.6"
 
 [profile.release]
 lto = true

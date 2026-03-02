@@ -306,3 +306,102 @@ impl Default for CompatConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_agent_config_defaults() {
+        let cfg = NodeAgentConfig::default();
+        assert_eq!(cfg.heartbeat_interval_seconds, 10);
+        assert_eq!(cfg.heartbeat_timeout_seconds, 30);
+        assert_eq!(cfg.grace_period_seconds, 120);
+        assert_eq!(cfg.medical_grace_period_seconds, 600);
+    }
+
+    #[test]
+    fn network_config_defaults() {
+        let cfg = NetworkConfig::default();
+        assert_eq!(cfg.vni_pool_start, 100);
+        assert_eq!(cfg.vni_pool_end, 4095);
+        assert!(cfg.vni_pool_start < cfg.vni_pool_end);
+    }
+
+    #[test]
+    fn checkpoint_config_defaults() {
+        let cfg = CheckpointConfig::default();
+        assert_eq!(cfg.evaluation_interval_seconds, 30);
+        assert_eq!(cfg.checkpoint_timeout_seconds, 300);
+        assert_eq!(cfg.max_deferral_seconds, 60);
+        assert!(cfg.max_deferral_seconds < cfg.checkpoint_timeout_seconds);
+    }
+
+    #[test]
+    fn scheduling_config_defaults() {
+        let cfg = SchedulingConfig::default();
+        assert_eq!(cfg.cycle_interval_seconds, 5);
+        assert_eq!(cfg.backfill_depth, 100);
+    }
+
+    #[test]
+    fn accounting_config_defaults_disabled() {
+        let cfg = AccountingConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.push_interval_seconds, 60);
+        assert_eq!(cfg.buffer_size, 1000);
+    }
+
+    #[test]
+    fn rate_limit_config_defaults() {
+        let cfg = RateLimitConfig::default();
+        assert_eq!(cfg.attach_max_concurrent, 5);
+        assert_eq!(cfg.stream_logs_max_concurrent, 10);
+        assert_eq!(cfg.query_metrics_per_minute, 60);
+        assert_eq!(cfg.stream_metrics_max_concurrent, 5);
+        assert_eq!(cfg.diagnostics_per_minute, 10);
+        assert_eq!(cfg.compare_per_minute, 10);
+    }
+
+    #[test]
+    fn compat_config_defaults() {
+        let cfg = CompatConfig::default();
+        assert!(cfg.set_slurm_env);
+        assert!(cfg.partition_mapping.is_empty());
+        assert!(cfg.qos_mapping.is_empty());
+    }
+
+    #[test]
+    fn lattice_config_deserializes_minimal_yaml() {
+        let yaml = r#"
+role: QuorumMember
+quorum:
+  node_id: 1
+  peers:
+    - id: 2
+      address: "10.0.0.2:9000"
+  election_timeout_ms: 500
+  heartbeat_interval_ms: 100
+  snapshot_threshold: 10000
+api:
+  grpc_address: "0.0.0.0:50051"
+  oidc_issuer: "https://auth.example.com"
+storage:
+  s3_endpoint: "https://s3.example.com"
+  nfs_home_path: "/home"
+  local_scratch_path: "/scratch"
+telemetry:
+  default_mode: "prod"
+  tsdb_endpoint: "https://tsdb.example.com"
+  prod_interval_seconds: 30
+  ebpf_programs_path: "/opt/lattice/ebpf"
+"#;
+        let cfg: LatticeConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.quorum.node_id, 1);
+        assert_eq!(cfg.quorum.peers.len(), 1);
+        assert_eq!(cfg.api.grpc_address, "0.0.0.0:50051");
+        assert!(cfg.federation.is_none());
+        assert!(cfg.node_agent.is_none());
+        assert!(cfg.network.is_none());
+    }
+}

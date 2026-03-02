@@ -77,7 +77,7 @@ pub struct Allocation {
     pub resume_from_checkpoint: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AllocationState {
     /// Submitted, waiting in queue
     Pending,
@@ -268,7 +268,7 @@ pub struct NetworkDomain {
     pub grace_deadline: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkDomainState {
     /// Active, accepting new members
     Active,
@@ -522,7 +522,7 @@ pub struct NodeCapabilities {
     pub gpu_topology: Option<GpuTopology>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeState {
     /// Node exists in inventory but has never reported
     Unknown,
@@ -600,7 +600,7 @@ pub struct VCluster {
     pub allow_lending: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchedulerType {
     /// Priority + backfill + topology-aware (traditional HPC)
     HpcBackfill,
@@ -697,4 +697,553 @@ pub struct TopologyGroup {
     pub nodes: Vec<NodeId>,
     /// Adjacent groups (lower inter-group hop cost)
     pub adjacent_groups: Vec<GroupId>,
+}
+
+// ─── State Machine Validation ──────────────────────────────
+
+impl AllocationState {
+    /// Returns true if transitioning from `self` to `target` is a valid state change.
+    ///
+    /// Valid transitions:
+    /// - Pending → Staging, Running, Cancelled, Failed
+    /// - Staging → Running, Failed, Cancelled
+    /// - Running → Checkpointing, Completed, Failed, Cancelled
+    /// - Checkpointing → Suspended, Failed, Cancelled
+    /// - Suspended → Pending (requeue), Cancelled, Failed
+    /// - Terminal states (Completed, Failed, Cancelled) → nothing
+    pub fn can_transition_to(&self, target: &AllocationState) -> bool {
+        matches!(
+            (self, target),
+            (AllocationState::Pending, AllocationState::Staging)
+                | (AllocationState::Pending, AllocationState::Running)
+                | (AllocationState::Pending, AllocationState::Cancelled)
+                | (AllocationState::Pending, AllocationState::Failed)
+                | (AllocationState::Staging, AllocationState::Running)
+                | (AllocationState::Staging, AllocationState::Failed)
+                | (AllocationState::Staging, AllocationState::Cancelled)
+                | (AllocationState::Running, AllocationState::Checkpointing)
+                | (AllocationState::Running, AllocationState::Completed)
+                | (AllocationState::Running, AllocationState::Failed)
+                | (AllocationState::Running, AllocationState::Cancelled)
+                | (AllocationState::Checkpointing, AllocationState::Suspended)
+                | (AllocationState::Checkpointing, AllocationState::Failed)
+                | (AllocationState::Checkpointing, AllocationState::Cancelled)
+                | (AllocationState::Suspended, AllocationState::Pending)
+                | (AllocationState::Suspended, AllocationState::Cancelled)
+                | (AllocationState::Suspended, AllocationState::Failed)
+        )
+    }
+
+    /// Returns true if this is a terminal state (no further transitions possible).
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            AllocationState::Completed | AllocationState::Failed | AllocationState::Cancelled
+        )
+    }
+}
+
+impl NodeState {
+    /// Returns true if transitioning from `self` to `target` is a valid state change.
+    ///
+    /// Valid transitions:
+    /// - Unknown → Booting, Failed
+    /// - Booting → Ready, Failed
+    /// - Ready → Degraded, Draining, Down
+    /// - Degraded → Ready, Down, Draining
+    /// - Down → Booting (reimaging), Failed
+    /// - Draining → Drained
+    /// - Drained → Ready (undrain), Booting (reimage)
+    /// - Failed → Booting (reimage)
+    pub fn can_transition_to(&self, target: &NodeState) -> bool {
+        matches!(
+            (self, target),
+            (NodeState::Unknown, NodeState::Booting)
+                | (NodeState::Unknown, NodeState::Failed { .. })
+                | (NodeState::Booting, NodeState::Ready)
+                | (NodeState::Booting, NodeState::Failed { .. })
+                | (NodeState::Ready, NodeState::Degraded { .. })
+                | (NodeState::Ready, NodeState::Draining)
+                | (NodeState::Ready, NodeState::Down { .. })
+                | (NodeState::Degraded { .. }, NodeState::Ready)
+                | (NodeState::Degraded { .. }, NodeState::Down { .. })
+                | (NodeState::Degraded { .. }, NodeState::Draining)
+                | (NodeState::Down { .. }, NodeState::Booting)
+                | (NodeState::Down { .. }, NodeState::Failed { .. })
+                | (NodeState::Draining, NodeState::Drained)
+                | (NodeState::Drained, NodeState::Ready)
+                | (NodeState::Drained, NodeState::Booting)
+                | (NodeState::Failed { .. }, NodeState::Booting)
+        )
+    }
+
+    /// Returns true if the node can accept workloads.
+    pub fn is_operational(&self) -> bool {
+        matches!(self, NodeState::Ready | NodeState::Degraded { .. })
+    }
+}
+
+impl NetworkDomainState {
+    /// Returns true if transitioning from `self` to `target` is a valid state change.
+    ///
+    /// Valid transitions:
+    /// - Active → Draining
+    /// - Draining → Active (new member joins), Released (grace expired)
+    /// - Released → nothing (terminal)
+    pub fn can_transition_to(&self, target: &NetworkDomainState) -> bool {
+        matches!(
+            (self, target),
+            (NetworkDomainState::Active, NetworkDomainState::Draining)
+                | (NetworkDomainState::Draining, NetworkDomainState::Active)
+                | (NetworkDomainState::Draining, NetworkDomainState::Released)
+        )
+    }
+}
+
+// ─── Tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── AllocationState transition tests ──
+
+    #[test]
+    fn pending_can_transition_to_staging() {
+        assert!(AllocationState::Pending.can_transition_to(&AllocationState::Staging));
+    }
+
+    #[test]
+    fn pending_can_transition_to_running() {
+        assert!(AllocationState::Pending.can_transition_to(&AllocationState::Running));
+    }
+
+    #[test]
+    fn pending_can_transition_to_cancelled() {
+        assert!(AllocationState::Pending.can_transition_to(&AllocationState::Cancelled));
+    }
+
+    #[test]
+    fn pending_can_transition_to_failed() {
+        assert!(AllocationState::Pending.can_transition_to(&AllocationState::Failed));
+    }
+
+    #[test]
+    fn pending_cannot_transition_to_completed() {
+        assert!(!AllocationState::Pending.can_transition_to(&AllocationState::Completed));
+    }
+
+    #[test]
+    fn pending_cannot_transition_to_checkpointing() {
+        assert!(!AllocationState::Pending.can_transition_to(&AllocationState::Checkpointing));
+    }
+
+    #[test]
+    fn staging_can_transition_to_running() {
+        assert!(AllocationState::Staging.can_transition_to(&AllocationState::Running));
+    }
+
+    #[test]
+    fn staging_can_transition_to_failed() {
+        assert!(AllocationState::Staging.can_transition_to(&AllocationState::Failed));
+    }
+
+    #[test]
+    fn staging_can_transition_to_cancelled() {
+        assert!(AllocationState::Staging.can_transition_to(&AllocationState::Cancelled));
+    }
+
+    #[test]
+    fn running_can_transition_to_checkpointing() {
+        assert!(AllocationState::Running.can_transition_to(&AllocationState::Checkpointing));
+    }
+
+    #[test]
+    fn running_can_transition_to_completed() {
+        assert!(AllocationState::Running.can_transition_to(&AllocationState::Completed));
+    }
+
+    #[test]
+    fn running_can_transition_to_failed() {
+        assert!(AllocationState::Running.can_transition_to(&AllocationState::Failed));
+    }
+
+    #[test]
+    fn running_can_transition_to_cancelled() {
+        assert!(AllocationState::Running.can_transition_to(&AllocationState::Cancelled));
+    }
+
+    #[test]
+    fn running_cannot_transition_to_pending() {
+        assert!(!AllocationState::Running.can_transition_to(&AllocationState::Pending));
+    }
+
+    #[test]
+    fn checkpointing_can_transition_to_suspended() {
+        assert!(AllocationState::Checkpointing.can_transition_to(&AllocationState::Suspended));
+    }
+
+    #[test]
+    fn checkpointing_can_transition_to_failed() {
+        assert!(AllocationState::Checkpointing.can_transition_to(&AllocationState::Failed));
+    }
+
+    #[test]
+    fn checkpointing_can_transition_to_cancelled() {
+        assert!(AllocationState::Checkpointing.can_transition_to(&AllocationState::Cancelled));
+    }
+
+    #[test]
+    fn suspended_can_transition_to_pending() {
+        assert!(AllocationState::Suspended.can_transition_to(&AllocationState::Pending));
+    }
+
+    #[test]
+    fn suspended_can_transition_to_cancelled() {
+        assert!(AllocationState::Suspended.can_transition_to(&AllocationState::Cancelled));
+    }
+
+    #[test]
+    fn suspended_can_transition_to_failed() {
+        assert!(AllocationState::Suspended.can_transition_to(&AllocationState::Failed));
+    }
+
+    #[test]
+    fn completed_is_terminal() {
+        assert!(AllocationState::Completed.is_terminal());
+    }
+
+    #[test]
+    fn failed_is_terminal() {
+        assert!(AllocationState::Failed.is_terminal());
+    }
+
+    #[test]
+    fn cancelled_is_terminal() {
+        assert!(AllocationState::Cancelled.is_terminal());
+    }
+
+    #[test]
+    fn running_is_not_terminal() {
+        assert!(!AllocationState::Running.is_terminal());
+    }
+
+    #[test]
+    fn terminal_states_cannot_transition_to_anything() {
+        let terminals = [
+            AllocationState::Completed,
+            AllocationState::Failed,
+            AllocationState::Cancelled,
+        ];
+        let all_states = [
+            AllocationState::Pending,
+            AllocationState::Staging,
+            AllocationState::Running,
+            AllocationState::Checkpointing,
+            AllocationState::Suspended,
+            AllocationState::Completed,
+            AllocationState::Failed,
+            AllocationState::Cancelled,
+        ];
+
+        for terminal in &terminals {
+            for target in &all_states {
+                assert!(
+                    !terminal.can_transition_to(target),
+                    "{terminal:?} should not transition to {target:?}"
+                );
+            }
+        }
+    }
+
+    // ── NodeState transition tests ──
+
+    #[test]
+    fn unknown_can_transition_to_booting() {
+        assert!(NodeState::Unknown.can_transition_to(&NodeState::Booting));
+    }
+
+    #[test]
+    fn unknown_can_transition_to_failed() {
+        assert!(NodeState::Unknown.can_transition_to(&NodeState::Failed {
+            reason: "hw error".into()
+        }));
+    }
+
+    #[test]
+    fn booting_can_transition_to_ready() {
+        assert!(NodeState::Booting.can_transition_to(&NodeState::Ready));
+    }
+
+    #[test]
+    fn booting_can_transition_to_failed() {
+        assert!(NodeState::Booting.can_transition_to(&NodeState::Failed {
+            reason: "boot failed".into()
+        }));
+    }
+
+    #[test]
+    fn ready_can_transition_to_degraded() {
+        assert!(NodeState::Ready.can_transition_to(&NodeState::Degraded {
+            reason: "heartbeat missed".into()
+        }));
+    }
+
+    #[test]
+    fn ready_can_transition_to_draining() {
+        assert!(NodeState::Ready.can_transition_to(&NodeState::Draining));
+    }
+
+    #[test]
+    fn ready_can_transition_to_down() {
+        assert!(NodeState::Ready.can_transition_to(&NodeState::Down {
+            reason: "operator".into()
+        }));
+    }
+
+    #[test]
+    fn degraded_can_transition_to_ready() {
+        assert!(NodeState::Degraded {
+            reason: "fixed".into()
+        }
+        .can_transition_to(&NodeState::Ready));
+    }
+
+    #[test]
+    fn degraded_can_transition_to_down() {
+        assert!(NodeState::Degraded {
+            reason: "worsened".into()
+        }
+        .can_transition_to(&NodeState::Down {
+            reason: "confirmed".into()
+        }));
+    }
+
+    #[test]
+    fn degraded_can_transition_to_draining() {
+        assert!(NodeState::Degraded {
+            reason: "draining".into()
+        }
+        .can_transition_to(&NodeState::Draining));
+    }
+
+    #[test]
+    fn down_can_transition_to_booting() {
+        assert!(NodeState::Down {
+            reason: "reimage".into()
+        }
+        .can_transition_to(&NodeState::Booting));
+    }
+
+    #[test]
+    fn down_can_transition_to_failed() {
+        assert!(NodeState::Down {
+            reason: "unrecoverable".into()
+        }
+        .can_transition_to(&NodeState::Failed {
+            reason: "hw".into()
+        }));
+    }
+
+    #[test]
+    fn draining_can_transition_to_drained() {
+        assert!(NodeState::Draining.can_transition_to(&NodeState::Drained));
+    }
+
+    #[test]
+    fn draining_cannot_transition_to_ready() {
+        assert!(!NodeState::Draining.can_transition_to(&NodeState::Ready));
+    }
+
+    #[test]
+    fn drained_can_transition_to_ready() {
+        assert!(NodeState::Drained.can_transition_to(&NodeState::Ready));
+    }
+
+    #[test]
+    fn drained_can_transition_to_booting() {
+        assert!(NodeState::Drained.can_transition_to(&NodeState::Booting));
+    }
+
+    #[test]
+    fn failed_node_can_transition_to_booting() {
+        assert!(NodeState::Failed {
+            reason: "reimage".into()
+        }
+        .can_transition_to(&NodeState::Booting));
+    }
+
+    #[test]
+    fn ready_is_operational() {
+        assert!(NodeState::Ready.is_operational());
+    }
+
+    #[test]
+    fn degraded_is_operational() {
+        assert!(NodeState::Degraded {
+            reason: "minor".into()
+        }
+        .is_operational());
+    }
+
+    #[test]
+    fn down_is_not_operational() {
+        assert!(!NodeState::Down {
+            reason: "down".into()
+        }
+        .is_operational());
+    }
+
+    #[test]
+    fn draining_is_not_operational() {
+        assert!(!NodeState::Draining.is_operational());
+    }
+
+    // ── NetworkDomainState transition tests ──
+
+    #[test]
+    fn active_can_transition_to_draining() {
+        assert!(NetworkDomainState::Active.can_transition_to(&NetworkDomainState::Draining));
+    }
+
+    #[test]
+    fn active_cannot_transition_to_released() {
+        assert!(!NetworkDomainState::Active.can_transition_to(&NetworkDomainState::Released));
+    }
+
+    #[test]
+    fn draining_can_transition_to_active() {
+        assert!(NetworkDomainState::Draining.can_transition_to(&NetworkDomainState::Active));
+    }
+
+    #[test]
+    fn draining_can_transition_to_released() {
+        assert!(NetworkDomainState::Draining.can_transition_to(&NetworkDomainState::Released));
+    }
+
+    #[test]
+    fn released_cannot_transition_to_anything() {
+        assert!(!NetworkDomainState::Released.can_transition_to(&NetworkDomainState::Active));
+        assert!(!NetworkDomainState::Released.can_transition_to(&NetworkDomainState::Draining));
+        assert!(!NetworkDomainState::Released.can_transition_to(&NetworkDomainState::Released));
+    }
+
+    // ── Serialization round-trip tests ──
+
+    #[test]
+    fn allocation_state_serde_roundtrip() {
+        let states = [
+            AllocationState::Pending,
+            AllocationState::Staging,
+            AllocationState::Running,
+            AllocationState::Checkpointing,
+            AllocationState::Suspended,
+            AllocationState::Completed,
+            AllocationState::Failed,
+            AllocationState::Cancelled,
+        ];
+        for state in &states {
+            let json = serde_json::to_string(state).unwrap();
+            let deser: AllocationState = serde_json::from_str(&json).unwrap();
+            assert_eq!(*state, deser, "roundtrip failed for {state:?}");
+        }
+    }
+
+    #[test]
+    fn node_state_serde_roundtrip() {
+        let states = [
+            NodeState::Unknown,
+            NodeState::Booting,
+            NodeState::Ready,
+            NodeState::Degraded {
+                reason: "test".into(),
+            },
+            NodeState::Down {
+                reason: "test".into(),
+            },
+            NodeState::Draining,
+            NodeState::Drained,
+            NodeState::Failed {
+                reason: "test".into(),
+            },
+        ];
+        for state in &states {
+            let json = serde_json::to_string(state).unwrap();
+            let deser: NodeState = serde_json::from_str(&json).unwrap();
+            assert_eq!(*state, deser, "roundtrip failed for {state:?}");
+        }
+    }
+
+    #[test]
+    fn cost_weights_default_sums_to_one() {
+        let w = CostWeights::default();
+        let sum = w.priority
+            + w.wait_time
+            + w.fair_share
+            + w.topology
+            + w.data_readiness
+            + w.backlog
+            + w.energy
+            + w.checkpoint_efficiency
+            + w.conformance;
+        assert!(
+            (sum - 1.0).abs() < 1e-10,
+            "default weights sum to {sum}, expected 1.0"
+        );
+    }
+
+    #[test]
+    fn cost_weights_serde_roundtrip() {
+        let w = CostWeights::default();
+        let json = serde_json::to_string(&w).unwrap();
+        let deser: CostWeights = serde_json::from_str(&json).unwrap();
+        assert!((deser.priority - w.priority).abs() < f64::EPSILON);
+        assert!((deser.topology - w.topology).abs() < f64::EPSILON);
+    }
+
+    // ── Property-based tests ──
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_allocation_state() -> impl Strategy<Value = AllocationState> {
+            prop_oneof![
+                Just(AllocationState::Pending),
+                Just(AllocationState::Staging),
+                Just(AllocationState::Running),
+                Just(AllocationState::Checkpointing),
+                Just(AllocationState::Suspended),
+                Just(AllocationState::Completed),
+                Just(AllocationState::Failed),
+                Just(AllocationState::Cancelled),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn terminal_states_block_all_transitions(target in arb_allocation_state()) {
+                let terminals = [
+                    AllocationState::Completed,
+                    AllocationState::Failed,
+                    AllocationState::Cancelled,
+                ];
+                for terminal in &terminals {
+                    prop_assert!(!terminal.can_transition_to(&target));
+                }
+            }
+
+            #[test]
+            fn no_self_transitions(state in arb_allocation_state()) {
+                prop_assert!(!state.can_transition_to(&state));
+            }
+
+            #[test]
+            fn node_count_range_min_le_max(min in 1u32..1000, max in 1u32..1000) {
+                prop_assume!(min <= max);
+                let _nc = NodeCount::Range { min, max };
+                // Construction succeeds without panic
+            }
+        }
+    }
 }
