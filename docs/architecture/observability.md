@@ -426,14 +426,28 @@ All observability endpoints are scoped by OIDC token claims:
 
 ### Rate Limiting
 
-| Endpoint | Rate Limit | Rationale |
-|---|---|---|
-| Attach | 5 concurrent sessions per user | Resource-intensive (PTY per session) |
-| StreamLogs | 10 concurrent streams per user | Memory (ring buffer readers) |
-| QueryMetrics | 60 req/min per user | TSDB query load |
-| StreamMetrics | 5 concurrent streams per user | Node agent fan-out |
-| Diagnostics | 30 req/min per user | TSDB + fabric query load |
-| Compare | 10 req/min per user | Multi-alloc TSDB queries |
+All rate limits are **per user** (identified by OIDC subject claim). Tenant admins and system admins share the same limits unless overridden in system configuration.
+
+| Endpoint | Rate Limit | Scope | Rationale |
+|---|---|---|---|
+| Attach | 5 concurrent sessions | Per user | Resource-intensive (PTY per session) |
+| StreamLogs | 10 concurrent streams | Per user | Memory (ring buffer readers) |
+| QueryMetrics | 60 req/min | Per user | TSDB query load |
+| StreamMetrics | 5 concurrent streams | Per user | Node agent fan-out |
+| Diagnostics | 30 req/min | Per user | TSDB + fabric query load |
+| Compare | 10 req/min | Per user | Multi-alloc TSDB queries |
+
+**When rate limit is exceeded:**
+- Concurrent limits (Attach, StreamLogs, StreamMetrics): New request rejected with `429 Too Many Requests` and a message: `"maximum concurrent sessions reached (5/5). Close an existing session to open a new one."`
+- Request-rate limits (QueryMetrics, Diagnostics, Compare): Request rejected with `429 Too Many Requests` and `Retry-After` header indicating seconds until the next request is allowed.
+- No queueing — rejected requests must be retried by the client.
+
+**Admin override:** System admins can adjust per-user rate limits via configuration:
+```yaml
+rate_limits:
+  attach_max_concurrent: 10       # override default of 5
+  query_metrics_per_minute: 120   # override default of 60
+```
 
 ### Data Sensitivity
 

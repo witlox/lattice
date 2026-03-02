@@ -41,7 +41,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --workspace
+      - run: cargo nextest run --workspace --no-tests=pass
 
   deny:
     name: Cargo Deny

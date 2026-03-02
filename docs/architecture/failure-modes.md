@@ -95,11 +95,11 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 
 **Impact:**
 - Data staging for new allocations pauses (cannot pre-stage input data)
-- Running allocations with data already mounted on local NVMe cache continue
+- Running allocations with data already mounted continue (local NVMe cache, if present, persists)
 - Checkpoint writes fail → broker pauses checkpoint scheduling
 - New allocation proposals that require data staging are held in queue
 
-**Recovery:** Automatic retry with backoff. Alert raised. Staging resumes when VAST recovers. No allocation data loss (NVMe cache persists through storage outage).
+**Recovery:** Automatic retry with backoff. Alert raised. Staging resumes when VAST recovers. On nodes with NVMe cache, locally cached data persists through storage outage.
 
 ### OpenCHAMI Unavailable
 
@@ -125,7 +125,7 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 3. Max retries configurable (default: 3)
 4. After max retries: allocation moves to `Failed` state, user notified
 
-**Common causes:** Corrupted uenv image (hash mismatch), NVMe cache full, registry unavailable.
+**Common causes:** Corrupted uenv image (hash mismatch), local cache full (if NVMe present), registry unavailable.
 
 ### Application Crash
 

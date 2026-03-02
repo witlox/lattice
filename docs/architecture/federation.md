@@ -71,6 +71,45 @@ A read-mostly, eventually consistent shared catalog across federated sites:
 | Tenant identity mapping (OIDC trust) | On federation setup | Strong (Sovra) |
 | Energy prices per site | Every 15 minutes | Eventual |
 
+### Catalog Consistency and Staleness
+
+The federation catalog is eventually consistent. Entries may be stale, missing, or outdated. The system must handle this gracefully:
+
+**Staleness bounds:**
+
+| Entry Type | Max Staleness | Effect of Stale Data |
+|------------|--------------|---------------------|
+| Site capabilities | 2 hours (hourly sync + margin) | May route job to site that no longer has capacity → remote rejection, retry locally |
+| Energy prices | 30 minutes | May choose suboptimal site for energy cost → acceptable, not a correctness issue |
+| Dataset catalog | Minutes (event-driven) | May not know data was moved → routing decision based on old location |
+| uenv registry | Minutes (event-driven) | May reference image version not yet available at remote → prologue retry |
+
+**Handling completely stale entries:**
+
+If a peer site has not reported a catalog update within 2× the expected interval (e.g., no capability update in 2 hours):
+1. Federation broker marks the peer as `stale` in its local view
+2. Routing decisions deprioritize stale peers (not excluded, just scored lower)
+3. Alert raised: `lattice_federation_peer_stale{peer="site-b"}`
+4. If stale for > 24 hours: peer marked `unreachable`, excluded from routing
+
+**Handling peer unavailability:**
+
+If a federated request fails (peer broker unreachable):
+1. First failure: retry with exponential backoff (1s, 2s, 4s, max 30s)
+2. After 3 retries: return failure to the user with explanation
+3. If `--site=auto`: fall back to local scheduling (no remote attempt)
+4. Peer marked as `degraded` in catalog; future requests deprioritize it
+5. Peer returns to `healthy` on next successful heartbeat/catalog sync
+
+**Cross-site uenv resolution:**
+
+uenv images are resolved via the federation catalog:
+1. User submits `--uenv=prgenv-gnu/24.11:v1` targeting Site B
+2. Federation broker checks if Site B's catalog includes this image
+3. If present: proceed (Site B has the image or can pull it)
+4. If absent: warn user and proceed (Site B may pull from a shared registry)
+5. If pull fails at Site B: prologue failure, allocation retried or failed per policy
+
 ### Job Routing Logic
 
 The federation broker's routing decision is advisory, not mandatory:

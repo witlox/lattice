@@ -96,6 +96,37 @@ When Waldur integration is enabled, Waldur can push quota changes:
 3. Hard quotas committed via Raft; soft quotas propagated to schedulers
 4. Reducing `max_nodes` below current usage does not preempt running allocations — it prevents new ones
 
+## Quota Reduction While Allocations Are Running
+
+When a quota is reduced below current usage (e.g., Waldur reduces `max_nodes` from 200 to 100, but tenant is currently using 150):
+
+### Hard Quota Reduction
+
+- **Running allocations are not preempted.** The reduced quota only blocks new allocations.
+- Current usage (150) exceeds new limit (100): all new proposals for this tenant are rejected until usage drops below 100.
+- The user receives a clear error on new submissions:
+  ```
+  allocation rejected: tenant "physics" exceeds max_nodes quota
+    Current usage: 150 nodes
+    New limit: 100 nodes
+    Hint: Wait for running allocations to complete, or contact your tenant admin.
+  ```
+- As running allocations complete naturally, usage drops. When usage < new limit: new allocations are accepted again.
+
+### Soft Quota Reduction
+
+- Reduced `gpu_hours_budget`: scheduling score penalty increases. Pending allocations get lower priority but are not rejected.
+- Reduced `fair_share_target`: tenant gets deprioritized but can still schedule when resources are idle.
+- No immediate impact on running allocations.
+
+### Pending Allocations
+
+Allocations that are `Pending` (in the scheduler queue but not yet committed) when a hard quota is reduced:
+- They are not retroactively cancelled.
+- If proposed to quorum, the proposal is rejected due to the new quota.
+- The scheduler will not re-propose them until quota headroom exists.
+- User sees allocation stuck in `Pending` state. `lattice status` shows the reason: `"waiting for quota headroom"`.
+
 ## Medical Quota Considerations
 
 Medical quotas are always hard quotas:

@@ -56,7 +56,7 @@ Federation (optional):
 | Node ↔ storage | Data exfiltration via network sniffing | Encrypted transport: NFS-over-TLS (VAST supports), S3 over HTTPS. Medical: encrypted at rest (VAST encrypted pool). |
 | Cross-tenant | Side-channel via co-location | Full-node scheduling (ADR-007): no co-location of different tenants by default. Interactive vCluster uses Sarus containers with seccomp for intra-node isolation. |
 | Telemetry | Metric leakage between tenants | Label-based access control on TSDB queries. lattice-api injects tenant/user scope filters. |
-| Memory | Data remnants after allocation | Node agent zeroes GPU memory and clears NVMe scratch on allocation release. Medical: full node wipe via OpenCHAMI. |
+| Memory | Data remnants after allocation | Node agent zeroes GPU memory and clears scratch storage (NVMe or tmpfs) on allocation release. Medical: full node wipe via OpenCHAMI. |
 | API responses | Enumeration of other tenants' data | RBAC filtering on all list/query endpoints. Users see only their own allocations; tenant admins see their tenant. |
 
 ### Denial of Service

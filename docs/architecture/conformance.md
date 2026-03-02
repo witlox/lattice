@@ -84,6 +84,37 @@ When the scheduler detects that a node's conformance fingerprint has changed (or
 
 The scheduler does **not** attempt to remediate drift itself. It only avoids scheduling on drifted nodes and signals the infrastructure layer to fix them.
 
+### OpenCHAMI Coordination
+
+When the scheduler detects drift:
+
+1. **Signal:** The node agent (or scheduler) calls OpenCHAMI SMD to report the drift:
+   ```
+   PATCH /hsm/v2/State/Components/{xname}
+   { "Flag": "Warning", "FlagMsg": "conformance_drift: expected=<hash_a>, actual=<hash_b>" }
+   ```
+
+2. **OpenCHAMI response:** OpenCHAMI evaluates the drift against its remediation policy:
+   - Minor drift (kernel param change): schedule firmware update at next maintenance window
+   - Major drift (GPU driver version): schedule immediate reboot into correct image via BSS
+   - Critical drift (medical node): immediate remediation, operator notified
+
+3. **Wait for remediation:** The scheduler does not re-enable the node automatically. After OpenCHAMI remediates (reboot, firmware flash), the node agent:
+   - Recomputes conformance fingerprint on startup
+   - Reports new fingerprint to quorum
+   - If fingerprint matches expected baseline: node returns to Ready
+   - If still drifted: remains deprioritized, alert escalated
+
+4. **Timeout:** If a node remains drifted for longer than `drift_remediation_timeout` (default: 24 hours):
+   - Alert escalated to critical
+   - Node transitions to `Down` (removed from scheduling entirely)
+   - Operator must investigate and manually undrain after fix
+
+5. **Medical nodes (stricter):**
+   - Drift triggers immediate `Draining` (no grace period for new claims)
+   - Remediation timeout: 4 hours (shorter, due to regulatory risk)
+   - After remediation: conformance re-verified AND admin approval required before accepting medical claims again
+
 ## Relationship to Existing Concepts
 
 - **NodeHealth** tracks whether the node is functional (Healthy/Degraded/Down/Draining). Conformance is orthogonal — a node can be Healthy but drifted.

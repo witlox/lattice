@@ -19,7 +19,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  Default: uenv (squashfs + mount namespace)                    │
 │  Optional: OCI/Sarus (isolation, third-party images)           │
 │  Registry: JFrog/Nexus → S3 backing (VAST hot tier)            │
-│  Node-local NVMe image cache                                   │
+│  Node-local NVMe image cache (optional)                        │
 │  Medical: signed images only, vulnerability-scanned            │
 └───────────────────────────┬───────────────────────────────────┘
                             │
@@ -60,7 +60,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  ├── squashfs-mount (uenv delivery)                            │
 │  ├── Sarus (OCI container runtime, when needed)                │
 │  ├── eBPF telemetry + CSIG tap                                 │
-│  ├── Node-local NVMe: scratch + image cache                    │
+│  ├── Node-local NVMe (optional): scratch + image cache         │
 │  ├── Conformance fingerprint (driver/firmware/kernel hash)      │
 │  └── Health reporting → OpenCHAMI SMD                          │
 └───────────────────────────┬───────────────────────────────────┘

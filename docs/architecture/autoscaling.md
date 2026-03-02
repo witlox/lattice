@@ -92,9 +92,49 @@ Borrowed nodes (from elastic resource sharing) are valid targets for reactive sc
 - If the home vCluster reclaims the node: reactive allocation scales down gracefully
 - Minimum guarantee: `min_nodes` always come from the allocation's home vCluster (not borrowed)
 
+## Error Handling
+
+### Metric Query Failure (TSDB Down)
+
+If the scheduler cannot query TSDB for the scaling metric:
+
+1. First failure: skip this evaluation cycle, log warning
+2. Consecutive failures (3+): alert raised (`lattice_autoscaling_metric_query_failures_total`)
+3. No scaling decisions made while metric is unavailable — allocation stays at current size
+4. When TSDB recovers: normal evaluation resumes on next cycle
+
+The allocation is never scaled blindly. No metric = no action.
+
+### Scale-Up Proposal Rejected
+
+If the quorum rejects a scale-up proposal (e.g., race condition with another vCluster):
+
+1. Retry on next evaluation cycle (60s later)
+2. Maximum 3 consecutive retries for the same scale-up
+3. After 3 rejections: log warning, back off for 2 cooldown periods
+4. Scale-up resumes when conditions change (nodes become available)
+
+### Scale-Down During Borrowed Node Reclamation
+
+If a borrowed node is reclaimed by the home vCluster while the reactive allocation is scaling down:
+
+1. The reclamation takes priority (home vCluster always wins)
+2. The reactive allocation loses the node immediately (graceful drain attempted, but not guaranteed)
+3. If this drops below `min_nodes`: scheduler attempts to acquire a replacement node from the home vCluster
+4. If no replacement available: allocation operates below `min_nodes` temporarily, alert raised
+
+### Metric Oscillation
+
+If the metric oscillates around the target, causing repeated scale-up/scale-down:
+
+- The cooldown period (default: 3 minutes) prevents rapid oscillation
+- If scale events alternate for more than 5 cycles: alert raised suggesting the user adjust their target or increase cooldown
+- No automatic target adjustment — the user must update the configuration
+
 ## Cross-References
 
 - [scheduling-algorithm.md](scheduling-algorithm.md) — Reactive allocations scored by the knapsack solver like any allocation
 - [quota-enforcement.md](quota-enforcement.md) — Hard quota limits on scale-up
 - [telemetry.md](telemetry.md) — Metric sources for scaling decisions
+- [preemption.md](preemption.md) — Borrowed node reclamation
 - types.rs — `LifecycleType::Reactive` definition

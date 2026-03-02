@@ -76,6 +76,23 @@ Waldur unavailability must never block scheduling:
 4. **Alert:** If the disk buffer exceeds a threshold (default: 100,000 events), an alert is raised via scheduler self-monitoring (cross-ref: [telemetry.md](telemetry.md))
 5. **Degrade gracefully:** If both buffer and disk are full, events are dropped with a counter metric (`lattice_accounting_events_dropped_total`). Scheduling continues.
 
+### Operational Response to Buffer Overflow
+
+When the accounting buffer fills and events are dropped:
+
+1. **Detect:** `lattice_accounting_events_dropped_total` counter increments. Alert fires when > 0.
+2. **Impact:** Billing data is incomplete. GPU-hours and allocation events are missing from Waldur. This affects invoice accuracy but never affects scheduling.
+3. **Respond:**
+   - Check Waldur availability (`lattice admin accounting status`)
+   - If Waldur is down: wait for recovery. Buffered events will replay. Dropped events are lost.
+   - If Waldur is up but slow: check push interval and batch size. Increase `push_interval_seconds` to allow larger batches.
+4. **Recovery:** Dropped events cannot be recovered from the accounting pipeline. However, the quorum has allocation state (start/end times, node assignments). An admin can reconstruct missing billing data from quorum logs:
+   ```bash
+   lattice admin accounting reconcile --since=2026-03-01 --until=2026-03-02
+   ```
+   This command reads allocation history from the quorum and generates compensating events for Waldur.
+5. **Prevention:** Size the buffer for expected Waldur outage duration. Rule of thumb: `buffer_size = events_per_minute × max_expected_outage_minutes`. For a busy cluster (100 events/min) and 2-hour outage target: `buffer_size = 12000`.
+
 ## Quota Feedback Loop
 
 Waldur can act as the budget authority, updating Lattice tenant quotas:

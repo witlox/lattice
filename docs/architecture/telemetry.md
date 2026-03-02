@@ -254,3 +254,86 @@ Three views matching the existing telemetry pattern:
 | Holistic | System admins | All scheduler cycle times, quorum health, total queue depth, API throughput |
 | Per-vCluster | Scheduler operators | vCluster-specific queue depth, cycle time, proposal accept rate, backfill rate |
 | Per-quorum-member | Quorum operators | Raft log size, commit latency, leader status, snapshot timing |
+
+## Monitoring Deployment
+
+### Prometheus Scrape Configuration
+
+All Lattice components expose metrics on a `/metrics` endpoint (Prometheus exposition format):
+
+| Component | Default Metrics Port | Endpoint |
+|-----------|---------------------|----------|
+| Quorum members | 9100 | `http://{quorum-host}:9100/metrics` |
+| API servers | 9101 | `http://{api-host}:9101/metrics` |
+| vCluster schedulers | 9102 | `http://{scheduler-host}:9102/metrics` |
+| Node agents | 9103 | `http://{node-host}:9103/metrics` |
+| Checkpoint broker | 9104 | `http://{checkpoint-host}:9104/metrics` |
+
+Example Prometheus scrape config:
+```yaml
+scrape_configs:
+  - job_name: "lattice-quorum"
+    static_configs:
+      - targets: ["quorum-1:9100", "quorum-2:9100", "quorum-3:9100"]
+
+  - job_name: "lattice-api"
+    static_configs:
+      - targets: ["api-1:9101", "api-2:9101"]
+
+  - job_name: "lattice-scheduler"
+    static_configs:
+      - targets: ["scheduler-hpc:9102", "scheduler-ml:9102", "scheduler-interactive:9102"]
+
+  - job_name: "lattice-agents"
+    file_sd_configs:
+      - files: ["/etc/prometheus/lattice-agents.json"]
+        refresh_interval: 5m
+    # Node agents are numerous; use file-based service discovery
+    # populated from OpenCHAMI node inventory
+```
+
+### Alert Routing
+
+Alerts are routed via Alertmanager (or compatible system):
+
+| Severity | Route | Response Time |
+|----------|-------|--------------|
+| Critical | PagerDuty / on-call | Immediate (< 15 min) |
+| Warning | Slack #lattice-alerts | Business hours (< 4 hours) |
+| Info | Slack #lattice-info | Best effort |
+
+Example Alertmanager route:
+```yaml
+route:
+  receiver: "slack-info"
+  routes:
+    - match: { severity: "critical" }
+      receiver: "pagerduty-oncall"
+    - match: { severity: "warning" }
+      receiver: "slack-alerts"
+```
+
+### Grafana Dashboards
+
+Pre-built dashboards for the three views described above. Dashboards are defined as JSON and version-controlled in `infra/grafana/`:
+
+```
+infra/grafana/
+├── holistic.json          # System-wide overview
+├── per-vcluster.json      # vCluster-specific scheduling
+├── per-quorum-member.json # Raft health
+├── per-node.json          # Individual node health
+└── user-allocation.json   # User-facing allocation metrics
+```
+
+Each dashboard uses the standard Lattice metric names. Data source: Prometheus (or compatible TSDB).
+
+### TSDB Sizing
+
+| Cluster Size | Metric Cardinality | Ingestion Rate | Storage (30-day retention) |
+|-------------|-------------------|----------------|---------------------------|
+| 100 nodes | ~50,000 series | ~10k samples/s | ~50 GB |
+| 1,000 nodes | ~500,000 series | ~100k samples/s | ~500 GB |
+| 10,000 nodes | ~5,000,000 series | ~1M samples/s | ~5 TB |
+
+For clusters > 1000 nodes, use a horizontally scalable TSDB (VictoriaMetrics cluster, Mimir, or Thanos) with the hierarchical aggregation described in the Telemetry Aggregation Topology section above.

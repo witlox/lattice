@@ -58,7 +58,7 @@ data:
 
 Every allocation automatically gets:
 - **Home directory**: mounted via NFS from hot tier (`/home/{user}`)
-- **Node-local scratch**: NVMe-backed ephemeral storage (`/scratch/local/`)
+- **Node-local scratch**: NVMe-backed ephemeral storage (`/scratch/local/`) if NVMe is available; tmpfs or network scratch otherwise
 - **Output directory**: `s3://{tenant}/{project}/{allocation_id}/` auto-created
 - **Checkpoint directory**: `s3://{tenant}/{project}/{allocation_id}/checkpoints/` (if checkpoint != none)
 
@@ -99,11 +99,20 @@ vcluster: medical-secure
       tier_restriction: "hot_only"  # no unencrypted copies on warm/cold
 ```
 
-## Node-Local Storage
+## Node-Local Storage (Optional)
 
-Each node has NVMe SSDs managed by the node agent:
+Nodes **may** have NVMe SSDs managed by the node agent. Local storage is not a hard requirement — nodes without NVMe operate with reduced performance but full functionality.
+
+**When NVMe is present:**
 - **Scratch**: ephemeral, wiped between allocations. For temp files, staging.
 - **Image cache**: persistent across allocations. Caches uenv squashfs images and OCI layers.
   - LRU eviction policy
   - Cache hit avoids network pull from registry
   - Popular images stay warm automatically
+
+**When NVMe is absent:**
+- **Scratch**: falls back to tmpfs (RAM-backed) or a network-mounted scratch directory. Capacity is limited by available RAM or network storage quota.
+- **Image cache**: no persistent local cache. Images are pulled from the registry on every allocation start (or served from a shared NFS cache if configured). Higher startup latency.
+- Allocations requesting the `nvme_scratch` feature constraint will not be scheduled on these nodes.
+
+The node agent detects local storage at startup and reports its availability as part of node capabilities (`features: ["nvme_scratch"]`).

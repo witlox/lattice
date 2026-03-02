@@ -25,7 +25,7 @@ Dr. X authenticates via OIDC (institutional IdP)
   → All activity on N1-N4 audited under dr-x's identity
   → When released:
     → Quorum releases node ownership (Raft commit)
-    → OpenCHAMI wipes node (memory scrub, NVMe secure erase)
+    → OpenCHAMI wipes node (memory scrub, storage secure erase if NVMe present)
     → Node returns to general pool only after wipe confirmation
 ```
 
@@ -112,10 +112,54 @@ With Ultra Ethernet: network-level encryption (UET built-in) provides an additio
 - 7-year retention on cold tier (S3-compatible, immutable storage)
 - Cryptographically signed entries (tamper-evident)
 
-### Queryable:
-- Compliance team can query audit logs via SQL/API
-- "Show all activity by Dr. X on nodes N1-N4 between March 1-15, 2026"
-- "Show all data access to dataset D during allocation A"
+### Query Interface
+
+The audit log is queryable via a dedicated API endpoint and CLI:
+
+**API:**
+```
+GET /v1/audit/logs?user=dr-x&since=2026-03-01&until=2026-03-15
+GET /v1/audit/logs?allocation=12345
+GET /v1/audit/logs?node=x1000c0s0b0n0&since=2026-03-01
+GET /v1/audit/logs?data_path=s3://medical-data/patient-001/
+```
+
+**CLI:**
+```bash
+lattice audit query --user=dr-x --since=2026-03-01 --until=2026-03-15
+lattice audit query --alloc=12345
+lattice audit query --node=x1000c0s0b0n0 --since=2026-03-01 --output=json
+```
+
+**Scoping:**
+| Caller | Visible Scope |
+|--------|---------------|
+| Claiming user | Own audit events only |
+| Tenant admin (compliance reviewer) | All audit events for their tenant |
+| System admin | All audit events |
+
+**Indexing:** Audit entries are indexed by:
+- User ID (primary query dimension for compliance reporting)
+- Allocation ID (all events for a specific allocation)
+- Node ID (all events on a specific node)
+- Timestamp (range queries, required for all queries)
+- Event type (filter by: claim, release, data_access, attach, etc.)
+
+**Performance targets:**
+| Query Scope | Expected Latency |
+|-------------|-----------------|
+| Single allocation (any timeframe) | < 1s |
+| Single user, 1-day range | < 2s |
+| Single user, 30-day range | < 10s |
+| Tenant-wide, 1-day range | < 30s |
+
+Queries spanning more than 90 days may be served from cold tier (S3 archive) with higher latency (minutes).
+
+**Export:** For regulatory submissions, audit logs can be exported as signed JSON bundles:
+```bash
+lattice audit export --user=dr-x --since=2026-01-01 --until=2026-06-30 --output=audit-report.json.sig
+```
+The export includes cryptographic signatures for tamper evidence.
 
 ## Observability Constraints
 
