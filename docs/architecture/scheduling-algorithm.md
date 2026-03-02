@@ -70,6 +70,16 @@ f₈(j) = 1.0 / (1.0 + estimated_checkpoint_minutes(j))
 ```
 Jobs with fast checkpointing are more attractive to schedule on borrowed/preemptible nodes.
 
+**f₉: conformance_fitness(j, candidates)** — How well do the candidate nodes match each other's configuration?
+```
+f₉(j, candidates) = largest_conformance_group_size(candidates) / j.requested_nodes
+```
+Scores 1.0 when all candidate nodes share the same conformance fingerprint, lower when the node set is heterogeneous. Critical for multi-node jobs where driver/firmware mismatches cause subtle performance degradation or correctness issues (e.g., NCCL hangs from mismatched NIC firmware).
+
+The conformance fingerprint is a hash of: GPU driver version, NIC firmware version, BIOS/BMC firmware version, and kernel parameters. The node agent computes and reports this fingerprint alongside health data. Nodes with identical fingerprints belong to the same **conformance group**.
+
+This factor is evaluated during node selection (step 2a in the solver), not during scoring. The solver prefers to select nodes from the largest available conformance group that satisfies the allocation's constraints.
+
 #### Weight Profiles
 
 | Weight | HPC Batch | ML Training | Service | Medical | Interactive |
@@ -82,8 +92,9 @@ Jobs with fast checkpointing are more attractive to schedule on borrowed/preempt
 | w₆ (backlog) | 0.05 | 0.05 | 0.05 | 0.00 | 0.15 |
 | w₇ (energy) | 0.00 | 0.05 | 0.10 | 0.00 | 0.00 |
 | w₈ (checkpoint) | 0.00 | 0.15 | 0.10 | 0.05 | 0.00 |
+| w₉ (conformance) | 0.10 | 0.25 | 0.05 | 1.00 | 0.00 |
 
-Medical scheduler is degenerate: priority dominates because node claims are non-negotiable.
+Medical scheduler is degenerate: priority dominates because node claims are non-negotiable. Conformance is enforced as a hard constraint (w₉=1.0): medical nodes must pass strict conformance checks, and drifted nodes are excluded entirely.
 
 ### Solver
 
@@ -97,6 +108,7 @@ Algorithm: GreedyTopologyAwareBackfill
    a. Find the smallest set of available nodes that satisfies:
       - Node count >= j.requested_nodes
       - All nodes in fewest possible dragonfly groups
+      - All nodes in same conformance group (prefer) or fewest groups (fallback)
       - Constraints satisfied (GPU type, features, etc.)
       - Power budget not exceeded
    b. If nodes found: PROPOSE allocation to quorum

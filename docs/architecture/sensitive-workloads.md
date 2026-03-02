@@ -160,6 +160,16 @@ Medical data **does not federate** by default:
   - Both sites' Sovra instances have a medical workspace with hospital CRK
 - In practice: medical jobs run where the data is. Period.
 
+## Conformance Requirements
+
+Medical nodes have **strict conformance enforcement**. Unlike general workloads where conformance is a soft preference, medical workloads treat configuration drift as a hard constraint:
+
+- **Pre-claim validation.** Before a node can be claimed for medical use, the scheduler verifies its conformance fingerprint matches the expected baseline for the medical vCluster. Drifted nodes are rejected.
+- **Drift triggers drain.** If a medical node's conformance fingerprint changes during operation (e.g., a firmware update was missed), the node agent flags the drift. The scheduler will not assign new medical claims to the node until OpenCHAMI remediates it.
+- **Audit trail.** Conformance state changes on medical nodes are recorded in the Raft-committed audit log (which firmware/driver versions were active during the allocation).
+
+This is deliberately conservative: medical workloads do not tolerate the subtle failures that configuration drift can cause, and regulatory compliance requires provable consistency of the execution environment.
+
 ## Scheduler Behavior
 
 The medical vCluster scheduler is intentionally simple:
@@ -168,4 +178,5 @@ The medical vCluster scheduler is intentionally simple:
 - **No preemption.** Medical allocations are never preempted.
 - **No elastic borrowing.** Medical nodes cannot be borrowed by other vClusters.
 - **Fair-share:** Not applicable (nodes are user-claimed, not queue-scheduled).
-- **Cost function weights:** priority=0.9, everything else near-zero.
+- **Conformance:** Hard constraint — only nodes matching the expected conformance baseline are eligible.
+- **Cost function weights:** priority=0.9, conformance=1.0, everything else near-zero.

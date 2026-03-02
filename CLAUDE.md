@@ -32,6 +32,7 @@ Score(j) = Σ wᵢ · fᵢ(j)
   f₆ = backlog_pressure        (queue depth)
   f₇ = energy_cost             (time-varying electricity price)
   f₈ = checkpoint_efficiency   (preemption cost)
+  f₉ = conformance_fitness     (node config homogeneity)
 ```
 Weights are tunable per vCluster. Use RM-Replay simulator to test weight changes before production.
 

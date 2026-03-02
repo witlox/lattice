@@ -61,6 +61,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  ├── Sarus (OCI container runtime, when needed)                │
 │  ├── eBPF telemetry + CSIG tap                                 │
 │  ├── Node-local NVMe: scratch + image cache                    │
+│  ├── Conformance fingerprint (driver/firmware/kernel hash)      │
 │  └── Health reporting → OpenCHAMI SMD                          │
 └───────────────────────────┬───────────────────────────────────┘
                             │
@@ -171,6 +172,7 @@ NodeState {
     health: NodeHealth,
     capabilities: NodeCapabilities,  // GPU type, memory, features
     group: GroupId,                  // topology position
+    conformance_group: ConformanceGroupId, // fingerprint of driver/firmware/kernel
 }
 ```
 
