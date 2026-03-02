@@ -59,7 +59,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 
 # HTTP (for REST gateway, storage API integration)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 axum = "0.7"
 
 # Testing
