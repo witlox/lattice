@@ -176,3 +176,19 @@ When a federated job runs at a remote site but needs data from the home site:
 2. All in-flight federated allocations continue to completion (or are cancelled by policy)
 3. Remove peer from federation broker config
 4. Immediate: no new federated requests accepted
+
+### Federation Requests During Leader Election
+
+When the local Raft quorum is undergoing a leader election (typically 1-3 seconds):
+
+- Inbound federated requests from peer sites receive a `503 Service Unavailable` with a `Retry-After: 5` header
+- The federation broker does not queue inbound requests during election — the remote site's retry logic handles resubmission
+- Outbound federated requests (local user targeting a remote site) are unaffected — routing and signing happen in the federation broker, not the quorum
+- If the election takes longer than 10 seconds (unusual): the federation broker marks the local site as `degraded` in catalog updates to peers
+
+## Cross-References
+
+- [system-architecture.md](system-architecture.md) — Control plane architecture
+- [security.md](security.md) — Sovra trust model, mTLS
+- [sensitive-workloads.md](sensitive-workloads.md) — Medical data sovereignty
+- [failure-modes.md](failure-modes.md) — Quorum leader loss recovery

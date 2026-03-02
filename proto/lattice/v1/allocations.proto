@@ -53,7 +53,25 @@ service AllocationService {
 
   // Compare metrics across multiple allocations
   rpc CompareMetrics(CompareMetricsRequest) returns (CompareMetricsResponse);
+
+  // ─── DAG RPCs ──────────────────────────────────────────────
+
+  // Get DAG status (overall state + per-allocation states)
+  rpc GetDag(GetDagRequest) returns (DagStatus);
+
+  // List DAGs (with filters)
+  rpc ListDags(ListDagsRequest) returns (ListDagsResponse);
+
+  // Cancel all allocations in a DAG
+  rpc CancelDag(CancelDagRequest) returns (CancelDagResponse);
 }
+
+// ─── Planned Services (not yet defined as proto) ────────────
+//
+// NodeService — Node lifecycle management (list, drain, undrain, disable)
+// TenantService — Tenant CRUD, quota management
+// AuditService — Medical audit log queries, compliance reporting
+// SessionService — Interactive session creation and terminal management
 
 // ─── Submit ─────────────────────────────────────────────────
 
@@ -117,6 +135,10 @@ message AllocationSpec {
 
   // Telemetry
   TelemetrySpec telemetry = 80;
+
+  // Requeue policy: "never", "on_node_failure", "always"
+  string requeue_policy = 90;
+  uint32 max_requeue = 91;
 }
 
 message EnvironmentSpec {
@@ -270,6 +292,42 @@ message CheckpointRequest {
 message CheckpointResponse {
   bool accepted = 1;
   string message = 2;
+}
+
+// ─── DAG Management ─────────────────────────────────────────
+
+message GetDagRequest {
+  string dag_id = 1;
+}
+
+message DagStatus {
+  string dag_id = 1;
+  string state = 2;           // running, completed, failed, cancelled
+  repeated AllocationStatus allocations = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp completed_at = 5;
+}
+
+message ListDagsRequest {
+  string tenant = 1;
+  string user = 2;
+  string state = 3;
+  uint32 limit = 4;
+  string cursor = 5;
+}
+
+message ListDagsResponse {
+  repeated DagStatus dags = 1;
+  string next_cursor = 2;
+}
+
+message CancelDagRequest {
+  string dag_id = 1;
+}
+
+message CancelDagResponse {
+  bool success = 1;
+  uint32 allocations_cancelled = 2;
 }
 
 // ─── Attach (interactive terminal) ─────────────────────────

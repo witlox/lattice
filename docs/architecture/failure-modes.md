@@ -32,7 +32,7 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 
 ### Node Agent Crash
 
-**Detection:** Heartbeat timeout (default: 30s, configurable). Analogous to Slurm's `SlurmdTimeout`.
+**Detection:** Heartbeat timeout (default: 30s) followed by grace period (default: 60s). Total time to `Down` transition: ~90s. Analogous to Slurm's `SlurmdTimeout`.
 
 **Recovery:**
 1. Quorum marks node as `Degraded` after first missed heartbeat
@@ -146,7 +146,7 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 2. Grace period (default: 30s) for clean shutdown
 3. `SIGKILL` if processes still running after grace period
 4. Nodes released
-5. Allocation marked as `TimedOut` (a substate of `Failed`)
+5. Allocation marked as `Failed` with reason `walltime_exceeded`
 
 ## Recovery Matrix
 
@@ -155,7 +155,7 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 | Quorum member loss | Raft heartbeat | Leader election, continue | None |
 | Quorum leader loss | Raft timeout | New election (1-3s) | None (uncommitted retried) |
 | Complete quorum loss | All members down | Snapshot + WAL recovery | None (last committed state) |
-| Node agent crash | Heartbeat timeout (30s) | Degrade → Down → requeue | Running allocation output since last checkpoint |
+| Node agent crash | Heartbeat timeout (30s) + grace (60s) | Degrade → Down → requeue | Running allocation output since last checkpoint |
 | Node hardware failure | BMC + heartbeat | Immediate Down → requeue | Running allocation output since last checkpoint |
 | vCluster scheduler crash | Health check | Stateless restart | None |
 | API server crash | Health check | Stateless restart | None |
@@ -189,3 +189,4 @@ Configurable per allocation at submission time:
 - [sensitive-workloads.md](sensitive-workloads.md) — Medical-specific failure handling (longer grace periods, no auto-requeue)
 - [accounting.md](accounting.md) — Accounting service failure buffering
 - [upgrades.md](upgrades.md) — Failure detection during canary rollouts
+- [sessions.md](sessions.md) — Interactive session disconnect/reconnect during node failures

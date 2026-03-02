@@ -121,3 +121,24 @@ The checkpoint broker runs as part of the scheduler plane, with access to:
 - Queue state (from vCluster schedulers)
 
 It evaluates the cost function continuously (every 30-60 seconds for each running allocation) and issues checkpoint hints when the threshold is crossed.
+
+## Storage Outage Behavior
+
+When the checkpoint destination (VAST S3 or NFS) is unavailable:
+
+1. **Detection:** Checkpoint broker detects storage unavailability via failed write probes or VAST API health checks
+2. **Immediate effect:** All pending checkpoint requests are paused (not cancelled)
+3. **Cost function adjustment:** `storage_write_bandwidth` drops to 0, making `write_time(j)` infinite — the cost function naturally suppresses checkpoint decisions
+4. **Running allocations:** Continue running. They are effectively non-preemptible during the outage (no checkpoint possible)
+5. **Preemption requests:** If preemption is forced (e.g., medical claim), the victim receives SIGTERM without checkpoint. The allocation is marked `Failed` (not `Suspended`) since no checkpoint was written
+6. **Recovery:** When storage recovers, the broker re-evaluates all running allocations on the next cycle. Allocations with high `recompute_saved` value are prioritized for immediate checkpoint
+7. **Alert:** `lattice_checkpoint_storage_unavailable` gauge set to 1; critical alert fired
+
+## Cross-References
+
+- [scheduling-algorithm.md](scheduling-algorithm.md) — f₈ checkpoint_efficiency in the cost function
+- [preemption.md](preemption.md) — Preemption sequence and checkpoint timeout handling
+- [failure-modes.md](failure-modes.md) — Checkpoint broker crash recovery
+- [telemetry.md](telemetry.md) — Node health signals (ECC errors) feeding into checkpoint urgency
+- [sensitive-workloads.md](sensitive-workloads.md) — Medical allocations and checkpoint constraints
+- [data-staging.md](data-staging.md) — Storage bandwidth sharing with checkpoint writes

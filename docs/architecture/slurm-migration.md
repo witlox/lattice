@@ -54,7 +54,7 @@ Directives that have no Lattice equivalent are handled gracefully:
 
 ```
 Warning: #SBATCH --mem=64G ignored (Lattice uses full-node scheduling, memory is not constrainable)
-Warning: #SBATCH --mail-user=user@example.com ignored (use lattice webhooks for notifications)
+Warning: #SBATCH --mail-user=user@example.com ignored (use `lattice watch` for event notifications)
 Submitted allocation 12345
 ```
 

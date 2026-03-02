@@ -78,6 +78,10 @@ The stream begins with an `AttachStart` message specifying the target node (for 
 - Attach is only permitted when the allocation runs a signed uenv
 - Session start/end events are Raft-committed audit entries
 
+### Attach During Preemption
+
+If the allocation is preempted while an attach session is active, the session is terminated gracefully. See [sessions.md](sessions.md) for the detailed preemption sequence. If the allocation is in `Checkpointing` state, new attach requests are rejected with: `"allocation is being checkpointed — attach unavailable until rescheduled"`.
+
 ### CLI Usage
 
 ```bash

@@ -216,6 +216,23 @@ gRPC (protobuf) is the primary protocol. REST is provided via gRPC-gateway for b
 
 Protobuf definitions in `proto/` directory. See proto/README.md for schema details.
 
+## Proto Coverage
+
+The protobuf definitions in `proto/lattice/v1/allocations.proto` currently cover:
+
+| Service / Area | Proto Status | Notes |
+|---|---|---|
+| AllocationService (submit, get, list, cancel, update, watch, checkpoint) | Defined | Core allocation lifecycle |
+| Observability RPCs (attach, logs, metrics, diagnostics, compare) | Defined | Part of AllocationService |
+| DAG RPCs (get, list, cancel) | Defined | Part of AllocationService |
+| NodeService (list, drain, undrain, status) | Planned | Will be a separate service proto |
+| TenantService (CRUD, quota management) | Planned | Will be a separate service proto |
+| AuditService (medical audit log queries) | Planned | Will be a separate service proto |
+| SessionService (create, terminal) | Planned | May merge into AllocationService or be separate |
+| AccountingService (usage queries) | Planned | May integrate with Waldur API directly |
+
+Planned services will be added as the proto matures. REST endpoints for planned services are served by lattice-api with hand-written handlers until proto definitions are finalized.
+
 ## Authentication
 
 All API calls require OIDC bearer token. FirecREST handles the OIDC flow (institutional IdP integration). The lattice-api server validates tokens against the configured OIDC provider.

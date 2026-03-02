@@ -175,6 +175,19 @@ Medical nodes have additional constraints:
 6. Node transitions to Ready and returns to general pool
 ```
 
+### Wipe Failure Handling
+
+If the OpenCHAMI secure wipe fails or times out during medical node release:
+
+1. **Timeout:** Default wipe timeout is 30 minutes (configurable: `medical.wipe_timeout`). If wipe does not complete within this window, the node enters a `Quarantine` state (treated as `Down` by the scheduler).
+2. **Quarantine:** Quarantined nodes are excluded from scheduling and flagged for operator intervention. They do not return to the general pool.
+3. **Operator intervention:** The operator investigates (BMC console, hardware diagnostics) and either:
+   - Retries the wipe: `lattice admin node wipe <id> --force`
+   - Replaces the node hardware
+   - Marks the node as permanently failed: `lattice node disable <id>`
+4. **Audit:** Wipe failures are logged as critical audit events (Raft-committed for medical nodes). The audit entry records: node ID, wipe start time, failure reason, operator action.
+5. **Alert:** `lattice_medical_wipe_failure_total` counter incremented; critical alert fired.
+
 ## Operator Commands
 
 | Command | Effect | Confirmation Required |

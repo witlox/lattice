@@ -54,7 +54,7 @@ The node agent reads ring buffers and aggregates based on the current mode.
 
 ### Layer 3: Storage and Query
 
-**Time-series store** (VictoriaMetrics, Mimir, or Thanos — TBD based on scale testing):
+**Time-series store** — recommended: **VictoriaMetrics** (single-node or cluster) for single-site deployments; **Thanos** on top of Prometheus for federated multi-site deployments that need a global query view across sites:
 - Ingestion: all nodes stream aggregated metrics
 - Auto-downsampling: raw → 1m → 5m → 1h → 1d
 - Retention policy configurable per tenant/vCluster
@@ -244,6 +244,10 @@ Example alerting rules (PromQL-compatible):
 | Node heartbeat missing | `time() - lattice_agent_last_heartbeat_timestamp > 60` | node degraded |
 | API error rate spike | `rate(lattice_api_requests_total{status=~"5.."}[5m]) / rate(lattice_api_requests_total[5m]) > 0.05` | warning |
 | Accounting buffer filling | `lattice_accounting_events_buffered > 8000` | warning |
+| VNI pool exhaustion approaching | `(lattice_network_vni_pool_total - lattice_network_vni_pool_available) / lattice_network_vni_pool_total > 0.90` | warning |
+| Quota utilization high | `lattice_quota_used_nodes / lattice_quota_max_nodes > 0.95` for 10 minutes | warning |
+| Raft disk usage high | `lattice_raft_disk_used_bytes / lattice_raft_disk_total_bytes > 0.80` | warning |
+| Snapshot storage growth | `rate(lattice_raft_snapshot_size_bytes[1h]) > 100e6` | info |
 
 ### Dashboard Views
 

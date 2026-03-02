@@ -243,6 +243,57 @@ Config files are version-controlled alongside deployment manifests. Changes to R
 
 **Quorum hardware notes:** Quorum members are latency-sensitive (Raft commits). Dedicated NVMe SSD for WAL. Not co-located with compute workloads. Prefer separate hardware or at minimum separate failure domains.
 
+## Backup Verification
+
+Snapshots replicated to S3 should be verified periodically to ensure they are restorable:
+
+```bash
+# Verify the latest snapshot is readable and consistent
+lattice admin backup verify --source=s3://lattice-backup/raft/snap-latest.bin
+
+# Verify a specific snapshot
+lattice admin backup verify --source=s3://lattice-backup/raft/snap-20260301T120000.bin
+```
+
+Verification checks:
+- Snapshot file integrity (checksum match)
+- Raft metadata consistency (term, index, membership)
+- Deserialization of state machine (all entries parseable)
+
+**Recommended schedule:** Weekly automated verification via cron or CI pipeline. Alert on failure.
+
+### Snapshot Retention Policy
+
+Local snapshots are retained on quorum member disks:
+- Keep the last 5 snapshots (default, configurable: `raft.snapshot_retention_count`)
+- Older snapshots are deleted after a new snapshot is confirmed written
+
+S3 snapshots follow a lifecycle policy:
+- Keep all snapshots for 7 days (hourly granularity)
+- After 7 days: keep one snapshot per day for 30 days
+- After 30 days: keep one snapshot per week for 90 days
+- After 90 days: delete (unless medical audit retention requires longer)
+
+Configure via S3 lifecycle rules on the `lattice-backup` bucket.
+
+## Component Log Management
+
+Lattice components log to stdout/stderr by default, managed by the system's init system (systemd journald or equivalent).
+
+**Recommended log rotation:**
+
+| Component | Log Volume | Rotation |
+|-----------|-----------|----------|
+| Quorum members | Low (Raft events, membership changes) | journald default (rotate at 4 GB or 1 month) |
+| API servers | Medium (request logs, access logs) | journald or file rotation (rotate at 1 GB, keep 7 files) |
+| vCluster schedulers | Low-Medium (scheduling cycle logs) | journald default |
+| Node agents | Low per-node (heartbeats, allocation lifecycle) | journald default |
+| Checkpoint broker | Low (checkpoint decisions) | journald default |
+
+For centralized log collection, configure journald to forward to a log aggregator (e.g., Loki, Elasticsearch) via `systemd-journal-remote` or a sidecar agent.
+
+**Structured logging:** All components emit JSON-formatted logs with fields: `timestamp`, `level`, `component`, `message`, and context-specific fields (e.g., `allocation_id`, `node_id`).
+
 ## Cross-References
 
 - [system-architecture.md](system-architecture.md) — Seven-layer architecture overview

@@ -24,6 +24,9 @@ pub struct Allocation {
     pub user: UserId,
     pub tags: HashMap<String, String>,
 
+    // Type (single or task group)
+    pub allocation_type: AllocationType,
+
     // What to run
     pub environment: Environment,
     pub entrypoint: String,
@@ -33,6 +36,10 @@ pub struct Allocation {
 
     // Lifecycle
     pub lifecycle: Lifecycle,
+
+    // Requeue
+    pub requeue_policy: RequeuePolicy,
+    pub max_requeue: u32,
 
     // Data
     pub data: DataRequirements,
@@ -88,6 +95,18 @@ pub enum AllocationType {
         step: u32,
         max_concurrent: u32,
     },
+}
+
+// ─── Requeue Policy ─────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RequeuePolicy {
+    /// Allocation fails permanently on any node failure.
+    Never,
+    /// Requeue only on node-side failures (hardware, agent crash, partition).
+    OnNodeFailure,
+    /// Requeue on any failure including application crash.
+    Always,
 }
 
 // ─── Environment ────────────────────────────────────────────
@@ -436,7 +455,7 @@ pub struct Node {
     pub id: NodeId,
     pub group: GroupId,
     pub capabilities: NodeCapabilities,
-    pub health: NodeHealth,
+    pub state: NodeState,
     pub owner: Option<NodeOwnership>,
 }
 
@@ -450,11 +469,23 @@ pub struct NodeCapabilities {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum NodeHealth {
-    Healthy,
+pub enum NodeState {
+    /// Node exists in inventory but has never reported
+    Unknown,
+    /// OpenCHAMI booting/reimaging the node
+    Booting,
+    /// Healthy, agent reporting, available for scheduling
+    Ready,
+    /// Heartbeat missed or minor issue detected
     Degraded { reason: String },
+    /// Confirmed failure, grace period expired
     Down { reason: String },
+    /// Operator or scheduler requested drain, waiting for allocations to finish
     Draining,
+    /// All allocations completed after drain
+    Drained,
+    /// Boot failure or unrecoverable hardware error
+    Failed { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -525,7 +556,8 @@ pub enum SchedulerType {
     InteractiveFifo,
 }
 
-/// Weights for the composite cost function. Must sum to ~1.0.
+/// Weights for the composite cost function. Weights are relative;
+/// normalization (sum to 1.0) is optional — the solver normalizes internally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostWeights {
     pub priority: f64,
@@ -536,6 +568,7 @@ pub struct CostWeights {
     pub backlog: f64,
     pub energy: f64,
     pub checkpoint_efficiency: f64,
+    pub conformance: f64,
 }
 
 impl Default for CostWeights {
@@ -543,13 +576,14 @@ impl Default for CostWeights {
         // Default: balanced HPC profile
         Self {
             priority: 0.20,
-            wait_time: 0.25,
-            fair_share: 0.25,
+            wait_time: 0.20,
+            fair_share: 0.20,
             topology: 0.15,
             data_readiness: 0.10,
             backlog: 0.05,
             energy: 0.00,
             checkpoint_efficiency: 0.00,
+            conformance: 0.10,
         }
     }
 }

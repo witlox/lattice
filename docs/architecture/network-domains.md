@@ -63,6 +63,15 @@ VNIs are allocated sequentially from the pool. When freed, they return to the av
 
 The grace period prevents VNI churn in DAG workflows where allocations start and stop in sequence but share a domain.
 
+### DAG Domain Persistence
+
+DAG workflows often have sequential stages that share a network domain but have gaps between stages (one allocation completes before the next starts). The grace period (default: 5 minutes) covers these gaps:
+
+- If the next DAG stage starts within the grace period: it joins the existing domain (same VNI, no churn)
+- If the gap exceeds the grace period: the domain is released and a new VNI is allocated when the next stage starts
+- For long-running DAGs with predictable inter-stage gaps, increase the grace period per-domain: `lattice admin network set-grace --domain=<name> --grace=15m`
+- The grace period timer resets each time a new allocation joins the domain
+
 ## Scoping Rules
 
 | Rule | Enforcement |

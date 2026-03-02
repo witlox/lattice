@@ -18,6 +18,8 @@ Each allocation has a `preemption_class` (0-10):
 
 **Rule:** Preemption only moves down — a class-5 allocation can preempt class 0-4 allocations but never class 5+.
 
+**Enforcement:** The `preemption_class` range (0-10) is validated at API admission. Values outside this range are rejected with a `400 Bad Request` error before reaching the scheduler.
+
 **Tie-breaking within class:** If multiple allocations have the same preemption class, the scheduler prefers to preempt the one with the lowest checkpoint cost (f₈).
 
 ## Preemption Triggers

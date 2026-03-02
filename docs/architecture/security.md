@@ -142,6 +142,43 @@ Role assignment:
 
 Slingshot traffic classes provide hardware-enforced isolation — compute traffic cannot starve management traffic and vice versa.
 
+## Certificate Rotation
+
+### Quorum Members
+
+1. Generate new certificate from site CA (same CN format)
+2. Deploy new cert + key to the target member's TLS directory
+3. Perform Raft membership change: remove old member, add "new" member (same node, new cert)
+4. Verify: `lattice admin raft status` shows member healthy with new cert serial
+5. Repeat for each member (one at a time, maintaining majority)
+
+### Node Agents
+
+Node agents receive certificates from OPAAL during boot. Rotation is automatic on reboot:
+
+1. Drain the node: `lattice node drain <id>`
+2. Reboot (or reimage) via OpenCHAMI
+3. Node boots with new OPAAL-issued certificate
+4. Undrain: `lattice node undrain <id>`
+
+For batch rotation without reboot (if OPAAL supports renewal):
+1. Node agent requests new cert from OPAAL
+2. Node agent reloads TLS context (graceful, no connection drop)
+3. New cert active on next heartbeat
+
+### API Servers and Schedulers
+
+1. Generate new certificate from site CA
+2. Deploy new cert + key to the component's TLS directory
+3. Restart the component (stateless — no data loss)
+4. Load balancer health check confirms the component is back
+
+### Federation (Sovra Certificates)
+
+Sovra workspace keys are managed by the Sovra key rotation protocol. Lattice components use derived tokens, which are automatically refreshed. No Lattice-side action is required for routine Sovra key rotation.
+
+For emergency revocation: revoke the Sovra shared workspace (see [federation.md](federation.md) — Removing a Federation Peer).
+
 ## Cross-References
 
 - [sensitive-workloads.md](sensitive-workloads.md) — Medical-specific security requirements

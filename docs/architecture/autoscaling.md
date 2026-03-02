@@ -131,6 +131,20 @@ If the metric oscillates around the target, causing repeated scale-up/scale-down
 - If scale events alternate for more than 5 cycles: alert raised suggesting the user adjust their target or increase cooldown
 - No automatic target adjustment — the user must update the configuration
 
+### Preemption During Scale-Up
+
+If a reactive allocation is scaling up while simultaneously being preempted (e.g., a higher-priority job arrives):
+
+1. The preemption takes priority — the checkpoint/preemption sequence begins
+2. Any in-flight scale-up proposals are cancelled (quorum rejects proposals for allocations in `Checkpointing` state)
+3. After preemption completes: the allocation is suspended with its last stable node count
+4. When resumed: scaling restarts from `min_nodes`, re-evaluating the metric from scratch
+5. The cooldown period applies after resume to prevent immediate re-scaling
+
+If preemption and scale-up proposals race at the quorum:
+- The quorum serializes all proposals — one wins, the other is rejected
+- The rejected proposal is retried on the next scheduling cycle (if still applicable)
+
 ## Cross-References
 
 - [scheduling-algorithm.md](scheduling-algorithm.md) — Reactive allocations scored by the knapsack solver like any allocation

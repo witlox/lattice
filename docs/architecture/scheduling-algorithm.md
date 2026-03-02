@@ -80,21 +80,23 @@ The conformance fingerprint is a hash of: GPU driver version, NIC firmware versi
 
 This factor is evaluated during node selection (step 2a in the solver), not during scoring. The solver prefers to select nodes from the largest available conformance group that satisfies the allocation's constraints.
 
+See [data-staging.md](data-staging.md) for details on how input data is pre-staged during queue wait to improve f₅ scores. See [preemption.md](preemption.md) for how preemption classes interact with f₁ priority scoring. See [network-domains.md](network-domains.md) for the VNI assignment that enables topology-aware placement (f₄).
+
 #### Weight Profiles
 
 | Weight | HPC Batch | ML Training | Service | Medical | Interactive |
 |---|---|---|---|---|---|
-| w₁ (priority) | 0.20 | 0.15 | 0.15 | 0.90 | 0.10 |
-| w₂ (wait_time) | 0.25 | 0.10 | 0.05 | 0.00 | 0.30 |
-| w₃ (fair_share) | 0.25 | 0.15 | 0.10 | 0.00 | 0.10 |
-| w₄ (topology) | 0.15 | 0.30 | 0.05 | 0.00 | 0.00 |
-| w₅ (data_ready) | 0.10 | 0.15 | 0.10 | 0.05 | 0.05 |
+| w₁ (priority) | 0.15 | 0.10 | 0.15 | 0.90 | 0.10 |
+| w₂ (wait_time) | 0.20 | 0.10 | 0.05 | 0.00 | 0.30 |
+| w₃ (fair_share) | 0.20 | 0.10 | 0.10 | 0.00 | 0.10 |
+| w₄ (topology) | 0.15 | 0.25 | 0.05 | 0.00 | 0.00 |
+| w₅ (data_ready) | 0.10 | 0.15 | 0.10 | 0.00 | 0.05 |
 | w₆ (backlog) | 0.05 | 0.05 | 0.05 | 0.00 | 0.15 |
 | w₇ (energy) | 0.00 | 0.05 | 0.10 | 0.00 | 0.00 |
-| w₈ (checkpoint) | 0.00 | 0.15 | 0.10 | 0.05 | 0.00 |
-| w₉ (conformance) | 0.10 | 0.25 | 0.05 | 1.00 | 0.00 |
+| w₈ (checkpoint) | 0.05 | 0.10 | 0.10 | 0.00 | 0.00 |
+| w₉ (conformance) | 0.10 | 0.10 | 0.30 | 0.10 | 0.30 |
 
-Medical scheduler is degenerate: priority dominates because node claims are non-negotiable. Conformance is enforced as a hard constraint (w₉=1.0): medical nodes must pass strict conformance checks, and drifted nodes are excluded entirely.
+Medical scheduler is degenerate: priority dominates because node claims are non-negotiable (w₁=0.90). Conformance (w₉=0.10) acts as a tiebreaker among conformant nodes; non-conformant nodes are excluded entirely as a hard constraint at the solver level (step 2a), not via the weight system.
 
 ### Solver
 

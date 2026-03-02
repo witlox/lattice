@@ -10,18 +10,11 @@ A DAG is a set of allocation specs with dependency edges, submitted as a single 
 
 ```
 DagSpec {
-    allocations: Map<String, AllocationSpec>,  // ref_id → spec
-    dependencies: Vec<DependencyEdge>,
-}
-
-DependencyEdge {
-    from: String,      // ref_id of predecessor
-    to: String,        // ref_id of successor
-    condition: DependencyCondition,
+    allocations: Vec<AllocationSpec>,  // each spec has an id and depends_on fields
 }
 ```
 
-The `DagSpec` is already defined in the protobuf API (`proto/lattice/v1/allocations.proto`).
+Dependencies are expressed inline via each `AllocationSpec.depends_on` field (a list of `DependencySpec` with `ref_id` and `condition`), not as separate edge objects. This matches the protobuf definition in `proto/lattice/v1/allocations.proto`.
 
 ## Dependency Conditions
 
@@ -42,7 +35,7 @@ Defined in `crates/lattice-common/src/types.rs` (`DependencyCondition` enum):
 - User submits `DagSpec` via `POST /v1/dags` or `lattice dag submit`
 - lattice-api validates the graph:
   - No cycles (topological sort must succeed)
-  - All `from`/`to` ref_ids reference allocations in the DAG
+  - All `depends_on.ref_id` values reference allocation IDs within the DAG
   - All allocation specs individually valid
 - DAG receives a unique `dag_id`
 - Individual allocations receive `allocation_id` values and are tagged with `dag_id`
@@ -128,6 +121,26 @@ DAG state is eventually consistent, following ADR-004:
 | `DELETE /v1/dags/{id}` | Cancel DAG |
 
 CLI equivalents: `lattice dag status`, `lattice dag list`, `lattice dag cancel`.
+
+## Edge Cases
+
+### Node Failure During DAG Execution
+
+When a node fails while running a DAG allocation:
+
+1. The allocation follows its `requeue_policy` (see [failure-modes.md](failure-modes.md))
+2. If requeued: the allocation re-enters the scheduler queue with its original priority. Downstream dependencies remain blocked until it completes.
+3. If failed: downstream `Success` dependencies are cancelled. `Failure` and `Any` edges are evaluated normally.
+4. DAG state remains `Running` as long as any allocation is pending or active.
+
+### Task Group with Corresponding Dependencies and Mixed Exit Codes
+
+When a task group has `Corresponding` dependencies and individual elements exit with different codes:
+
+- Each `Corresponding` edge is evaluated independently per array index
+- `train[3]` failing does not affect `train[4]`'s dependency on `preprocess[4]`
+- The downstream task group may have a mix of running, cancelled, and completed elements
+- DAG completion waits for all evaluable elements to reach terminal states
 
 ## Cross-References
 

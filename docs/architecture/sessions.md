@@ -127,6 +127,20 @@ When the session's allocation reaches a terminal state (Completed, Failed, Cance
 4. Unmount uenv, release scratch, release nodes
 5. Session terminal sends `ExitCode` and closes WebSocket
 
+### Preemption During Active Session
+
+When a session's allocation is preempted while a terminal is connected:
+
+1. The checkpoint sequence begins (if `checkpoint != None`)
+2. The terminal remains connected during checkpointing — user sees normal output
+3. When checkpoint completes and the allocation transitions to `Suspended`:
+   - Server sends a terminal message: `[lattice] Allocation preempted. Session suspended. Use 'lattice attach <id>' to reconnect after rescheduling.`
+   - Server sends `ExitCode(-1)` and closes the stream
+4. When the allocation is rescheduled and resumes:
+   - The user must manually reconnect: `lattice attach <id>`
+   - The session starts a fresh shell (PTY state is not checkpointed)
+   - Application state is restored from checkpoint (if the application supports it)
+
 ## Multi-Node Sessions
 
 For sessions requesting multiple nodes:
