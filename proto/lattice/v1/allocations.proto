@@ -1,0 +1,513 @@
+syntax = "proto3";
+
+package lattice.v1;
+
+option go_package = "github.com/lattice-scheduler/lattice/gen/go/lattice/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// ─── Allocation Service ─────────────────────────────────────
+
+service AllocationService {
+  // Submit a single allocation or a DAG of allocations
+  rpc Submit(SubmitRequest) returns (SubmitResponse);
+
+  // Get allocation status
+  rpc Get(GetAllocationRequest) returns (AllocationStatus);
+
+  // List allocations (with filters)
+  rpc List(ListAllocationsRequest) returns (ListAllocationsResponse);
+
+  // Cancel an allocation
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // Update a running allocation (e.g., extend walltime, switch telemetry)
+  rpc Update(UpdateAllocationRequest) returns (AllocationStatus);
+
+  // Launch tasks within an existing allocation (srun equivalent)
+  rpc LaunchTasks(LaunchTasksRequest) returns (LaunchTasksResponse);
+
+  // Watch allocation status changes (streaming)
+  rpc Watch(WatchRequest) returns (stream AllocationEvent);
+
+  // Request checkpoint of a running allocation
+  rpc Checkpoint(CheckpointRequest) returns (CheckpointResponse);
+
+  // ─── Observability RPCs ──────────────────────────────────
+
+  // Attach an interactive terminal to a running allocation (bidirectional stream)
+  rpc Attach(stream AttachInput) returns (stream AttachOutput);
+
+  // Stream logs from a running allocation (server-streaming)
+  rpc StreamLogs(LogStreamRequest) returns (stream LogEntry);
+
+  // Query a metrics snapshot for an allocation
+  rpc QueryMetrics(QueryMetricsRequest) returns (MetricsSnapshot);
+
+  // Stream live metrics events from an allocation (server-streaming)
+  rpc StreamMetrics(StreamMetricsRequest) returns (stream MetricsEvent);
+
+  // Get diagnostics (network + storage health) for a running allocation
+  rpc GetDiagnostics(DiagnosticsRequest) returns (DiagnosticsResponse);
+
+  // Compare metrics across multiple allocations
+  rpc CompareMetrics(CompareMetricsRequest) returns (CompareMetricsResponse);
+}
+
+// ─── Submit ─────────────────────────────────────────────────
+
+message SubmitRequest {
+  // Single allocation or DAG
+  oneof submission {
+    AllocationSpec single = 1;
+    DagSpec dag = 2;
+    TaskGroupSpec task_group = 3;
+  }
+}
+
+message SubmitResponse {
+  // IDs of created allocations
+  repeated string allocation_ids = 1;
+}
+
+message DagSpec {
+  repeated AllocationSpec allocations = 1;
+}
+
+message TaskGroupSpec {
+  AllocationSpec template = 1;
+  uint32 range_start = 2;
+  uint32 range_end = 3;
+  uint32 step = 4;
+  uint32 max_concurrent = 5;
+}
+
+// ─── Allocation Spec (user-provided) ───────────────────────
+
+message AllocationSpec {
+  // Identity
+  string id = 1;           // user-provided name (for DAG references)
+  string tenant = 2;
+  string project = 3;
+  string vcluster = 4;     // optional: can be inferred
+  map<string, string> tags = 5;
+
+  // What to run
+  EnvironmentSpec environment = 10;
+  string entrypoint = 11;
+
+  // Resources
+  ResourceSpec resources = 20;
+
+  // Lifecycle
+  LifecycleSpec lifecycle = 30;
+
+  // Data
+  DataSpec data = 40;
+
+  // Networking
+  ConnectivitySpec connectivity = 50;
+
+  // Dependencies
+  repeated DependencySpec depends_on = 60;
+
+  // Checkpointing
+  CheckpointSpec checkpoint = 70;
+
+  // Telemetry
+  TelemetrySpec telemetry = 80;
+}
+
+message EnvironmentSpec {
+  string uenv = 1;          // e.g., "prgenv-gnu/24.11:v1"
+  string view = 2;          // e.g., "default"
+  string image = 3;         // OCI image (alternative to uenv)
+  string tools_uenv = 4;    // additional tools uenv
+  bool sign_required = 5;   // medical: require signed images
+}
+
+message ResourceSpec {
+  // Node count: if max == 0, use exact = min
+  uint32 min_nodes = 1;
+  uint32 max_nodes = 2;
+
+  // Constraints
+  string gpu_type = 10;
+  repeated string features = 11;
+  string topology_hint = 12; // "tight", "spread", "any"
+  map<string, uint32> feature_counts = 13;
+}
+
+message LifecycleSpec {
+  enum Type {
+    BOUNDED = 0;
+    UNBOUNDED = 1;
+    REACTIVE = 2;
+  }
+  Type type = 1;
+  google.protobuf.Duration walltime = 2;  // for BOUNDED
+  uint32 preemption_class = 3;
+
+  // For REACTIVE
+  uint32 reactive_min_nodes = 10;
+  uint32 reactive_max_nodes = 11;
+  string reactive_metric = 12;
+  string reactive_target = 13;
+}
+
+message DataSpec {
+  repeated MountSpec mounts = 1;
+  bool use_defaults = 2;
+  string scratch_per_node = 3;
+}
+
+message MountSpec {
+  string source = 1;
+  string target = 2;
+  string access = 3;      // "read-only", "read-write"
+  string tier_hint = 4;   // "hot", "warm", "cold"
+}
+
+message ConnectivitySpec {
+  string network_domain = 1;
+  repeated EndpointSpec expose = 2;
+}
+
+message EndpointSpec {
+  string name = 1;
+  uint32 port = 2;
+  string protocol = 3;
+}
+
+message DependencySpec {
+  string ref_id = 1;       // allocation ID or name
+  string condition = 2;    // "success", "failure", "any", "corresponding", "mutex"
+}
+
+message CheckpointSpec {
+  string strategy = 1;    // "auto", "manual", "none"
+}
+
+message TelemetrySpec {
+  string mode = 1;          // "prod", "debug", "audit"
+  uint64 duration_seconds = 2; // for debug mode auto-revert
+}
+
+// ─── Status / Events ────────────────────────────────────────
+
+message GetAllocationRequest {
+  string allocation_id = 1;
+}
+
+message ListAllocationsRequest {
+  string tenant = 1;
+  string user = 2;
+  string vcluster = 3;
+  string state = 4;         // filter by state
+  uint32 limit = 5;
+  string cursor = 6;
+}
+
+message ListAllocationsResponse {
+  repeated AllocationStatus allocations = 1;
+  string next_cursor = 2;
+}
+
+message AllocationStatus {
+  string allocation_id = 1;
+  string state = 2;         // pending, staging, running, checkpointing, suspended, completed, failed, cancelled
+  AllocationSpec spec = 3;
+  repeated string assigned_nodes = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp completed_at = 7;
+  int32 exit_code = 8;
+  string message = 9;
+}
+
+message CancelRequest {
+  string allocation_id = 1;
+}
+
+message CancelResponse {
+  bool success = 1;
+}
+
+message UpdateAllocationRequest {
+  string allocation_id = 1;
+  // Fields to update (only non-empty fields are applied)
+  optional google.protobuf.Duration new_walltime = 2;
+  optional TelemetrySpec new_telemetry = 3;
+}
+
+message LaunchTasksRequest {
+  string allocation_id = 1;
+  uint32 num_tasks = 2;
+  uint32 tasks_per_node = 3;
+  string entrypoint = 4;
+}
+
+message LaunchTasksResponse {
+  string task_launch_id = 1;
+}
+
+message WatchRequest {
+  string allocation_id = 1;  // empty = watch all for this user
+}
+
+message AllocationEvent {
+  string allocation_id = 1;
+  string event_type = 2;    // state_change, progress, checkpoint, error
+  string message = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+message CheckpointRequest {
+  string allocation_id = 1;
+}
+
+message CheckpointResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// ─── Attach (interactive terminal) ─────────────────────────
+
+message AttachInput {
+  oneof input {
+    AttachStart start = 1;
+    bytes data = 2;           // stdin bytes
+    TerminalResize resize = 3;
+    int32 signal = 4;         // POSIX signal number (e.g., 2=SIGINT)
+  }
+}
+
+message AttachStart {
+  string allocation_id = 1;
+  string node_id = 2;         // target node (empty = first assigned node)
+  string command = 3;          // command to run (empty = user's shell)
+  uint32 rows = 4;            // initial terminal rows
+  uint32 cols = 5;            // initial terminal cols
+}
+
+message TerminalResize {
+  uint32 rows = 1;
+  uint32 cols = 2;
+}
+
+message AttachOutput {
+  oneof output {
+    bytes data = 1;            // stdout/stderr bytes
+    int32 exit_code = 2;       // process exited
+    string error = 3;          // attach error (e.g., denied, not running)
+  }
+}
+
+// ─── Log Streaming ─────────────────────────────────────────
+
+message LogStreamRequest {
+  string allocation_id = 1;
+
+  enum Stream {
+    ALL = 0;
+    STDOUT = 1;
+    STDERR = 2;
+  }
+  Stream stream = 2;
+
+  string node_id = 3;           // filter to specific node (empty = all)
+  bool follow = 4;              // keep streaming as new output arrives
+  uint32 tail_lines = 5;        // number of lines to replay from ring buffer
+  google.protobuf.Timestamp since = 6;  // for historical range
+  google.protobuf.Timestamp until = 7;  // for historical range
+}
+
+message LogEntry {
+  string node_id = 1;
+  LogStreamType stream = 2;
+  bytes data = 3;
+  google.protobuf.Timestamp timestamp = 4;
+
+  enum LogStreamType {
+    STDOUT = 0;
+    STDERR = 1;
+  }
+}
+
+// ─── Metrics Query ─────────────────────────────────────────
+
+message QueryMetricsRequest {
+  string allocation_id = 1;
+
+  enum MetricsMode {
+    SUMMARY = 0;      // aggregated across all nodes
+    PER_NODE = 1;     // one entry per node
+    PER_GPU = 2;      // one entry per GPU
+  }
+  MetricsMode mode = 2;
+
+  google.protobuf.Duration duration = 3;  // lookback window (default: 5m)
+}
+
+message MetricsSnapshot {
+  string allocation_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+
+  // Aggregated view (mode = SUMMARY)
+  AggregatedMetrics summary = 3;
+
+  // Per-node breakdown (mode = PER_NODE or PER_GPU)
+  repeated NodeMetrics nodes = 4;
+}
+
+message AggregatedMetrics {
+  double gpu_utilization_mean = 1;    // % (0-100)
+  double cpu_utilization_mean = 2;    // % (0-100)
+  uint64 memory_used_bytes = 3;
+  uint64 memory_total_bytes = 4;
+  uint64 gpu_memory_used_bytes = 5;
+  uint64 gpu_memory_total_bytes = 6;
+  double network_tx_bytes_per_sec = 7;
+  double network_rx_bytes_per_sec = 8;
+  double io_read_bytes_per_sec = 9;
+  double io_write_bytes_per_sec = 10;
+  double io_latency_p99_us = 11;      // microseconds
+}
+
+message NodeMetrics {
+  string node_id = 1;
+  double cpu_utilization = 2;
+  uint64 memory_used_bytes = 3;
+  uint64 memory_total_bytes = 4;
+  double network_tx_bytes_per_sec = 5;
+  double network_rx_bytes_per_sec = 6;
+  double io_read_bytes_per_sec = 7;
+  double io_write_bytes_per_sec = 8;
+  double io_latency_p99_us = 9;
+  repeated GpuMetrics gpus = 10;
+}
+
+message GpuMetrics {
+  uint32 index = 1;              // GPU index on node
+  double utilization = 2;        // SM occupancy %
+  uint64 memory_used_bytes = 3;
+  uint64 memory_total_bytes = 4;
+  double power_draw_watts = 5;
+  double temperature_celsius = 6;
+  uint64 ecc_errors = 7;
+}
+
+// ─── Metrics Streaming ─────────────────────────────────────
+
+message StreamMetricsRequest {
+  string allocation_id = 1;
+  repeated string metrics = 2;  // filter to specific metric names (empty = all)
+  bool alerts_only = 3;         // suppress normal updates, only send alerts
+}
+
+message MetricsEvent {
+  string node_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+
+  oneof event {
+    NodeMetrics snapshot = 3;    // periodic metric snapshot
+    MetricAlert alert = 4;       // threshold alert
+  }
+}
+
+message MetricAlert {
+  string node_id = 1;
+  string metric_name = 2;
+  double current_value = 3;
+  double threshold = 4;
+  google.protobuf.Timestamp timestamp = 5;
+
+  enum Severity {
+    INFO = 0;
+    WARNING = 1;
+    CRITICAL = 2;
+  }
+  Severity severity = 6;
+  string message = 7;
+}
+
+// ─── Diagnostics ───────────────────────────────────────────
+
+message DiagnosticsRequest {
+  string allocation_id = 1;
+
+  enum Scope {
+    FULL = 0;       // network + storage + GPU
+    NETWORK = 1;
+    STORAGE = 2;
+  }
+  Scope scope = 2;
+}
+
+message DiagnosticsResponse {
+  string allocation_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  NetworkDiagnostics network = 3;
+  StorageDiagnostics storage = 4;
+}
+
+message NetworkDiagnostics {
+  uint32 group_span = 1;              // number of dragonfly groups spanned
+  repeated uint32 groups = 2;          // group IDs
+  double csig_congestion_avg = 3;      // average CSIG congestion signal (0-1)
+  double inter_node_bandwidth_gbps = 4; // measured avg inter-node bandwidth
+  double target_bandwidth_gbps = 5;    // expected bandwidth for topology
+  repeated NodePairBandwidth node_pairs = 6; // per-pair detail (optional)
+  double nvlink_throughput_gbps = 7;   // intra-node GPU-to-GPU bandwidth
+  uint64 network_errors = 8;
+}
+
+message NodePairBandwidth {
+  string source_node = 1;
+  string target_node = 2;
+  double bandwidth_gbps = 3;
+  double latency_us = 4;
+}
+
+message StorageDiagnostics {
+  repeated MountDiagnostics mounts = 1;
+}
+
+message MountDiagnostics {
+  string mount_path = 1;
+  string mount_type = 2;         // "nfs", "s3", "nvme_scratch"
+  double read_throughput_gbps = 3;
+  double write_throughput_gbps = 4;
+  double qos_floor_gbps = 5;     // configured QoS floor (0 if none)
+  double latency_p50_us = 6;
+  double latency_p95_us = 7;
+  double latency_p99_us = 8;
+  double iops_read = 9;
+  double iops_write = 10;
+  string health = 11;            // "healthy", "degraded", "error"
+}
+
+// ─── Cross-Allocation Comparison ───────────────────────────
+
+message CompareMetricsRequest {
+  repeated string allocation_ids = 1;   // 2+ allocation IDs to compare
+  repeated string metrics = 2;          // metric names to compare (empty = all)
+  bool relative_time = 3;               // align by relative-to-start (default: true)
+}
+
+message CompareMetricsResponse {
+  repeated AllocationMetricsSeries series = 1;
+}
+
+message AllocationMetricsSeries {
+  string allocation_id = 1;
+  google.protobuf.Timestamp started_at = 2;
+  google.protobuf.Duration duration = 3;
+  repeated MetricsDataPoint data_points = 4;
+}
+
+message MetricsDataPoint {
+  google.protobuf.Duration relative_time = 1;  // offset from allocation start
+  map<string, double> values = 2;               // metric_name → value
+}

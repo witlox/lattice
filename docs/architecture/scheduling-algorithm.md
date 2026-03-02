@@ -1,0 +1,144 @@
+# Scheduling Algorithm
+
+## Overview
+
+Lattice uses a multi-dimensional knapsack formulation with a composite cost function, executed independently by each vCluster scheduler. The quorum provides global coordination.
+
+## The Knapsack Formulation
+
+### Resources (Knapsack Dimensions)
+
+Each scheduling decision must respect multiple resource constraints simultaneously:
+
+| Dimension | Unit | Source |
+|---|---|---|
+| Nodes | count | Quorum (available nodes owned by or borrowable by vCluster) |
+| GPU-hours | nodes × walltime | Derived from allocation request |
+| Topology span | group count | Topology model (dragonfly groups consumed) |
+| Storage I/O bandwidth | GB/s | VAST API (current utilization + allocation estimate) |
+| Power budget | kW | OpenCHAMI BMC telemetry (per-node power draw) |
+
+### Value (Cost Function)
+
+```
+Score(j) = Σ wᵢ · fᵢ(j)
+```
+
+#### Component Functions
+
+**f₁: priority_class(j)** — Static priority tier (0-10). Medical claims are highest. Preemption only moves down tiers.
+
+**f₂: wait_time_factor(j)** — Anti-starvation. Increases monotonically with time in queue.
+```
+f₂(j) = log(1 + wait_seconds / reference_wait)
+```
+`reference_wait` is tunable (default: 1 hour). Log prevents wait time from dominating all other factors.
+
+**f₃: fair_share_deficit(j)** — How far the tenant is from their contracted share.
+```
+f₃(j) = max(0, target_share(tenant) - actual_usage(tenant)) / target_share(tenant)
+```
+Ranges from 0 (tenant at or above share) to 1 (tenant has used nothing). Tenants below their share get priority.
+
+**f₄: topology_fitness(j)** — How well the job fits available topology.
+```
+f₄(j) = 1.0 - (groups_needed(j) / max_groups_available)
+```
+Jobs that fit in a single group score highest. Penalty for spanning groups scales with group count.
+
+**f₅: data_readiness(j)** — Is the job's input data on hot tier?
+```
+f₅(j) = fraction_of_input_data_on_hot_tier(j)
+```
+If unknown (user didn't specify data requirements), defaults to 0.5 (neutral).
+
+**f₆: backlog_pressure(t)** — Global signal, not per-job. High when queue is deep.
+```
+f₆(t) = min(1.0, queued_gpu_hours / running_gpu_hours)
+```
+Capped at 1.0. Affects all jobs equally — it's a system-level urgency signal.
+
+**f₇: energy_cost(j, t)** — Time-varying electricity price at scheduling time.
+```
+f₇(j, t) = 1.0 - normalized_energy_price(t)
+```
+Jobs score higher when energy is cheap. In federated mode, extends to `energy_cost(j, t, site)`.
+
+**f₈: checkpoint_efficiency(j)** — How cheaply can this job be preempted?
+```
+f₈(j) = 1.0 / (1.0 + estimated_checkpoint_minutes(j))
+```
+Jobs with fast checkpointing are more attractive to schedule on borrowed/preemptible nodes.
+
+#### Weight Profiles
+
+| Weight | HPC Batch | ML Training | Service | Medical | Interactive |
+|---|---|---|---|---|---|
+| w₁ (priority) | 0.20 | 0.15 | 0.15 | 0.90 | 0.10 |
+| w₂ (wait_time) | 0.25 | 0.10 | 0.05 | 0.00 | 0.30 |
+| w₃ (fair_share) | 0.25 | 0.15 | 0.10 | 0.00 | 0.10 |
+| w₄ (topology) | 0.15 | 0.30 | 0.05 | 0.00 | 0.00 |
+| w₅ (data_ready) | 0.10 | 0.15 | 0.10 | 0.05 | 0.05 |
+| w₆ (backlog) | 0.05 | 0.05 | 0.05 | 0.00 | 0.15 |
+| w₇ (energy) | 0.00 | 0.05 | 0.10 | 0.00 | 0.00 |
+| w₈ (checkpoint) | 0.00 | 0.15 | 0.10 | 0.05 | 0.00 |
+
+Medical scheduler is degenerate: priority dominates because node claims are non-negotiable.
+
+### Solver
+
+The multi-dimensional knapsack is NP-hard in general. For our scale (tens to hundreds of pending large allocations), a greedy heuristic with backfill is sufficient:
+
+```
+Algorithm: GreedyTopologyAwareBackfill
+
+1. Sort pending allocations by Score(j) descending
+2. For each allocation j in sorted order:
+   a. Find the smallest set of available nodes that satisfies:
+      - Node count >= j.requested_nodes
+      - All nodes in fewest possible dragonfly groups
+      - Constraints satisfied (GPU type, features, etc.)
+      - Power budget not exceeded
+   b. If nodes found: PROPOSE allocation to quorum
+   c. If not found: try backfill (can j fit in gaps left by higher-priority reservations?)
+3. Collect quorum responses (commit or reject)
+4. For rejected proposals: re-queue, will try next cycle
+
+Scheduling cycle: every 5-30 seconds (configurable per vCluster)
+```
+
+### Elastic Resource Sharing
+
+Nodes can be "borrowed" across vClusters:
+
+```
+vCluster A: 200 dedicated nodes, currently using 150
+  → 50 idle nodes advertised as "borrowable" to other vClusters
+
+vCluster B: 100 dedicated nodes, needs 120 for a pending job
+  → Borrows 20 nodes from vCluster A's idle pool
+  → These borrowed nodes have a preemption penalty in the cost function
+  → If vCluster A needs them back: checkpoint + reclaim
+```
+
+The quorum tracks ownership at two levels:
+- **Home vCluster**: permanent assignment (based on tenant contracts)
+- **Current vCluster**: who is actually using the node right now
+
+## Checkpoint Cost Model
+
+See [checkpoint-broker.md](checkpoint-broker.md) for the full checkpoint decision framework.
+
+Summary: checkpoint when `Value > Cost`, where value includes recompute_saved + preemptability + backlog_relief, and cost includes write_time + compute_waste + storage_cost. Backlog pressure increases checkpoint aggressiveness.
+
+## Simulation and Tuning
+
+Use RM-Replay (tools/rm-replay/) to test scheduling configurations:
+
+1. Capture production workload traces
+2. Configure weight profiles
+3. Replay through simulator
+4. Evaluate: utilization, wait times, QoS compliance, fairness
+5. Iterate on weights before deploying to production
+
+Reference: Martinasso et al., "RM-Replay: A High-Fidelity Tuning, Optimization and Exploration Tool for Resource Management" (SC18).
