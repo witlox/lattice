@@ -133,3 +133,42 @@ Everything else (job queues, telemetry, quota accounting, session state) is even
 - (+) Node agent can use simple bin-packing for small workloads.
 - (-) Potential waste for small workloads that get a full node unnecessarily.
 - (-) Mitigated by: Sarus containers with resource limits for interactive vCluster, and by grouping small workloads on designated "shared" nodes.
+
+---
+
+## ADR-008: Asynchronous Accounting via Waldur
+
+**Status:** Accepted
+
+**Context:** Lattice needs external accounting and billing but should not depend on an accounting system for core scheduling functionality. Waldur provides HPC-aware accounting, billing, and self-service portal capabilities.
+
+**Decision:** Integrate with Waldur as an optional, feature-flagged accounting provider. Lattice pushes accounting events (allocation started/completed, resource usage) to Waldur asynchronously. Waldur can push quota updates back to Lattice. Waldur unavailability never blocks scheduling. Events are buffered in memory and persisted to disk on overflow, replayed on reconnection.
+
+**Consequences:**
+- (+) Clean separation of concerns: Lattice schedules, Waldur accounts.
+- (+) Zero scheduling impact from accounting failures (events are buffered).
+- (+) Waldur's self-service portal gives tenant admins quota visibility without Lattice changes.
+- (+) Feature-flagged: zero overhead when accounting is not needed.
+- (-) Eventually consistent accounting data (events pushed at configurable interval, default 60s).
+- (-) Additional external dependency to operate (Waldur instance, API token management).
+- (-) Entity mapping (Tenant↔Customer, Project↔Project) must stay synchronized.
+
+---
+
+## ADR-009: Two-Tier Quota Enforcement
+
+**Status:** Accepted
+
+**Context:** Quota enforcement must balance strictness (prevent over-allocation) with performance (don't bottleneck scheduling on consensus). Some quotas are safety-critical (node counts), others are advisory (GPU-hours budgets).
+
+**Decision:** Two-tier quota enforcement matching the two consistency domains (ADR-004):
+1. **Hard quotas** (quorum-enforced, strong consistency): `max_nodes`, `max_concurrent_allocations`, `medical_pool_size`. Checked during Raft proposal validation. Cannot be violated even momentarily.
+2. **Soft quotas** (scheduler-enforced, eventual consistency): `gpu_hours_budget`, `fair_share_target`, `burst_allowance`. Influence scheduling score but don't hard-block. May temporarily overshoot during consistency window (~30s), self-correcting via fair-share scoring.
+
+**Consequences:**
+- (+) Hard quotas are provably enforced (Raft consensus guarantees).
+- (+) Soft quotas don't bottleneck scheduling (no consensus required for budget checks).
+- (+) Consistency window for soft quotas is acceptable (scheduling cycle is 5-30s, budget tracking is for billing not safety).
+- (+) Integrates cleanly with Waldur (ADR-008): Waldur updates quotas, Lattice enforces them.
+- (-) Soft quotas can temporarily overshoot (by design). Requires clear documentation that GPU-hours tracking is approximate.
+- (-) Two enforcement paths add complexity. Developers must know which tier a quota belongs to.

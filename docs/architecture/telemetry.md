@@ -185,3 +185,72 @@ Central store receives per-group aggregated streams.
 
 In debug mode: bypasses group aggregation, streams directly for that job's nodes.
 ```
+
+## Scheduler Self-Monitoring
+
+Internal metrics for monitoring Lattice's own health. These metrics feed into canary criteria during rolling upgrades (cross-ref: [upgrades.md](upgrades.md)) and are available on the holistic dashboard.
+
+### Scheduling Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `lattice_scheduling_cycle_duration_seconds` | histogram | `vcluster` | Time to complete one scheduling cycle |
+| `lattice_scheduling_queue_depth` | gauge | `vcluster` | Number of pending allocations |
+| `lattice_scheduling_proposals_total` | counter | `vcluster`, `result` (accepted/rejected) | Proposals sent to quorum |
+| `lattice_scheduling_cost_function_duration_seconds` | histogram | `vcluster` | Time to evaluate the cost function for all candidates |
+| `lattice_scheduling_backfill_jobs_total` | counter | `vcluster` | Allocations placed via backfill |
+
+### Quorum Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `lattice_raft_leader` | gauge | `member_id` | 1 if this member is leader, 0 if follower |
+| `lattice_raft_commit_latency_seconds` | histogram | `member_id` | Time from proposal to commit |
+| `lattice_raft_log_entries` | gauge | `member_id` | Number of entries in the Raft log |
+| `lattice_raft_snapshot_duration_seconds` | histogram | `member_id` | Time to create a Raft snapshot |
+
+### API Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `lattice_api_requests_total` | counter | `method`, `status` | Total API requests |
+| `lattice_api_request_duration_seconds` | histogram | `method` | Request latency |
+| `lattice_api_active_streams` | gauge | `stream_type` (attach/logs/metrics) | Active streaming connections |
+
+### Node Agent Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `lattice_agent_heartbeat_latency_seconds` | histogram | `node_id` | Heartbeat round-trip time |
+| `lattice_agent_allocation_startup_seconds` | histogram | `node_id` | Time from allocation assignment to process start (includes uenv pull/mount) |
+| `lattice_agent_ebpf_overhead_percent` | gauge | `node_id` | Measured eBPF collection overhead |
+
+### Accounting Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `lattice_accounting_events_buffered` | gauge | — | Events in the in-memory accounting buffer |
+| `lattice_accounting_events_dropped_total` | counter | — | Events dropped due to buffer overflow |
+
+### Alerting Rules
+
+Example alerting rules (PromQL-compatible):
+
+| Rule | Condition | Severity |
+|------|-----------|----------|
+| Scheduling cycle slow | `histogram_quantile(0.99, lattice_scheduling_cycle_duration_seconds) > 30` | warning |
+| Queue depth high | `lattice_scheduling_queue_depth > 100` for 5 minutes | warning |
+| Raft commit slow | `histogram_quantile(0.99, lattice_raft_commit_latency_seconds) > 5` | critical |
+| Node heartbeat missing | `time() - lattice_agent_last_heartbeat_timestamp > 60` | node degraded |
+| API error rate spike | `rate(lattice_api_requests_total{status=~"5.."}[5m]) / rate(lattice_api_requests_total[5m]) > 0.05` | warning |
+| Accounting buffer filling | `lattice_accounting_events_buffered > 8000` | warning |
+
+### Dashboard Views
+
+Three views matching the existing telemetry pattern:
+
+| Dashboard | Audience | Key Panels |
+|-----------|----------|------------|
+| Holistic | System admins | All scheduler cycle times, quorum health, total queue depth, API throughput |
+| Per-vCluster | Scheduler operators | vCluster-specific queue depth, cycle time, proposal accept rate, backfill rate |
+| Per-quorum-member | Quorum operators | Raft log size, commit latency, leader status, snapshot timing |

@@ -7,7 +7,7 @@ Read this first, then consult docs/architecture/ and docs/decisions/ for details
 
 A distributed workload scheduler that sits between Slurm (HPC batch) and Kubernetes (cloud services). It schedules both finite jobs (training runs, simulations) and infinite jobs (inference services, monitoring) on a shared HPC infrastructure with:
 - Slingshot/Ultra Ethernet interconnect
-- GPU-accelerated nodes (NVIDIA GH200 etc.)
+- GPU-accelerated nodes (NVIDIA GH200, AMD MI300X, etc.)
 - VAST-like tiered storage (NFS + S3)
 - OpenCHAMI infrastructure management (Redfish BMC)
 - uenv software delivery (SquashFS mount namespaces)
@@ -46,6 +46,7 @@ Weights are tunable per vCluster. Use RM-Replay simulator to test weight changes
   - Has resources, constraints, dependencies, network domain, uenv
 - **vCluster**: A view/projection of resources with its own scheduler policy
 - **Task Group**: Equivalent of Slurm job arrays
+- **DAG**: Directed acyclic graph of allocations with dependency edges (Slurm-compatible: afterok, afternotok, afterany, aftercorr)
 - **Network Domain**: Allocations sharing a domain get L3 reachability (Slingshot VNI)
 - **Tenant**: Organizational boundary (quotas, isolation, audit)
 
@@ -130,6 +131,11 @@ All major decisions are recorded as ADRs in docs/decisions/. Key ones:
 - ADR-005: Federation as opt-in via Sovra
 - ADR-006: Rust for scheduler core
 - ADR-007: Full-node scheduling with intra-node packing
+- ADR-008: Asynchronous accounting via Waldur
+- ADR-009: Two-tier quota enforcement
+
+### Architecture Docs (docs/architecture/)
+Detailed design documents: system-architecture, api-design, scheduling-algorithm, telemetry, observability, sensitive-workloads, checkpoint-broker, conformance, failure-modes, security, upgrades, gpu-topology, quota-enforcement, dag-scheduling, autoscaling, accounting.
 
 ## Coding Conventions
 
@@ -152,6 +158,7 @@ All major decisions are recorded as ADRs in docs/decisions/. Key ones:
 | Sarus | OCI container runtime | C++, existing, used by node agent |
 | libfabric | Network abstraction | C, Slingshot/UE interface |
 | VAST API | Storage integration | REST API calls from scheduler |
+| Waldur | External accounting & billing | REST API, optional, pluggable |
 
 ## What NOT to Do
 

@@ -34,13 +34,13 @@ f₂(j) = log(1 + wait_seconds / reference_wait)
 ```
 `reference_wait` is tunable (default: 1 hour). Log prevents wait time from dominating all other factors.
 
-**f₃: fair_share_deficit(j)** — How far the tenant is from their contracted share.
+**f₃: fair_share_deficit(j)** — How far the tenant is from their contracted share. See [quota-enforcement.md](quota-enforcement.md) for hard vs. soft quota semantics.
 ```
 f₃(j) = max(0, target_share(tenant) - actual_usage(tenant)) / target_share(tenant)
 ```
 Ranges from 0 (tenant at or above share) to 1 (tenant has used nothing). Tenants below their share get priority.
 
-**f₄: topology_fitness(j)** — How well the job fits available topology.
+**f₄: topology_fitness(j)** — How well the job fits available topology. For intra-node GPU topology, see [gpu-topology.md](gpu-topology.md).
 ```
 f₄(j) = 1.0 - (groups_needed(j) / max_groups_available)
 ```
@@ -118,6 +118,14 @@ Algorithm: GreedyTopologyAwareBackfill
 
 Scheduling cycle: every 5-30 seconds (configurable per vCluster)
 ```
+
+### DAG Dependencies
+
+DAGs (directed acyclic graphs) are first-class workflow primitives. Individual allocations within a DAG are scored by the knapsack solver like any other allocation — the DAG structure controls when allocations enter the queue, not how they are scored. Root allocations enter immediately; downstream allocations enter when their dependency conditions are satisfied. See [dag-scheduling.md](dag-scheduling.md) for the full DAG lifecycle and dependency conditions.
+
+### Reactive Scaling
+
+Reactive allocations (autoscaling services) start at `min_nodes` and scale based on metric thresholds. Scale-up and scale-down are proposed as node ownership changes through the quorum. The knapsack solver handles each scale proposal as a regular allocation change. See [autoscaling.md](autoscaling.md) for the scaling loop, metrics, and cooldown behavior.
 
 ### Elastic Resource Sharing
 
