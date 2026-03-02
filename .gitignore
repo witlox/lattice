@@ -1,6 +1,12 @@
 # Rust
-/target/
+**/target/
 **/*.rs.bk
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
 
 # Docker
 .docker/

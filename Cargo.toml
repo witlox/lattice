@@ -28,7 +28,7 @@ prost = "0.13"
 tonic-build = "0.12"
 
 # Raft consensus
-openraft = "0.10.0-alpha.14"
+openraft = { version = "0.10.0-alpha.14", features = ["serde"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -19,7 +19,11 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 openraft = { workspace = true }
 async-trait = { workspace = true }
+tokio-stream = "0.1"
 futures = "0.3"
+
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

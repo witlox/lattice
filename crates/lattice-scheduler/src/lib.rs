@@ -10,22 +10,39 @@
 //! - DAG validation and dependency resolution
 //! - Soft quota signaling for fair-share
 
+pub mod autoscaler;
+pub mod borrowing;
 pub mod conformance;
 pub mod cost;
 pub mod cycle;
 pub mod dag;
+pub mod dag_controller;
+pub mod data_staging;
+pub mod federation;
 pub mod knapsack;
+pub mod loop_runner;
 pub mod placement;
 pub mod preemption;
 pub mod quota;
 pub mod schedulers;
 pub mod topology;
+pub mod walltime;
 
+pub use autoscaler::{Autoscaler, AutoscalerConfig, ScaleDecision};
+pub use borrowing::{BorrowRequest, BorrowResult, BorrowingBroker, BorrowingConfig};
 pub use conformance::{conformance_fitness, filter_by_constraints};
 pub use cost::{CostContext, CostEvaluator};
 pub use cycle::{run_cycle, CycleInput};
 pub use dag::{validate_dag, Dag, DagError};
+pub use dag_controller::{DagCommandSink, DagController, DagControllerConfig, DagStateReader};
+pub use data_staging::{DataStager, StagingPlan, StagingRequest};
+pub use federation::{FederationBroker, FederationConfig, FederationOffer, OfferDecision};
 pub use knapsack::KnapsackSolver;
+pub use loop_runner::{
+    SchedulerCommandSink, SchedulerLoop, SchedulerLoopConfig, SchedulerStateReader,
+    TraitCommandSink, TraitStateReader,
+};
 pub use placement::{PlacementDecision, SchedulingResult};
 pub use preemption::{evaluate_preemption, PreemptionConfig, PreemptionResult};
 pub use schedulers::create_scheduler;
+pub use walltime::{ExpiryPhase, WalltimeEnforcer, WalltimeExpiry};

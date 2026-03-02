@@ -20,6 +20,16 @@ pub mod global_state;
 pub mod network;
 pub mod state_machine;
 pub mod store;
+pub mod transport;
+pub mod transport_server;
+
+/// Generated protobuf types for the Raft transport service.
+pub mod proto {
+    pub mod raft {
+        tonic::include_proto!("lattice.v1.raft");
+    }
+    pub use raft::*;
+}
 
 use std::io::Cursor;
 
@@ -44,6 +54,8 @@ pub use global_state::GlobalState;
 pub use network::MemNetworkFactory;
 pub use state_machine::LatticeStateMachine;
 pub use store::MemLogStore;
+pub use transport::GrpcNetworkFactory;
+pub use transport_server::RaftTransportServer;
 
 /// Create a single-node quorum for testing.
 ///
@@ -81,6 +93,94 @@ pub async fn create_test_quorum() -> Result<QuorumClient, anyhow::Error> {
         .await?;
 
     Ok(QuorumClient::new(raft, state))
+}
+
+/// Create a multi-node gRPC-based quorum for testing.
+///
+/// Starts real tonic servers on localhost with random ports and connects nodes
+/// via `GrpcNetworkFactory`. Returns `(Vec<QuorumClient>, Vec<JoinHandle>)`.
+/// The join handles are the server tasks (drop to shut down).
+pub async fn create_test_grpc_cluster(
+    node_count: u64,
+) -> Result<
+    (
+        Vec<QuorumClient>,
+        Vec<tokio::task::JoinHandle<()>>,
+        Vec<String>,
+    ),
+    anyhow::Error,
+> {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    // Bind listeners first to get assigned ports
+    let mut listeners = Vec::new();
+    let mut addresses = Vec::new();
+    for _ in 0..node_count {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        addresses.push(addr.to_string());
+        listeners.push(listener);
+    }
+
+    let network_factory = GrpcNetworkFactory::new();
+    let mut members = BTreeMap::new();
+    let mut clients = Vec::new();
+    let mut server_handles = Vec::new();
+
+    for (i, addr) in addresses.iter().enumerate() {
+        let id = (i + 1) as u64;
+        members.insert(id, openraft::impls::BasicNode::new(addr.clone()));
+        network_factory.register(id, addr.clone()).await;
+    }
+
+    for (i, listener) in listeners.into_iter().enumerate() {
+        let id = (i + 1) as u64;
+        let state = Arc::new(RwLock::new(GlobalState::new()));
+        let config = Arc::new(
+            openraft::Config {
+                heartbeat_interval: 200,
+                election_timeout_min: 500,
+                election_timeout_max: 1000,
+                ..Default::default()
+            }
+            .validate()?,
+        );
+
+        let log_store = MemLogStore::new();
+        let sm = LatticeStateMachine::new(Arc::clone(&state));
+
+        let raft = openraft::Raft::new(id, config, network_factory.clone(), log_store, sm).await?;
+
+        // Start tonic server
+        let server = RaftTransportServer::new(raft.clone());
+        let handle = tokio::spawn(async move {
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            let _ = tonic::transport::Server::builder()
+                .add_service(proto::raft_service_server::RaftServiceServer::new(server))
+                .serve_with_incoming(incoming)
+                .await;
+        });
+        server_handles.push(handle);
+
+        clients.push(QuorumClient::new(raft, state));
+    }
+
+    // Give servers time to start
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Initialize from first node
+    clients[0].raft().initialize(members).await?;
+
+    // Wait for leader election
+    clients[0]
+        .raft()
+        .wait(None)
+        .metrics(|m| m.current_leader.is_some(), "leader elected")
+        .await?;
+
+    Ok((clients, server_handles, addresses))
 }
 
 /// Create a multi-node quorum for testing.
@@ -213,6 +313,60 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].action, AuditAction::NodeClaim);
+    }
+
+    #[tokio::test]
+    async fn grpc_three_node_cluster_leader_election() {
+        let (clients, handles, _addrs) = create_test_grpc_cluster(3).await.unwrap();
+
+        // Verify leader elected (already waited during cluster creation)
+        // Write a value to prove the cluster is functional
+        let node = NodeBuilder::new().id("grpc-test-node").build();
+        clients[0]
+            .propose(commands::Command::RegisterNode(node))
+            .await
+            .unwrap();
+
+        let got = clients[0]
+            .get_node(&"grpc-test-node".to_string())
+            .await
+            .unwrap();
+        assert_eq!(got.id, "grpc-test-node");
+
+        for h in handles {
+            h.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn grpc_three_node_cluster_log_replication() {
+        let (clients, handles, _addrs) = create_test_grpc_cluster(3).await.unwrap();
+
+        // Write through leader
+        let alloc = AllocationBuilder::new().build();
+        let id = alloc.id;
+        clients[0].insert(alloc).await.unwrap();
+
+        // Give time for replication
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Read from leader's state
+        let got = clients[0].get(&id).await.unwrap();
+        assert_eq!(got.id, id);
+        assert_eq!(got.state, AllocationState::Pending);
+
+        // Verify state replicated to followers
+        for client in &clients[1..] {
+            let state = client.state().read().await;
+            assert!(
+                state.allocations.contains_key(&id),
+                "Allocation should be replicated to all nodes"
+            );
+        }
+
+        for h in handles {
+            h.abort();
+        }
     }
 
     #[tokio::test]

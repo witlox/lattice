@@ -11,9 +11,20 @@ use lattice_test_harness::fixtures::*;
 use lattice_test_harness::mocks::*;
 
 use lattice_node_agent::agent::{AgentCommand, NodeAgent};
+use lattice_node_agent::epilogue::{
+    EpilogueConfig, EpiloguePipeline, EpilogueResult, NoopEpilogueReporter, NoopMedicalWiper,
+};
 use lattice_node_agent::health::ObservedHealth;
 use lattice_node_agent::heartbeat::Heartbeat;
+use lattice_node_agent::image_cache::ImageCache;
+use lattice_node_agent::prologue::{NoopReporter, ProloguePipeline, PrologueResult};
+use lattice_node_agent::runtime::{ExitStatus, MockRuntime, PrepareConfig, Runtime};
+use lattice_node_agent::telemetry::log_buffer::LogRingBuffer;
 
+use lattice_scheduler::dag::validate_dag;
+use lattice_scheduler::federation::{
+    FederationBroker, FederationConfig, FederationOffer, OfferDecision,
+};
 use lattice_scheduler::placement::PlacementDecision;
 
 #[derive(Debug, World)]
@@ -35,6 +46,16 @@ pub struct LatticeWorld {
     agent: Option<NodeAgent>,
     agent_alloc_id: Option<Uuid>,
     should_checkpoint: Option<bool>,
+    // Prologue/epilogue fields
+    prologue_result: Option<PrologueResult>,
+    epilogue_result: Option<EpilogueResult>,
+    image_cache: Option<ImageCache>,
+    // Federation fields
+    federation_broker: Option<FederationBroker>,
+    federation_total_nodes: u32,
+    federation_idle_nodes: u32,
+    federation_decision: Option<OfferDecision>,
+    // DAG validation
 }
 
 impl LatticeWorld {
@@ -54,6 +75,13 @@ impl LatticeWorld {
             agent: None,
             agent_alloc_id: None,
             should_checkpoint: None,
+            prologue_result: None,
+            epilogue_result: None,
+            image_cache: None,
+            federation_broker: None,
+            federation_total_nodes: 0,
+            federation_idle_nodes: 0,
+            federation_decision: None,
         }
     }
 
@@ -880,6 +908,401 @@ async fn should_not_be_checkpointed(world: &mut LatticeWorld) {
         !world.should_checkpoint.unwrap_or(true),
         "Expected checkpoint NOT to be triggered"
     );
+}
+
+// ═══════════════════════════════════════════════════════════
+// Prologue / Epilogue steps
+// ═══════════════════════════════════════════════════════════
+
+#[given(regex = r#"^a pre-cached image "([^"]+)"$"#)]
+async fn given_pre_cached_image(world: &mut LatticeWorld, image_ref: String) {
+    let cache = world
+        .image_cache
+        .get_or_insert_with(|| ImageCache::new(10 * 1024 * 1024 * 1024));
+    cache.insert(image_ref, 2 * 1024 * 1024 * 1024);
+}
+
+#[when("I run the prologue for an allocation")]
+async fn run_prologue(world: &mut LatticeWorld) {
+    let pipeline = ProloguePipeline::default();
+    let runtime = MockRuntime::new();
+    let mut cache = world
+        .image_cache
+        .take()
+        .unwrap_or_else(|| ImageCache::new(10 * 1024 * 1024 * 1024));
+
+    let alloc_id = Uuid::new_v4();
+    let config = PrepareConfig {
+        alloc_id,
+        uenv: Some("prgenv-gnu/24.11:v1".to_string()),
+        view: Some("default".to_string()),
+        image: None,
+        workdir: None,
+        env_vars: vec![],
+    };
+
+    let result = pipeline
+        .execute(alloc_id, &config, &runtime, &mut cache, &NoopReporter)
+        .await
+        .unwrap();
+
+    world.prologue_result = Some(result);
+    world.image_cache = Some(cache);
+}
+
+#[when("I run the medical epilogue for an allocation")]
+async fn run_medical_epilogue(world: &mut LatticeWorld) {
+    let alloc_id = Uuid::new_v4();
+    let runtime = MockRuntime::new();
+    // Prepare the runtime so cleanup works
+    let prep = PrepareConfig {
+        alloc_id,
+        uenv: None,
+        view: None,
+        image: None,
+        workdir: None,
+        env_vars: vec![],
+    };
+    runtime.prepare(&prep).await.unwrap();
+
+    let log_buf = LogRingBuffer::with_capacity(1024);
+    let pipeline = EpiloguePipeline::new(EpilogueConfig {
+        log_bucket: "medical-logs".to_string(),
+        medical_wipe: true,
+    });
+
+    let result = pipeline
+        .execute(
+            alloc_id,
+            ExitStatus::Code(0),
+            &runtime,
+            &log_buf,
+            None,
+            &NoopMedicalWiper,
+            &NoopEpilogueReporter,
+        )
+        .await
+        .unwrap();
+
+    world.epilogue_result = Some(result);
+}
+
+#[when("I run the standard epilogue for an allocation")]
+async fn run_standard_epilogue(world: &mut LatticeWorld) {
+    let alloc_id = Uuid::new_v4();
+    let runtime = MockRuntime::new();
+    let prep = PrepareConfig {
+        alloc_id,
+        uenv: None,
+        view: None,
+        image: None,
+        workdir: None,
+        env_vars: vec![],
+    };
+    runtime.prepare(&prep).await.unwrap();
+
+    let log_buf = LogRingBuffer::with_capacity(1024);
+    let pipeline = EpiloguePipeline::default(); // medical_wipe: false
+
+    let result = pipeline
+        .execute(
+            alloc_id,
+            ExitStatus::Code(0),
+            &runtime,
+            &log_buf,
+            None,
+            &NoopMedicalWiper,
+            &NoopEpilogueReporter,
+        )
+        .await
+        .unwrap();
+
+    world.epilogue_result = Some(result);
+}
+
+#[then("the prologue should report a cache hit")]
+async fn prologue_cache_hit(world: &mut LatticeWorld) {
+    let result = world.prologue_result.as_ref().expect("no prologue result");
+    assert!(result.cache_hit, "Expected prologue cache hit");
+}
+
+#[then("the prologue should report a cache miss")]
+async fn prologue_cache_miss(world: &mut LatticeWorld) {
+    let result = world.prologue_result.as_ref().expect("no prologue result");
+    assert!(!result.cache_hit, "Expected prologue cache miss");
+}
+
+#[then("the runtime should have been prepared")]
+async fn runtime_prepared(world: &mut LatticeWorld) {
+    // If prologue succeeded, the runtime was prepared
+    assert!(
+        world.prologue_result.is_some(),
+        "Prologue should have completed successfully"
+    );
+}
+
+#[then("the medical wipe should have been triggered")]
+async fn medical_wipe_triggered(world: &mut LatticeWorld) {
+    let result = world.epilogue_result.as_ref().expect("no epilogue result");
+    // Note: NoopMedicalWiper always succeeds, so medical_wiped is true when config.medical_wipe=true
+    assert!(
+        result.medical_wiped,
+        "Expected medical wipe to have been triggered"
+    );
+}
+
+#[then("the medical wipe should not have been triggered")]
+async fn medical_wipe_not_triggered(world: &mut LatticeWorld) {
+    let result = world.epilogue_result.as_ref().expect("no epilogue result");
+    assert!(
+        !result.medical_wiped,
+        "Expected medical wipe NOT to have been triggered"
+    );
+}
+
+#[then("the epilogue cleanup should have completed")]
+async fn epilogue_cleanup_done(world: &mut LatticeWorld) {
+    let result = world.epilogue_result.as_ref().expect("no epilogue result");
+    assert!(
+        result.cleaned_up,
+        "Expected epilogue cleanup to have completed"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// DAG validation and execution steps
+// ═══════════════════════════════════════════════════════════
+
+#[then("the DAG should fail validation with a cycle error")]
+async fn dag_cycle_error(world: &mut LatticeWorld) {
+    // Build allocations with proper UUID-based cross-references for cycle detection.
+    // The named_allocations use human-readable ref_ids (e.g. "stepA") which don't match
+    // UUID-based allocation IDs. Rebuild with UUID-to-UUID references.
+    let mut allocs: Vec<Allocation> = world.named_allocations.values().cloned().collect();
+    let name_to_id: HashMap<String, String> = world
+        .named_allocations
+        .iter()
+        .map(|(name, alloc)| (name.clone(), alloc.id.to_string()))
+        .collect();
+
+    // Rewrite depends_on ref_ids from human names to UUID strings
+    for alloc in &mut allocs {
+        for dep in &mut alloc.depends_on {
+            if let Some(uuid_str) = name_to_id.get(&dep.ref_id) {
+                dep.ref_id = uuid_str.clone();
+            }
+        }
+    }
+
+    let result = validate_dag(&allocs, 100);
+    assert!(result.is_err(), "Expected DAG validation to fail");
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("cycle"),
+        "Expected cycle error, got: {err}"
+    );
+}
+
+#[when("the scheduler runs a DAG cycle")]
+async fn scheduler_runs_dag_cycle(world: &mut LatticeWorld) {
+    use lattice_scheduler::cycle::{run_cycle, CycleInput};
+
+    // Move named allocations into the main allocations list for scheduling
+    let mut all_allocs: Vec<Allocation> = Vec::new();
+    for (name, alloc) in &world.named_allocations {
+        let mut a = alloc.clone();
+        a.tags.insert("dag_stage".to_string(), name.clone());
+        all_allocs.push(a);
+    }
+
+    // Only schedule allocations with no unmet dependencies
+    let pending: Vec<Allocation> = all_allocs
+        .iter()
+        .filter(|a| a.state == AllocationState::Pending && a.depends_on.is_empty())
+        .cloned()
+        .collect();
+
+    let weights = world
+        .vclusters
+        .first()
+        .map(|vc| vc.cost_weights.clone())
+        .unwrap_or_default();
+
+    let input = CycleInput {
+        pending,
+        running: Vec::new(),
+        nodes: world.nodes.clone(),
+        tenants: world.tenants.clone(),
+        topology: create_test_topology(1, world.nodes.len()),
+        data_readiness: HashMap::new(),
+        energy_price: 0.5,
+    };
+
+    let result = run_cycle(&input, &weights);
+
+    // Apply placements back to named_allocations
+    for decision in &result.decisions {
+        if let PlacementDecision::Place {
+            allocation_id,
+            nodes,
+        } = decision
+        {
+            for (_, alloc) in world.named_allocations.iter_mut() {
+                if alloc.id == *allocation_id {
+                    alloc.state = AllocationState::Running;
+                    alloc.assigned_nodes = nodes.clone();
+                }
+            }
+        }
+    }
+}
+
+#[then(regex = r#"^"(\w[\w-]*)" should be "(\w+)"$"#)]
+async fn named_alloc_state(world: &mut LatticeWorld, name: String, expected: String) {
+    let expected_state = parse_allocation_state(&expected);
+    let alloc = world
+        .named_allocations
+        .get(&name)
+        .unwrap_or_else(|| panic!("allocation '{name}' not found"));
+    assert_eq!(
+        alloc.state, expected_state,
+        "'{name}' should be {expected}, got {:?}",
+        alloc.state
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// Federation steps
+// ═══════════════════════════════════════════════════════════
+
+#[given(regex = r#"^a federation broker for site "([^"]+)"$"#)]
+async fn given_federation_broker(world: &mut LatticeWorld, site_id: String) {
+    let config = FederationConfig {
+        site_id,
+        max_federation_pct: 0.2,
+        accept_medical: false,
+        trusted_sites: Vec::new(),
+    };
+    world.federation_broker = Some(FederationBroker::new(config));
+}
+
+#[given(regex = r#"^trusted sites "([^"]+)"$"#)]
+async fn given_trusted_sites(world: &mut LatticeWorld, sites_str: String) {
+    let sites: Vec<String> = sites_str.split(',').map(|s| s.trim().to_string()).collect();
+    let old = world
+        .federation_broker
+        .take()
+        .expect("no federation broker");
+    // Rebuild with trusted sites
+    let site_id = "site-a".to_string(); // default from prior step
+    let config = FederationConfig {
+        site_id,
+        max_federation_pct: 0.2,
+        accept_medical: false,
+        trusted_sites: sites,
+    };
+    drop(old);
+    world.federation_broker = Some(FederationBroker::new(config));
+}
+
+#[given(regex = r#"^(\d+) total nodes with (\d+) idle$"#)]
+async fn given_node_counts(world: &mut LatticeWorld, total: u32, idle: u32) {
+    world.federation_total_nodes = total;
+    world.federation_idle_nodes = idle;
+}
+
+#[when(regex = r#"^site "([^"]+)" offers (\d+) nodes for a non-medical workload$"#)]
+async fn site_offers_non_medical(world: &mut LatticeWorld, source: String, nodes: u32) {
+    let offer = FederationOffer {
+        source_site: source,
+        allocation_id: Uuid::new_v4(),
+        tenant_id: "remote-tenant".to_string(),
+        node_count: nodes,
+        medical: false,
+        data_locations: vec![],
+        offered_at: chrono::Utc::now(),
+        ttl_secs: 300,
+    };
+    let broker = world
+        .federation_broker
+        .as_ref()
+        .expect("no federation broker");
+    let decision = broker.evaluate_offer(
+        &offer,
+        world.federation_idle_nodes,
+        world.federation_total_nodes,
+    );
+    world.federation_decision = Some(decision);
+}
+
+#[when(regex = r#"^site "([^"]+)" offers (\d+) nodes for a medical workload$"#)]
+async fn site_offers_medical(world: &mut LatticeWorld, source: String, nodes: u32) {
+    let offer = FederationOffer {
+        source_site: source,
+        allocation_id: Uuid::new_v4(),
+        tenant_id: "remote-tenant".to_string(),
+        node_count: nodes,
+        medical: true,
+        data_locations: vec![],
+        offered_at: chrono::Utc::now(),
+        ttl_secs: 300,
+    };
+    let broker = world
+        .federation_broker
+        .as_ref()
+        .expect("no federation broker");
+    let decision = broker.evaluate_offer(
+        &offer,
+        world.federation_idle_nodes,
+        world.federation_total_nodes,
+    );
+    world.federation_decision = Some(decision);
+}
+
+#[then("the offer should be accepted")]
+async fn offer_accepted(world: &mut LatticeWorld) {
+    let decision = world
+        .federation_decision
+        .as_ref()
+        .expect("no federation decision");
+    assert!(
+        matches!(decision, OfferDecision::Accept { .. }),
+        "Expected offer to be accepted, got {decision:?}"
+    );
+}
+
+#[then(regex = r#"^the accepted nodes should be prefixed with "([^"]+)"$"#)]
+async fn accepted_nodes_prefixed(world: &mut LatticeWorld, prefix: String) {
+    let decision = world
+        .federation_decision
+        .as_ref()
+        .expect("no federation decision");
+    if let OfferDecision::Accept { nodes } = decision {
+        for node in nodes {
+            assert!(
+                node.starts_with(&prefix),
+                "Node '{node}' should start with '{prefix}'"
+            );
+        }
+    } else {
+        panic!("Expected accept decision");
+    }
+}
+
+#[then(regex = r#"^the offer should be rejected with reason "([^"]+)"$"#)]
+async fn offer_rejected_with_reason(world: &mut LatticeWorld, keyword: String) {
+    let decision = world
+        .federation_decision
+        .as_ref()
+        .expect("no federation decision");
+    if let OfferDecision::Reject { reason } = decision {
+        assert!(
+            reason.to_lowercase().contains(&keyword.to_lowercase()),
+            "Expected rejection reason to contain '{keyword}', got: '{reason}'"
+        );
+    } else {
+        panic!("Expected reject decision, got {decision:?}");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════

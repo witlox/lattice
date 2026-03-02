@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use tracing::{debug, info, warn};
 
 use lattice_common::traits::NodeRegistry;
 use lattice_common::types::{AllocId, NodeCapabilities, NodeId, NodeState};
@@ -17,6 +18,7 @@ use crate::checkpoint_handler::CheckpointHandler;
 use crate::conformance::{compute_fingerprint, ConformanceComponents};
 use crate::health::{HealthChecker, HealthStatus, ObservedHealth};
 use crate::heartbeat::{Heartbeat, HeartbeatGenerator};
+use crate::heartbeat_loop::{HealthObserver, HeartbeatLoop, HeartbeatSink};
 use crate::network::VniManager;
 use crate::telemetry::{TelemetryCollector, TelemetryMode};
 
@@ -224,6 +226,79 @@ impl NodeAgent {
         // replayed to the quorum. For now, we just clear the buffer.
         self.buffered_updates.clear();
     }
+
+    /// Run the agent: spawn the heartbeat loop and listen for commands.
+    ///
+    /// * `sink` — where heartbeat payloads are delivered (e.g. gRPC client)
+    /// * `observer` — source of health observations
+    /// * `interval` — time between heartbeats
+    /// * `cancel_rx` — watch channel; set to `true` to shut down
+    /// * `cmd_rx` — channel of incoming `AgentCommand`s
+    ///
+    /// The method runs until the cancel signal fires.
+    pub async fn run<S, H>(
+        &mut self,
+        sink: S,
+        observer: H,
+        interval: std::time::Duration,
+        cancel_rx: tokio::sync::watch::Receiver<bool>,
+        mut cmd_rx: tokio::sync::mpsc::Receiver<AgentCommand>,
+    ) where
+        S: HeartbeatSink + 'static,
+        H: HealthObserver + 'static,
+    {
+        let mut heartbeat_loop = HeartbeatLoop::new(
+            self.node_id.clone(),
+            sink,
+            observer,
+            interval,
+            cancel_rx.clone(),
+        );
+
+        // Share allocation count with the heartbeat loop so it stays current.
+        let alloc_count = heartbeat_loop.allocation_count_handle();
+        let conformance = heartbeat_loop.conformance_handle();
+
+        // If we already have a conformance fingerprint, propagate it.
+        if let Some(fp) = &self.conformance_fingerprint {
+            *conformance.write().await = Some(fp.clone());
+        }
+
+        info!(node_id = %self.node_id, "agent run loop started");
+
+        // Spawn the heartbeat loop in a background task.
+        let hb_handle = tokio::spawn(async move {
+            heartbeat_loop.run().await;
+        });
+
+        // Main command processing loop.
+        let mut cancel_rx_cmd = cancel_rx;
+        loop {
+            tokio::select! {
+                Some(cmd) = cmd_rx.recv() => {
+                    debug!(?cmd, "received agent command");
+                    if let Err(e) = self.handle_command(cmd).await {
+                        warn!(error = %e, "command handler error");
+                    }
+                    // Keep the heartbeat loop's allocation count in sync.
+                    alloc_count.store(
+                        self.allocations.active_count(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+                result = cancel_rx_cmd.changed() => {
+                    if result.is_err() || *cancel_rx_cmd.borrow() {
+                        info!("agent shutting down");
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Wait for the heartbeat loop to finish (it watches the same cancel signal).
+        let _ = hb_handle.await;
+        info!(node_id = %self.node_id, "agent run loop stopped");
+    }
 }
 
 #[cfg(test)]
@@ -419,5 +494,92 @@ mod tests {
         let hb = agent.generate_heartbeat(&observed);
         assert!(!hb.healthy);
         assert!(!hb.issues.is_empty());
+    }
+
+    // ── Tests for the `run()` method ──────────────────────────
+
+    use crate::heartbeat::Heartbeat;
+    use crate::heartbeat_loop::StaticHealthObserver;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// Mock sink that records heartbeats for assertion.
+    struct RecordingSink {
+        heartbeats: Arc<Mutex<Vec<Heartbeat>>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> (Self, Arc<Mutex<Vec<Heartbeat>>>) {
+            let store = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    heartbeats: store.clone(),
+                },
+                store,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HeartbeatSink for RecordingSink {
+        async fn send(&self, heartbeat: Heartbeat) -> Result<(), String> {
+            self.heartbeats.lock().unwrap().push(heartbeat);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_run_sends_heartbeats_and_processes_commands() {
+        let mut agent = test_agent();
+        let (sink, store) = RecordingSink::new();
+        let observer = StaticHealthObserver::new(healthy_observed());
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(16);
+
+        // Send a start command after a short delay, then cancel.
+        let alloc_id = uuid::Uuid::new_v4();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            cmd_tx
+                .send(AgentCommand::StartAllocation {
+                    id: alloc_id,
+                    entrypoint: "train.py".to_string(),
+                })
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = cancel_tx.send(true);
+        });
+
+        agent
+            .run(sink, observer, Duration::from_millis(15), cancel_rx, cmd_rx)
+            .await;
+
+        // Heartbeats should have been sent.
+        let hbs = store.lock().unwrap();
+        assert!(!hbs.is_empty(), "expected heartbeats to be sent");
+
+        // The start command should have been processed.
+        assert_eq!(agent.active_allocation_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_run_stops_on_cancel() {
+        let mut agent = test_agent();
+        let (sink, _store) = RecordingSink::new();
+        let observer = StaticHealthObserver::new(healthy_observed());
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(16);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let _ = cancel_tx.send(true);
+        });
+
+        agent
+            .run(sink, observer, Duration::from_millis(10), cancel_rx, cmd_rx)
+            .await;
+
+        // If we get here, the loop exited cleanly.
     }
 }

@@ -11,11 +11,13 @@
 
 pub mod broker;
 pub mod cost_model;
+pub mod loop_runner;
 pub mod policy;
 pub mod protocol;
 
 pub use broker::LatticeCheckpointBroker;
 pub use cost_model::{evaluate_checkpoint, CheckpointEvaluation, CheckpointParams};
+pub use loop_runner::CheckpointLoop;
 pub use policy::{evaluate_policy, CheckpointPolicy};
 pub use protocol::{
     checkpoint_destination, CheckpointDestination, CheckpointProtocol, CheckpointRequest,

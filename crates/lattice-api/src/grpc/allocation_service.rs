@@ -493,6 +493,8 @@ mod tests {
             nodes: Arc::new(MockNodeRegistry::new()),
             audit: Arc::new(MockAuditLog::new()),
             checkpoint: Arc::new(MockCheckpointBroker::new()),
+            quorum: None,
+            events: crate::events::new_event_bus(),
         })
     }
 

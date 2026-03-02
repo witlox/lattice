@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package lattice.v1;
+
+option go_package = "github.com/lattice-scheduler/lattice/gen/go/lattice/v1";
+
+import "google/protobuf/timestamp.proto";
+import "lattice/v1/allocations.proto";
+
+// ─── Node Agent Service ─────────────────────────────────────
+//
+// Internal service running on each compute node. The control plane
+// (API server / quorum) calls these RPCs to manage allocations,
+// forward attach sessions, and stream logs from the node agent.
+
+service NodeAgentService {
+  // Start an allocation on this node (prologue + run).
+  rpc RunAllocation(RunAllocationRequest) returns (RunAllocationResponse);
+
+  // Stop a running allocation on this node.
+  rpc StopAllocation(StopAllocationRequest) returns (StopAllocationResponse);
+
+  // Attach an interactive terminal to a running allocation (bidirectional streaming).
+  // The first message MUST be an AttachInput with the `start` field set.
+  rpc Attach(stream AttachInput) returns (stream AttachOutput);
+
+  // Stream logs from a running allocation on this node (server streaming).
+  rpc StreamLogs(LogStreamRequest) returns (stream LogEntry);
+}
+
+// ─── RunAllocation ──────────────────────────────────────────
+
+message RunAllocationRequest {
+  string allocation_id = 1;
+  string entrypoint = 2;
+  // Environment configuration (uenv, OCI image, etc.)
+  string uenv = 3;
+  string image = 4;
+  // Resource limits for this node's share
+  uint32 gpu_count = 10;
+  uint32 cpu_cores = 11;
+  uint64 memory_bytes = 12;
+}
+
+message RunAllocationResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// ─── StopAllocation ─────────────────────────────────────────
+
+message StopAllocationRequest {
+  string allocation_id = 1;
+  // Grace period before SIGKILL (0 = immediate)
+  uint32 grace_period_seconds = 2;
+  string reason = 3;
+}
+
+message StopAllocationResponse {
+  bool success = 1;
+  string message = 2;
+}

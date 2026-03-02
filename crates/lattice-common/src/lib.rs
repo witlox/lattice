@@ -9,10 +9,12 @@
 //! - **VCluster**: Logical cluster with its own scheduling policy
 //! - **TopologyModel**: Slingshot/UE dragonfly group structure
 
+pub mod clients;
 pub mod config;
 pub mod error;
 pub mod proto;
 pub mod traits;
+pub mod tsdb_client;
 pub mod types;
 
 pub use error::LatticeError;

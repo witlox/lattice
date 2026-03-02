@@ -5,6 +5,16 @@
 //! - Production: 30s bicubic aggregation
 //! - Debug: 1s raw samples
 //! - Audit: access logs + metrics
+//!
+//! Submodules:
+//! - [`log_buffer`]: Per-allocation log ring buffer with S3 flush support.
+//! - [`ebpf_stubs`]: Stub interfaces for eBPF-based telemetry collectors.
+
+pub mod ebpf_stubs;
+pub mod log_buffer;
+
+pub use ebpf_stubs::{EbpfCollector, EbpfEvent, StubEbpfCollector};
+pub use log_buffer::{LogRingBuffer, S3Sink};
 
 use std::collections::VecDeque;
 

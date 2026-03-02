@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "lattice-server"
+path = "src/main.rs"
+
 [dependencies]
 lattice-common = { path = "../lattice-common" }
+lattice-quorum = { path = "../lattice-quorum" }
+lattice-test-harness = { path = "../lattice-test-harness" }
 tokio = { workspace = true }
 tokio-stream = "0.1"
 tonic = { workspace = true }
@@ -22,6 +28,7 @@ chrono = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
 tower = "0.5"
+clap = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

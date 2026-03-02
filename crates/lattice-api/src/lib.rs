@@ -10,11 +10,15 @@
 //! Also provides a JSON REST gateway via axum for CLI and browser clients.
 
 pub mod convert;
+pub mod diagnostics;
+pub mod events;
 pub mod grpc;
+pub mod middleware;
 pub mod rest;
 pub mod server;
 pub mod state;
 
+pub use events::{AllocationEvent, EventBus};
 pub use grpc::admin_service::LatticeAdminService;
 pub use grpc::allocation_service::LatticeAllocationService;
 pub use grpc::node_service::LatticeNodeService;

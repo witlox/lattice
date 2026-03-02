@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "lattice"
+path = "src/main.rs"
+
 [dependencies]
 lattice-common = { path = "../lattice-common" }
 tokio = { workspace = true }
@@ -19,3 +23,6 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 reqwest = { workspace = true }
+clap_complete = "4"
+toml = "0.8"
+dirs = "6"

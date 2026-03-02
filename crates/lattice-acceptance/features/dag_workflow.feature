@@ -20,3 +20,24 @@ Feature: DAG Workflow
       | step1 | 1     |               |
       | step2 | 1     | step1:success |
     Then all DAG allocations should share the same dag_id
+
+  Scenario: DAG cycle is rejected
+    Given a tenant "ml-team" with a quota of 20 nodes
+    When I submit a DAG with stages:
+      | id    | nodes | depends_on  |
+      | stepA | 1     | stepC:any   |
+      | stepB | 1     | stepA:any   |
+      | stepC | 1     | stepB:any   |
+    Then the DAG should fail validation with a cycle error
+
+  Scenario: DAG stage execution respects dependencies
+    Given a tenant "ml-team" with a quota of 20 nodes
+    And 10 ready nodes in group 0
+    And a vCluster "hpc-batch" with scheduler "HpcBackfill"
+    When I submit a DAG with stages:
+      | id         | nodes | depends_on         |
+      | preprocess | 2     |                    |
+      | train      | 4     | preprocess:success |
+    And the scheduler runs a DAG cycle
+    Then "preprocess" should be "Running"
+    And "train" should be "Pending"
