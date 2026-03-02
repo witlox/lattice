@@ -175,8 +175,8 @@ pub struct DataRequirements {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataMount {
-    pub source: String,        // s3://... or nfs://...
-    pub target: String,        // mount point inside allocation
+    pub source: String, // s3://... or nfs://...
+    pub target: String, // mount point inside allocation
     pub access: DataAccess,
     pub tier_hint: Option<StorageTier>,
 }
@@ -249,20 +249,15 @@ pub enum CheckpointStrategy {
 
 // ─── Telemetry ──────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum TelemetryMode {
     /// 30s aggregation, bicubic smoothing, low overhead
+    #[default]
     Prod,
     /// 1s raw streams, full profiling, higher overhead
     Debug { duration_seconds: u64 },
     /// Access logging for compliance, moderate overhead
     Audit,
-}
-
-impl Default for TelemetryMode {
-    fn default() -> Self {
-        Self::Prod
-    }
 }
 
 // ─── Observability: Attach ─────────────────────────────────

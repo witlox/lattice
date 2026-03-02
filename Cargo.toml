@@ -26,7 +26,7 @@ prost = "0.13"
 tonic-build = "0.12"
 
 # Raft consensus
-openraft = "0.10"
+openraft = "0.10.0-alpha.14"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -56,9 +56,6 @@ chrono = { version = "0.4", features = ["serde"] }
 # HTTP (for REST gateway, storage API integration)
 reqwest = { version = "0.12", features = ["json"] }
 axum = "0.7"
-
-[workspace.features]
-federation = []
 
 [profile.release]
 lto = true

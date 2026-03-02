@@ -51,7 +51,6 @@ pub enum LatticeError {
     Internal(String),
 
     // ─── Observability errors ───────────────────────────────
-
     #[error("Cannot attach to allocation {allocation}: state is {state}, expected Running")]
     AttachNotRunning { allocation: String, state: String },
 
