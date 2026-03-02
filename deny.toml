@@ -18,6 +18,7 @@ allow = [
     "MPL-2.0",
     "Zlib",
     "OpenSSL",
+    "BlueOak-1.0.0",
 ]
 
 [[licenses.clarify]]
