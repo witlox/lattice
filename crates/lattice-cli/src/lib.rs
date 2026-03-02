@@ -1,7 +1,12 @@
 //! # lattice-cli
 //!
-//! See docs/architecture/ for design details.
+//! CLI binary for the Lattice distributed workload scheduler.
+//! Provides `lattice submit`, `lattice status`, `lattice cancel`,
+//! `lattice session`, `lattice nodes`, and admin subcommands.
+//!
+//! Supports Slurm compatibility via `#SBATCH` directive parsing.
 
-pub fn placeholder() {
-    todo!("Implement lattice-cli")
-}
+pub mod client;
+pub mod commands;
+pub mod compat;
+pub mod output;

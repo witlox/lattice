@@ -17,3 +17,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+async-trait = { workspace = true }
+sha2 = "0.10"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+lattice-test-harness = { path = "../lattice-test-harness" }

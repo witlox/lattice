@@ -13,6 +13,10 @@ harness = false
 [dependencies]
 lattice-common = { path = "../lattice-common" }
 lattice-test-harness = { path = "../lattice-test-harness" }
+lattice-scheduler = { path = "../lattice-scheduler" }
+lattice-checkpoint = { path = "../lattice-checkpoint" }
+lattice-api = { path = "../lattice-api" }
+lattice-node-agent = { path = "../lattice-node-agent" }
 cucumber = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

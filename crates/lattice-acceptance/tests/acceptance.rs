@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use cucumber::{given, then, when, World};
 use uuid::Uuid;
@@ -8,6 +9,12 @@ use lattice_common::traits::*;
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 use lattice_test_harness::mocks::*;
+
+use lattice_node_agent::agent::{AgentCommand, NodeAgent};
+use lattice_node_agent::health::ObservedHealth;
+use lattice_node_agent::heartbeat::Heartbeat;
+
+use lattice_scheduler::placement::PlacementDecision;
 
 #[derive(Debug, World)]
 #[world(init = Self::new)]
@@ -23,6 +30,11 @@ pub struct LatticeWorld {
     /// Named allocations for DAG scenarios
     named_allocations: HashMap<String, Allocation>,
     dag_id: Option<String>,
+    // Phase 8: end-to-end fields
+    last_heartbeat: Option<Heartbeat>,
+    agent: Option<NodeAgent>,
+    agent_alloc_id: Option<Uuid>,
+    should_checkpoint: Option<bool>,
 }
 
 impl LatticeWorld {
@@ -38,6 +50,10 @@ impl LatticeWorld {
             audit: MockAuditLog::new(),
             named_allocations: HashMap::new(),
             dag_id: None,
+            last_heartbeat: None,
+            agent: None,
+            agent_alloc_id: None,
+            should_checkpoint: None,
         }
     }
 
@@ -549,6 +565,321 @@ async fn shared_dag_id(world: &mut LatticeWorld) {
             "Allocation '{name}' should have dag_id {dag_id}"
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Scheduling cycle steps (Phase 8)
+// ═══════════════════════════════════════════════════════════
+
+#[when("the scheduler runs a cycle")]
+async fn scheduler_runs_cycle(world: &mut LatticeWorld) {
+    use lattice_scheduler::cycle::{run_cycle, CycleInput};
+
+    let pending: Vec<Allocation> = world
+        .allocations
+        .iter()
+        .filter(|a| a.state == AllocationState::Pending)
+        .cloned()
+        .collect();
+
+    let weights = world
+        .vclusters
+        .first()
+        .map(|vc| vc.cost_weights.clone())
+        .unwrap_or_default();
+
+    let input = CycleInput {
+        pending,
+        running: world
+            .allocations
+            .iter()
+            .filter(|a| a.state == AllocationState::Running)
+            .cloned()
+            .collect(),
+        nodes: world.nodes.clone(),
+        tenants: world.tenants.clone(),
+        topology: create_test_topology(1, world.nodes.len()),
+        data_readiness: HashMap::new(),
+        energy_price: 0.5,
+    };
+
+    let result = run_cycle(&input, &weights);
+
+    // Apply placements
+    for decision in &result.decisions {
+        if let PlacementDecision::Place {
+            allocation_id,
+            nodes,
+        } = decision
+        {
+            if let Some(alloc) = world
+                .allocations
+                .iter_mut()
+                .find(|a| a.id == *allocation_id)
+            {
+                alloc.state = AllocationState::Running;
+                alloc.assigned_nodes = nodes.clone();
+            }
+        }
+    }
+}
+
+#[when(regex = r#"^I submit a low-priority allocation requesting (\d+) nodes$"#)]
+async fn submit_low_priority(world: &mut LatticeWorld, nodes: u32) {
+    let tenant_id = world
+        .tenants
+        .first()
+        .map(|t| t.id.clone())
+        .unwrap_or_else(|| "test-tenant".into());
+    let alloc = AllocationBuilder::new()
+        .tenant(&tenant_id)
+        .nodes(nodes)
+        .preemption_class(1)
+        .build();
+    world.allocations.push(alloc);
+}
+
+#[when(regex = r#"^I submit a high-priority allocation requesting (\d+) nodes$"#)]
+async fn submit_high_priority(world: &mut LatticeWorld, nodes: u32) {
+    let tenant_id = world
+        .tenants
+        .first()
+        .map(|t| t.id.clone())
+        .unwrap_or_else(|| "test-tenant".into());
+    let alloc = AllocationBuilder::new()
+        .tenant(&tenant_id)
+        .nodes(nodes)
+        .preemption_class(9)
+        .build();
+    world.allocations.push(alloc);
+}
+
+#[then(regex = r#"^the allocation should be placed on (\d+) nodes$"#)]
+async fn allocation_placed_on_nodes(world: &mut LatticeWorld, count: usize) {
+    let alloc = world.last_allocation();
+    assert_eq!(
+        alloc.assigned_nodes.len(),
+        count,
+        "Expected {count} assigned nodes, got {}",
+        alloc.assigned_nodes.len()
+    );
+}
+
+#[then(regex = r#"^the high-priority allocation should be "(\w+)"$"#)]
+async fn high_priority_is_state(world: &mut LatticeWorld, expected: String) {
+    let expected_state = parse_allocation_state(&expected);
+    // The high-priority allocation is the last one submitted
+    let high_prio = world
+        .allocations
+        .iter()
+        .find(|a| a.lifecycle.preemption_class == 9)
+        .expect("no high-priority allocation found");
+    assert_eq!(
+        high_prio.state, expected_state,
+        "High-priority allocation should be {expected}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// Node agent steps (Phase 8)
+// ═══════════════════════════════════════════════════════════
+
+#[given(regex = r#"^a node agent for node "([^"]+)" with (\d+) GPUs$"#)]
+async fn given_node_agent(world: &mut LatticeWorld, node_id: String, gpu_count: u32) {
+    let node = NodeBuilder::new().id(&node_id).gpu_count(gpu_count).build();
+    let registry = Arc::new(MockNodeRegistry::new().with_nodes(vec![node.clone()]));
+    let caps = node.capabilities.clone();
+    world.nodes.push(node);
+    world.agent = Some(NodeAgent::new(node_id, caps, registry));
+}
+
+#[when("the agent runs a health check with all systems healthy")]
+async fn agent_health_check_healthy(world: &mut LatticeWorld) {
+    let agent = world.agent.as_mut().expect("no agent initialized");
+    let gpu_count = 4;
+    let observed = ObservedHealth {
+        gpu_count,
+        max_gpu_temp_c: Some(65.0),
+        ecc_errors: 0,
+        nic_up: true,
+    };
+    let hb = agent.generate_heartbeat(&observed);
+    world.last_heartbeat = Some(hb);
+}
+
+#[when(regex = r#"^the agent runs a health check with only (\d+) GPUs detected$"#)]
+async fn agent_health_check_missing_gpus(world: &mut LatticeWorld, gpu_count: u32) {
+    let agent = world.agent.as_mut().expect("no agent initialized");
+    let observed = ObservedHealth {
+        gpu_count,
+        max_gpu_temp_c: Some(65.0),
+        ecc_errors: 0,
+        nic_up: true,
+    };
+    let hb = agent.generate_heartbeat(&observed);
+    world.last_heartbeat = Some(hb);
+}
+
+#[when(regex = r#"^the agent starts allocation "([^"]+)"$"#)]
+async fn agent_starts_allocation(world: &mut LatticeWorld, entrypoint: String) {
+    let agent = world.agent.as_mut().expect("no agent initialized");
+    let id = Uuid::new_v4();
+    world.agent_alloc_id = Some(id);
+    agent
+        .handle_command(AgentCommand::StartAllocation { id, entrypoint })
+        .await
+        .unwrap();
+}
+
+#[when("the agent completes the allocation")]
+async fn agent_completes_allocation(world: &mut LatticeWorld) {
+    let agent = world.agent.as_mut().expect("no agent initialized");
+    let id = world.agent_alloc_id.expect("no allocation started");
+    // Advance: Running → Epilogue → Completed
+    agent.allocations_mut().advance(&id).unwrap();
+    agent.allocations_mut().advance(&id).unwrap();
+}
+
+#[then("the heartbeat should report healthy")]
+async fn heartbeat_healthy(world: &mut LatticeWorld) {
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
+    assert!(hb.healthy, "Expected healthy heartbeat");
+}
+
+#[then("the heartbeat should report unhealthy")]
+async fn heartbeat_unhealthy(world: &mut LatticeWorld) {
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
+    assert!(!hb.healthy, "Expected unhealthy heartbeat");
+}
+
+#[then(regex = r#"^the heartbeat sequence should be (\d+)$"#)]
+async fn heartbeat_sequence(world: &mut LatticeWorld, expected: u64) {
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
+    assert_eq!(hb.sequence, expected);
+}
+
+#[then(regex = r#"^the heartbeat issues should mention "(\w+)"$"#)]
+async fn heartbeat_mentions(world: &mut LatticeWorld, keyword: String) {
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
+    let keyword_lower = keyword.to_lowercase();
+    assert!(
+        hb.issues
+            .iter()
+            .any(|i| i.to_lowercase().contains(&keyword_lower)),
+        "Expected heartbeat issues to mention '{keyword}', got: {:?}",
+        hb.issues
+    );
+}
+
+#[then(regex = r#"^the agent should have (\d+) active allocations?$"#)]
+async fn agent_active_count(world: &mut LatticeWorld, expected: u32) {
+    let agent = world.agent.as_ref().expect("no agent initialized");
+    assert_eq!(
+        agent.active_allocation_count(),
+        expected,
+        "Expected {expected} active allocations"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// Checkpoint steps (Phase 8)
+// ═══════════════════════════════════════════════════════════
+
+#[given(regex = r#"^a running allocation with (\d+) nodes and (.+) elapsed$"#)]
+async fn given_running_allocation_with_time(
+    world: &mut LatticeWorld,
+    nodes: u32,
+    elapsed_str: String,
+) {
+    let elapsed_hours = if elapsed_str.contains("hour") {
+        elapsed_str
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+    } else if elapsed_str.contains("minute") {
+        elapsed_str
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            / 60.0
+    } else {
+        1.0
+    };
+
+    let started_at =
+        chrono::Utc::now() - chrono::Duration::seconds((elapsed_hours * 3600.0) as i64);
+    let mut alloc = AllocationBuilder::new()
+        .nodes(nodes)
+        .state(AllocationState::Running)
+        .lifecycle_bounded(4) // 4-hour walltime
+        .build();
+    alloc.started_at = Some(started_at);
+    alloc.assigned_nodes = (0..nodes).map(|i| format!("node-{i}")).collect();
+    world.allocations.push(alloc);
+}
+
+#[given(regex = r#"^a system backlog of ([\d.]+)$"#)]
+async fn given_system_backlog(world: &mut LatticeWorld, backlog: f64) {
+    // Store backlog in a tag for the checkpoint evaluator
+    if let Some(alloc) = world.allocations.last_mut() {
+        alloc
+            .tags
+            .insert("test_backlog".to_string(), backlog.to_string());
+    }
+}
+
+#[when("the checkpoint broker evaluates the allocation")]
+async fn checkpoint_broker_evaluates(world: &mut LatticeWorld) {
+    use lattice_checkpoint::cost_model::{evaluate_checkpoint, CheckpointParams};
+
+    let alloc = world.last_allocation();
+    let backlog: f64 = alloc
+        .tags
+        .get("test_backlog")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+
+    let params = CheckpointParams {
+        // Realistic checkpoint size: actual model state, not raw GPU memory
+        gpu_memory_per_node_bytes: 8 * 1024 * 1024 * 1024, // 8 GB checkpoint per node
+        backlog_pressure: backlog,
+        ..Default::default()
+    };
+
+    let eval = evaluate_checkpoint(alloc, &params);
+    world.should_checkpoint = Some(eval.should_checkpoint);
+}
+
+#[then("the allocation should be checkpointed")]
+async fn should_be_checkpointed(world: &mut LatticeWorld) {
+    assert!(
+        world.should_checkpoint.unwrap_or(false),
+        "Expected checkpoint to be triggered"
+    );
+}
+
+#[then("the allocation should not be checkpointed")]
+async fn should_not_be_checkpointed(world: &mut LatticeWorld) {
+    assert!(
+        !world.should_checkpoint.unwrap_or(true),
+        "Expected checkpoint NOT to be triggered"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════

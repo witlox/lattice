@@ -487,6 +487,44 @@ impl AuditLog for MockAuditLog {
     }
 }
 
+// ─── MockCheckpointBroker ───────────────────────────────────
+
+#[derive(Debug, Default)]
+pub struct MockCheckpointBroker {
+    pub should_checkpoint: Arc<Mutex<bool>>,
+    pub calls: Arc<Mutex<Vec<MockCall>>>,
+}
+
+impl MockCheckpointBroker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_should_checkpoint(self, value: bool) -> Self {
+        *self.should_checkpoint.lock().unwrap() = value;
+        self
+    }
+}
+
+#[async_trait]
+impl CheckpointBroker for MockCheckpointBroker {
+    async fn should_checkpoint(&self, _allocation: &Allocation) -> Result<bool, LatticeError> {
+        self.calls.lock().unwrap().push(MockCall {
+            method: "should_checkpoint".into(),
+            args: vec![],
+        });
+        Ok(*self.should_checkpoint.lock().unwrap())
+    }
+
+    async fn initiate_checkpoint(&self, id: &AllocId) -> Result<(), LatticeError> {
+        self.calls.lock().unwrap().push(MockCall {
+            method: "initiate_checkpoint".into(),
+            args: vec![id.to_string()],
+        });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

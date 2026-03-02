@@ -18,3 +18,9 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 openraft = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+lattice-test-harness = { path = "../lattice-test-harness" }
