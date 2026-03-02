@@ -129,7 +129,7 @@ lattice logs 12345
 | Hash mismatch | Corrupted image in cache or registry | `lattice cache evict --image=... --node=...` and retry |
 | ENOSPC | Node-local cache full, eviction couldn't free space | Check cache status: `lattice cache status --node=...`. Evict unused images manually. |
 | NFS mount timeout | VAST unavailable or network issue | Check VAST health. Check Slingshot storage traffic class. |
-| Image not found | uenv name/version doesn't exist in registry | Verify with `lattice uenv list` |
+| Image not found | uenv name/version doesn't exist in registry | Verify with `lattice cache status --node=...` or check the uenv registry directly |
 
 ## Preemption Not Working
 

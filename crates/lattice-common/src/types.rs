@@ -62,6 +62,19 @@ pub struct Allocation {
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub assigned_nodes: Vec<NodeId>,
+
+    /// DAG this allocation belongs to (set by scheduler on DAG submission)
+    pub dag_id: Option<String>,
+    /// Process exit code (set on completion/failure)
+    pub exit_code: Option<i32>,
+    /// Human-readable status message (failure reason, cancellation note, etc.)
+    pub message: Option<String>,
+    /// Number of times this allocation has been requeued
+    pub requeue_count: u32,
+    /// Number of times this allocation has been preempted
+    pub preempted_count: u32,
+    /// Whether to resume from checkpoint on next scheduling
+    pub resume_from_checkpoint: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +136,10 @@ pub struct Environment {
     pub tools_uenv: Option<String>,
     /// For medical: require signed images
     pub sign_required: bool,
+    /// Require vulnerability scan before scheduling (sensitive-workloads)
+    pub scan_required: bool,
+    /// Restrict to approved base images only (sensitive-workloads)
+    pub approved_bases_only: bool,
 }
 
 // ─── Resources ──────────────────────────────────────────────
@@ -138,7 +155,11 @@ pub struct ResourceRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeCount {
     Exact(u32),
-    Range { min: u32, max: u32 },
+    /// Elastic node range. Invariants: min >= 1, max >= min.
+    Range {
+        min: u32,
+        max: u32,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -228,6 +249,33 @@ pub struct ServiceEndpoint {
     pub name: String,
     pub port: u16,
     pub protocol: Option<String>,
+}
+
+// ─── Network Domain ────────────────────────────────────────
+
+/// A network domain groups allocations that need L3 reachability via Slingshot VNI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkDomain {
+    pub name: String,
+    pub tenant: TenantId,
+    /// Assigned Slingshot VNI
+    pub vni: u32,
+    pub state: NetworkDomainState,
+    /// Allocation IDs currently in this domain
+    pub member_allocations: Vec<AllocId>,
+    pub created_at: DateTime<Utc>,
+    /// Grace deadline after last member completes (for DAG domain persistence)
+    pub grace_deadline: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NetworkDomainState {
+    /// Active, accepting new members
+    Active,
+    /// Last member completed, grace timer running
+    Draining,
+    /// VNI released back to pool
+    Released,
 }
 
 // ─── Dependencies ───────────────────────────────────────────
@@ -457,6 +505,10 @@ pub struct Node {
     pub capabilities: NodeCapabilities,
     pub state: NodeState,
     pub owner: Option<NodeOwnership>,
+    /// Conformance fingerprint (hash of OS image, kernel, driver versions)
+    pub conformance_fingerprint: Option<String>,
+    /// Last heartbeat received from this node's agent
+    pub last_heartbeat: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,6 +518,8 @@ pub struct NodeCapabilities {
     pub cpu_cores: u32,
     pub memory_gb: u64,
     pub features: Vec<String>,
+    /// Detailed GPU topology (interconnect, NIC affinity)
+    pub gpu_topology: Option<GpuTopology>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -517,6 +571,8 @@ pub struct TenantQuota {
     pub fair_share_target: f64,
     /// GPU-hours budget (None = unlimited)
     pub gpu_hours_budget: Option<f64>,
+    /// Maximum concurrent allocations (hard limit per quota-enforcement)
+    pub max_concurrent_allocations: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -586,6 +642,46 @@ impl Default for CostWeights {
             conformance: 0.10,
         }
     }
+}
+
+// ─── GPU Topology ───────────────────────────────────────────
+
+/// Intra-node GPU topology: devices, interconnect links, and NIC affinity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuTopology {
+    pub devices: Vec<GpuDevice>,
+    /// Mapping of GPU index → closest NIC index (for Slingshot/UE affinity)
+    pub nic_affinity: HashMap<u32, u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuDevice {
+    pub index: u32,
+    pub vendor: GpuVendor,
+    pub model: String,
+    pub memory_bytes: u64,
+    pub links: Vec<GpuLink>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuLink {
+    pub peer_index: u32,
+    pub link_type: GpuLinkType,
+    pub bandwidth_gbps: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GpuLinkType {
+    NVLink,
+    NVSwitch,
+    InfinityFabric,
+    PCIe,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GpuVendor {
+    Nvidia,
+    Amd,
 }
 
 // ─── Topology ───────────────────────────────────────────────

@@ -70,7 +70,7 @@ During node selection (solver step 2a), the solver prefers nodes from the same c
 | HPC Batch | Soft preference (w₉=0.10). Prefers homogeneous sets but will mix if needed. |
 | ML Training | Strong preference (w₉=0.25). Multi-node training is sensitive to driver mismatches. |
 | Service | Weak preference (w₉=0.05). Services are usually single-node or tolerate heterogeneity. |
-| Medical | Hard constraint (w₉=1.00). Drifted nodes are excluded entirely. |
+| Medical | Hard constraint at solver level (drifted nodes excluded before scoring). w₉=0.10 as tiebreaker among conformant nodes. |
 | Interactive | Ignored (w₉=0.00). Short-lived, single-node, not sensitive to drift. |
 
 ## Drift Response

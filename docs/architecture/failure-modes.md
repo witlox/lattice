@@ -148,6 +148,15 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 4. Nodes released
 5. Allocation marked as `Failed` with reason `walltime_exceeded`
 
+### Walltime Exceeded During Checkpoint
+
+If an allocation's walltime expires while a checkpoint is in progress:
+
+1. **Walltime takes priority.** The walltime timer is not extended to accommodate an in-progress checkpoint.
+2. `SIGTERM` is sent as normal. If the checkpoint completes within the SIGTERM grace period (default: 30s), the checkpoint is usable and the allocation is marked `Suspended` (can be resumed).
+3. If the checkpoint does not complete within the grace period, `SIGKILL` is sent. The incomplete checkpoint is discarded and the allocation is marked `Failed` with reason `walltime_exceeded`.
+4. The checkpoint broker tracks this race condition via the `lattice_checkpoint_walltime_conflict_total` counter metric.
+
 ## Recovery Matrix
 
 | Failure | Detection | Recovery Action | Data Loss Risk |

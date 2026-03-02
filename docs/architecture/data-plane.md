@@ -99,6 +99,18 @@ vcluster: medical-secure
       tier_restriction: "hot_only"  # no unencrypted copies on warm/cold
 ```
 
+### Log Storage
+
+Allocation logs are persisted to S3 alongside output data. See [observability.md](observability.md) for the log storage layout:
+```
+s3://{tenant}/{project}/{alloc_id}/logs/
+    ├── stdout/{node_id}/{chunk_000..N}.log.zst
+    ├── stderr/{node_id}/{chunk_000..N}.log.zst
+    └── metadata.json
+```
+
+Medical allocation logs are stored in the encrypted medical S3 pool with access logging enabled.
+
 ## Node-Local Storage (Optional)
 
 Nodes **may** have NVMe SSDs managed by the node agent. Local storage is not a hard requirement — nodes without NVMe operate with reduced performance but full functionality.

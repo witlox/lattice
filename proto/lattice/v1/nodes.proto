@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package lattice.v1;
+
+option go_package = "github.com/lattice-scheduler/lattice/gen/go/lattice/v1";
+
+import "google/protobuf/timestamp.proto";
+
+// ─── Node Service ───────────────────────────────────────────
+
+service NodeService {
+  // List nodes with optional filters
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+
+  // Get a single node by ID
+  rpc GetNode(GetNodeRequest) returns (NodeStatus);
+
+  // Drain a node (finish existing allocations, accept no new ones)
+  rpc DrainNode(DrainNodeRequest) returns (DrainNodeResponse);
+
+  // Cancel drain and return node to Ready state
+  rpc UndrainNode(UndrainNodeRequest) returns (UndrainNodeResponse);
+
+  // Disable a node (mark as permanently unavailable until re-enabled)
+  rpc DisableNode(DisableNodeRequest) returns (DisableNodeResponse);
+}
+
+// ─── Request / Response Messages ────────────────────────────
+
+message ListNodesRequest {
+  string state = 1;           // filter by state (e.g., "ready", "draining")
+  string group = 2;           // filter by dragonfly group
+  string tenant = 3;          // filter by owning tenant
+  string vcluster = 4;        // filter by owning vCluster
+  uint32 limit = 5;
+  string cursor = 6;
+}
+
+message ListNodesResponse {
+  repeated NodeStatus nodes = 1;
+  string next_cursor = 2;
+}
+
+message GetNodeRequest {
+  string node_id = 1;
+}
+
+message DrainNodeRequest {
+  string node_id = 1;
+  string reason = 2;          // operator-provided reason
+}
+
+message DrainNodeResponse {
+  bool success = 1;
+  uint32 active_allocations = 2;  // allocations still running on this node
+}
+
+message UndrainNodeRequest {
+  string node_id = 1;
+}
+
+message UndrainNodeResponse {
+  bool success = 1;
+}
+
+message DisableNodeRequest {
+  string node_id = 1;
+  string reason = 2;
+}
+
+message DisableNodeResponse {
+  bool success = 1;
+}
+
+// ─── Node Status ────────────────────────────────────────────
+
+message NodeStatus {
+  string node_id = 1;
+  string state = 2;             // unknown, booting, ready, degraded, down, draining, drained, failed
+  string state_reason = 3;      // reason for degraded/down/failed states
+  uint32 group = 4;             // dragonfly group index
+
+  // Capabilities
+  string gpu_type = 10;
+  uint32 gpu_count = 11;
+  uint32 cpu_cores = 12;
+  uint64 memory_gb = 13;
+  repeated string features = 14;
+
+  // Ownership (if assigned)
+  string owner_tenant = 20;
+  string owner_vcluster = 21;
+  string owner_allocation = 22;
+  string claimed_by = 23;       // medical: specific user
+  bool is_borrowed = 24;
+
+  // Health
+  string conformance_fingerprint = 30;
+  google.protobuf.Timestamp last_heartbeat = 31;
+
+  // Active allocations on this node
+  repeated string allocation_ids = 40;
+}

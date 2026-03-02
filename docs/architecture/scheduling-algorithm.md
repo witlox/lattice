@@ -98,6 +98,8 @@ See [data-staging.md](data-staging.md) for details on how input data is pre-stag
 
 Medical scheduler is degenerate: priority dominates because node claims are non-negotiable (w₁=0.90). Conformance (w₉=0.10) acts as a tiebreaker among conformant nodes; non-conformant nodes are excluded entirely as a hard constraint at the solver level (step 2a), not via the weight system.
 
+**Note:** The `CostWeights::default()` in `crates/lattice-common/src/types.rs` provides a "balanced HPC" baseline (w₁=0.20, w₂=0.20, w₃=0.20, w₄=0.15, w₅=0.10, w₆=0.05, w₇=0.00, w₈=0.00, w₉=0.10). This is not identical to any named profile in the table above — it is a general-purpose starting point. Each vCluster should have its weights tuned for its workload type, either manually or via RM-Replay simulation.
+
 ### Solver
 
 The multi-dimensional knapsack is NP-hard in general. For our scale (tens to hundreds of pending large allocations), a greedy heuristic with backfill is sufficient:

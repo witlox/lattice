@@ -218,6 +218,53 @@ If a minority of quorum members fail (1 of 3, or 2 of 5):
 3. New member syncs from leader automatically
 4. No data loss, no downtime
 
+### Non-Raft State Backup
+
+The Raft snapshot captures quorum state (node ownership, tenants, medical audit). Other stateful components require separate backup strategies:
+
+| Component | State Location | Backup Strategy |
+|-----------|---------------|----------------|
+| TSDB (metrics) | VictoriaMetrics / Thanos | TSDB-native snapshot + S3 replication |
+| S3 logs | `s3://{tenant}/{project}/{alloc_id}/logs/` | S3 bucket versioning + cross-region replication |
+| Accounting WAL | `/var/lib/lattice/accounting-wal` | Include in node backup or replicate to S3 |
+| Medical audit log | Raft state (primary) + S3 archive (cold) | Covered by Raft snapshot; S3 archive has its own retention |
+| Grafana dashboards | `infra/grafana/` (version-controlled) | Git repository |
+
+**Recommended schedule:** Daily backup verification for TSDB snapshots. Accounting WAL backed up on the same schedule as Raft snapshots.
+
+### Quorum Hardware Replacement
+
+When a quorum member's hardware fails and must be replaced:
+
+1. **Remove the failed member from the Raft cluster:**
+   ```bash
+   lattice-quorum membership remove --node-id=quorum-2
+   ```
+   The cluster continues operating with the remaining majority.
+
+2. **Provision new hardware:**
+   - Install the same OS and lattice-quorum binary
+   - Generate a new TLS certificate from the site CA (same CN format)
+   - Configure the same data directory path
+
+3. **Add the new member to the cluster:**
+   ```bash
+   # On an existing member:
+   lattice-quorum membership add --node-id=quorum-2-new --addr=new-host:4001
+
+   # On the new hardware:
+   lattice-quorum --join=quorum-1:4001 \
+     --node-id=quorum-2-new \
+     --listen=0.0.0.0:4001 \
+     --data-dir=/var/lib/lattice/raft
+   ```
+
+4. **Verify:** The new member syncs the full Raft log from the leader. Check with `lattice admin raft status`.
+
+5. **Cleanup:** Remove old member's data directory from failed hardware (if recoverable). Update monitoring/alerting to reference the new member.
+
+**Important:** Replace one member at a time. Wait for the new member to fully sync before replacing another. For a 3-member quorum, never have more than 1 member down simultaneously.
+
 ## Configuration Management
 
 All configuration is stored in two places:

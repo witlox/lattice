@@ -142,6 +142,24 @@ When a task group has `Corresponding` dependencies and individual elements exit 
 - The downstream task group may have a mix of running, cancelled, and completed elements
 - DAG completion waits for all evaluable elements to reach terminal states
 
+### Corresponding Dependencies with Mismatched Array Sizes
+
+When two task groups have `Corresponding` dependencies but different array sizes (e.g., `preprocess[0..9]` → `train[0..14]`):
+
+- Array indices that exist in both groups are matched normally: `train[i]` depends on `preprocess[i]` for `i` in `0..9`.
+- Extra indices in the successor group (`train[10..14]`) have no matching predecessor element. These extra indices are treated as having their `Corresponding` dependency **satisfied immediately** — they enter the scheduler queue as if they were root nodes.
+- This design avoids silent failures: users get all successor elements running, not just the matched subset.
+
+### Max DAG Size
+
+DAGs are validated at submission time with a maximum allocation count (default: 1000 allocations per DAG). Submitting a DAG exceeding this limit returns an error:
+```
+Error: DAG exceeds maximum size (1234 allocations, limit: 1000)
+Hint: Split the workflow into smaller DAGs or increase the limit via system configuration.
+```
+
+The limit is configurable via `lattice admin config set scheduling.max_dag_size=2000`. Cycle detection runs in O(V+E) and is not a bottleneck, but very large DAGs increase dependency resolution overhead in the DAG controller.
+
 ## Cross-References
 
 - [api-design.md](api-design.md) — DagSpec in protobuf definition

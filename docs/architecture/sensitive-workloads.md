@@ -31,6 +31,15 @@ Dr. X authenticates via OIDC (institutional IdP)
 
 **No clever optimization on medical nodes.** If Dr. X claims 4 nodes at 9am and runs nothing until 2pm, those nodes sit idle. The cost is real and should be visible to the tenant's accounting. But there is no co-scheduling, no borrowing, no time-sharing.
 
+### Concurrent Medical Claims
+
+If two users simultaneously attempt to claim overlapping nodes:
+
+- **First Raft commit wins.** Node ownership is a strong consistency domain. The quorum serializes all claim requests via Raft.
+- The second claim request receives an `OwnershipConflict` error with a message identifying which nodes are already claimed and by which user.
+- The second user must select different nodes or wait for the first user to release.
+- There is no queueing or waitlist for medical node claims — they are immediate or rejected.
+
 ## OS Image
 
 Medical nodes boot a hardened image via OpenCHAMI BSS:
@@ -168,7 +177,7 @@ Every user-facing observability feature has medical-specific restrictions. The p
 ### Attach
 
 - **Claiming user only.** The user who claimed the nodes (identity verified against Raft audit log) is the only user permitted to attach. No delegation, no shared access.
-- **Session recording.** All attach sessions are recorded (input + output bytes) and stored in the medical audit log. The session recording reference is a Raft-committed audit entry.
+- **Session recording.** All attach sessions are recorded (input + output bytes) and stored at `s3://medical-audit/{tenant}/{alloc_id}/sessions/{session_id}.recording` (zstd-compressed, encrypted at rest, 7-year retention). The session recording reference is a Raft-committed audit entry.
 - **Signed uenv only.** Attach is only permitted when the allocation runs a signed, vulnerability-scanned uenv image. This prevents attaching to environments with unvetted tools.
 - **No concurrent attach from different sessions.** One active attach session per allocation at a time (prevents accidental data exposure via shared terminal).
 
@@ -223,4 +232,4 @@ The medical vCluster scheduler is intentionally simple:
 - **No elastic borrowing.** Medical nodes cannot be borrowed by other vClusters.
 - **Fair-share:** Not applicable (nodes are user-claimed, not queue-scheduled).
 - **Conformance:** Hard constraint — only nodes matching the expected conformance baseline are eligible.
-- **Cost function weights:** priority=0.9, conformance=1.0, everything else near-zero.
+- **Cost function weights:** priority=0.90, conformance=0.10 (tiebreaker among conformant nodes; non-conformant nodes are excluded as a hard constraint at the solver level, not via the weight system), everything else near-zero.

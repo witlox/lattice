@@ -102,6 +102,16 @@ If the VNI pool is exhausted:
 3. Allocations joining an existing domain are unaffected (domain already has a VNI)
 4. Alert raised for operators
 
+### VNI Exhaustion Mid-DAG
+
+If the VNI pool is exhausted while a DAG has pending allocations that require a new network domain:
+
+- The allocation that needs the new domain enters `Pending` state with reason `vni_pool_exhausted`.
+- The DAG stalls at this allocation — downstream dependencies remain blocked.
+- Already-running DAG allocations with existing domains are unaffected.
+- **Mitigation:** Use a shared network domain across DAG stages where possible. This avoids new VNI allocation for each stage and reduces pool pressure.
+- **Recovery:** When other allocations complete and release VNIs, the pending allocation is re-evaluated on the next scheduling cycle.
+
 ## Default Behavior
 
 If an allocation does not specify `network_domain`:
@@ -147,6 +157,23 @@ connectivity:
 - Ingress/egress restricted to a data gateway endpoint
 - With Ultra Ethernet: network-level encryption enabled for the VNI
 - VNI released immediately on allocation completion (no grace period)
+
+## VNI Pool Expansion
+
+To expand the VNI pool when approaching exhaustion:
+
+1. **Update the configuration** to extend `vni_pool_end`:
+   ```yaml
+   network:
+     vni_pool_start: 1000
+     vni_pool_end: 8191   # expanded from 4095
+   ```
+
+2. **Restart the API server** to pick up the new pool range. Existing domains and their VNI assignments are not affected.
+
+3. **Verify:** The `lattice_network_vni_pool_total` metric should reflect the new pool size.
+
+**Note:** The expanded range must not overlap with reserved VNIs (1-999) or VNIs used by other systems on the Slingshot fabric. Coordinate with network administrators before expanding.
 
 ## Cross-References
 

@@ -78,6 +78,15 @@ The stream begins with an `AttachStart` message specifying the target node (for 
 - Attach is only permitted when the allocation runs a signed uenv
 - Session start/end events are Raft-committed audit entries
 
+### Attach During Node Crash
+
+If the node hosting an attach session crashes or becomes unreachable:
+
+- The gRPC bidirectional stream is dropped (connection reset).
+- The API server detects the stream drop and sets `ended_at` on the `AttachSession` record.
+- For medical allocations, the session end event is recorded in the audit log with reason `node_unreachable`.
+- The client receives a stream error and can display: `"connection to node lost — attach session ended"`.
+
 ### Attach During Preemption
 
 If the allocation is preempted while an attach session is active, the session is terminated gracefully. See [sessions.md](sessions.md) for the detailed preemption sequence. If the allocation is in `Checkpointing` state, new attach requests are rejected with: `"allocation is being checkpointed — attach unavailable until rescheduled"`.

@@ -33,6 +33,8 @@ Events pushed from Lattice to Waldur:
 | `allocation.started` | Allocation enters Running state | tenant, project, user, resources (nodes, GPUs, GPU type), estimated duration |
 | `allocation.completed` | Allocation reaches terminal state | actual duration, GPU-hours consumed, exit status, storage bytes written |
 | `allocation.checkpointed` | Checkpoint written | checkpoint storage consumed, checkpoint duration |
+| `node.claimed` | Medical node claimed by a user | tenant, user, node IDs, claiming timestamp |
+| `node.released` | Medical node released | tenant, user, node IDs, release timestamp, wipe confirmation |
 | `quota.updated` | Waldur updates a tenant's quota | new quota values (Waldur → Lattice direction) |
 
 Events are timestamped and include the allocation ID for correlation.

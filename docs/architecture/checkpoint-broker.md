@@ -134,6 +134,25 @@ When the checkpoint destination (VAST S3 or NFS) is unavailable:
 6. **Recovery:** When storage recovers, the broker re-evaluates all running allocations on the next cycle. Allocations with high `recompute_saved` value are prioritized for immediate checkpoint
 7. **Alert:** `lattice_checkpoint_storage_unavailable` gauge set to 1; critical alert fired
 
+## Edge Cases
+
+### Reactive Allocation Checkpointing
+
+Reactive (autoscaling) allocations pose unique challenges for the checkpoint broker:
+
+- **Variable node count.** The checkpoint size estimate (`GPU memory × node count`) changes as the allocation scales. The broker re-evaluates cost on each cycle using the current node count.
+- **Scale-down as implicit checkpoint trigger.** When the scheduler decides to scale down a reactive allocation, it triggers a checkpoint on the nodes being released before removing them from the allocation. This ensures state is preserved.
+- **Recommendation:** For reactive allocations with complex distributed state, use `checkpoint: manual` and implement application-level checkpoint coordination. The broker's automatic checkpointing works best for static-size allocations where checkpoint size is predictable.
+
+### Walltime vs Checkpoint Race
+
+When an allocation's walltime expires while a checkpoint is in progress:
+
+- **Walltime takes priority.** The walltime timer is not extended to accommodate the checkpoint.
+- If the checkpoint completes before the SIGTERM grace period expires, the checkpoint is usable for restart.
+- If the checkpoint is still in progress when SIGKILL is sent, the checkpoint is considered incomplete and is not used for restart. The allocation is marked `Failed` with reason `walltime_exceeded`.
+- To avoid this race, schedule checkpoints proactively as walltime approaches (the `recompute_saved` value naturally increases near walltime expiration).
+
 ## Cross-References
 
 - [scheduling-algorithm.md](scheduling-algorithm.md) — f₈ checkpoint_efficiency in the cost function

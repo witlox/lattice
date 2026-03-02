@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package lattice.v1;
+
+option go_package = "github.com/lattice-scheduler/lattice/gen/go/lattice/v1";
+
+import "google/protobuf/timestamp.proto";
+
+// ─── Admin Service ──────────────────────────────────────────
+
+service AdminService {
+  // Create a new tenant
+  rpc CreateTenant(CreateTenantRequest) returns (TenantResponse);
+
+  // Update an existing tenant (quota, isolation level)
+  rpc UpdateTenant(UpdateTenantRequest) returns (TenantResponse);
+
+  // Create a new vCluster within a tenant
+  rpc CreateVCluster(CreateVClusterRequest) returns (VClusterResponse);
+
+  // Update vCluster settings (scheduler type, cost weights, borrowing)
+  rpc UpdateVCluster(UpdateVClusterRequest) returns (VClusterResponse);
+
+  // Get current Raft cluster status
+  rpc GetRaftStatus(GetRaftStatusRequest) returns (RaftStatusResponse);
+
+  // Verify backup integrity
+  rpc BackupVerify(BackupVerifyRequest) returns (BackupVerifyResponse);
+}
+
+// ─── Tenant Management ─────────────────────────────────────
+
+message CreateTenantRequest {
+  string name = 1;
+  TenantQuotaSpec quota = 2;
+  string isolation_level = 3;   // "standard" or "strict"
+}
+
+message UpdateTenantRequest {
+  string tenant_id = 1;
+  optional TenantQuotaSpec quota = 2;
+  optional string isolation_level = 3;
+}
+
+message TenantQuotaSpec {
+  uint32 max_nodes = 1;
+  double fair_share_target = 2;
+  optional double gpu_hours_budget = 3;
+  optional uint32 max_concurrent_allocations = 4;
+}
+
+message TenantResponse {
+  string tenant_id = 1;
+  string name = 2;
+  TenantQuotaSpec quota = 3;
+  string isolation_level = 4;
+}
+
+// ─── VCluster Management ───────────────────────────────────
+
+message CreateVClusterRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string scheduler_type = 3;    // "hpc_backfill", "service_bin_pack", "medical_reservation", "interactive_fifo"
+  CostWeightsSpec cost_weights = 4;
+  repeated string dedicated_nodes = 5;
+  bool allow_borrowing = 6;
+  bool allow_lending = 7;
+}
+
+message UpdateVClusterRequest {
+  string vcluster_id = 1;
+  optional CostWeightsSpec cost_weights = 2;
+  optional bool allow_borrowing = 3;
+  optional bool allow_lending = 4;
+}
+
+message CostWeightsSpec {
+  double priority = 1;
+  double wait_time = 2;
+  double fair_share = 3;
+  double topology = 4;
+  double data_readiness = 5;
+  double backlog = 6;
+  double energy = 7;
+  double checkpoint_efficiency = 8;
+  double conformance = 9;
+}
+
+message VClusterResponse {
+  string vcluster_id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string scheduler_type = 4;
+  CostWeightsSpec cost_weights = 5;
+  bool allow_borrowing = 6;
+  bool allow_lending = 7;
+}
+
+// ─── Raft Status ────────────────────────────────────────────
+
+message GetRaftStatusRequest {}
+
+message RaftStatusResponse {
+  uint64 leader_id = 1;
+  uint64 current_term = 2;
+  uint64 last_applied = 3;
+  uint64 commit_index = 4;
+  repeated RaftMemberStatus members = 5;
+}
+
+message RaftMemberStatus {
+  uint64 node_id = 1;
+  string address = 2;
+  string role = 3;              // "leader", "follower", "learner"
+  uint64 match_index = 4;
+  google.protobuf.Timestamp last_contact = 5;
+}
+
+// ─── Backup Verification ────────────────────────────────────
+
+message BackupVerifyRequest {
+  string backup_path = 1;      // S3 path or local path to backup
+}
+
+message BackupVerifyResponse {
+  bool valid = 1;
+  string message = 2;
+  google.protobuf.Timestamp backup_timestamp = 3;
+  uint64 snapshot_term = 4;
+  uint64 snapshot_index = 5;
+}

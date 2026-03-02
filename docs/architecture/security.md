@@ -179,6 +179,53 @@ Sovra workspace keys are managed by the Sovra key rotation protocol. Lattice com
 
 For emergency revocation: revoke the Sovra shared workspace (see [federation.md](federation.md) — Removing a Federation Peer).
 
+## Additional Security Considerations
+
+### OIDC Token Refresh for Long-Lived Streams
+
+Long-lived gRPC streams (Attach, StreamLogs, StreamMetrics) may outlive the OIDC access token's lifetime:
+
+- **Token validation at stream open.** The API server validates the OIDC token when the stream is established.
+- **Periodic re-validation.** For streams lasting longer than `token_revalidation_interval` (default: 5 minutes), the API server re-validates the token's claims against the OIDC provider. If the token has been revoked or the user's permissions have changed, the stream is terminated with an `UNAUTHENTICATED` error.
+- **Client responsibility.** Clients should refresh their access token before it expires and present the new token on reconnection if the stream is terminated.
+
+### Anti-Replay for API Requests
+
+API requests are protected against replay attacks:
+
+- **TLS as primary defense.** All external API communication uses TLS, which provides replay protection at the transport layer.
+- **Request idempotency.** Mutating operations (Submit, Cancel, Update) use client-generated `request_id` fields for idempotency. Duplicate `request_id` values within a time window are rejected.
+- **Raft proposal deduplication.** The quorum deduplicates proposals using the proposing scheduler's identity and a monotonic sequence number. Replayed proposals are ignored.
+
+### RBAC for Node Management
+
+Node management operations (drain, undrain, disable) require the `system-admin` role:
+
+| Operation | Required Role | Notes |
+|-----------|--------------|-------|
+| `ListNodes`, `GetNode` | `user` | Read-only, filtered by tenant scope |
+| `DrainNode`, `UndrainNode` | `system-admin` | Affects scheduling across all tenants |
+| `DisableNode` | `system-admin` | Removes node from scheduling entirely |
+| Medical node claim | `claiming-user` | Medical-specific role within tenant |
+
+### Certificate CN vs NodeId Mapping
+
+Node agent certificates use a deterministic CN format that maps to the node's xname identity:
+
+- **Format:** `{xname}.{site}.lattice.internal` (e.g., `x1000c0s0b0n0.alps.lattice.internal`)
+- **Validation:** On each heartbeat, the quorum verifies that the certificate CN matches the node ID reported in the heartbeat payload. A mismatch triggers an `UNAUTHENTICATED` error and an alert.
+- **Prevents:** A compromised node agent from impersonating a different node.
+
+### Medical Session Recording Storage
+
+Attach session recordings for medical allocations are stored alongside the audit log:
+
+- **Path:** `s3://medical-audit/{tenant}/{alloc_id}/sessions/{session_id}.recording`
+- **Format:** Raw byte stream (input + output interleaved with timestamps), compressed with zstd
+- **Encryption:** Encrypted at rest using the medical storage pool's encryption keys
+- **Retention:** 7 years (matching medical audit log retention)
+- **Access:** Only the claiming user and tenant-admin (compliance reviewer) can access recordings via the audit query API
+
 ## Cross-References
 
 - [sensitive-workloads.md](sensitive-workloads.md) — Medical-specific security requirements

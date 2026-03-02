@@ -232,6 +232,19 @@ Internal metrics for monitoring Lattice's own health. These metrics feed into ca
 | `lattice_accounting_events_buffered` | gauge | — | Events in the in-memory accounting buffer |
 | `lattice_accounting_events_dropped_total` | counter | — | Events dropped due to buffer overflow |
 
+### Federation Broker Metrics
+
+When federation is enabled, the federation broker exposes additional metrics:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `lattice_federation_proposals_total` | counter | `peer`, `result` (accepted/rejected/timeout) | Placement proposals sent to/from peers |
+| `lattice_federation_proposal_latency_seconds` | histogram | `peer` | Round-trip time for federation proposals |
+| `lattice_federation_peer_status` | gauge | `peer` | 1 = connected, 0 = unreachable |
+| `lattice_federation_data_gravity_score` | gauge | `peer`, `dataset` | Data gravity score for placement decisions (higher = more data at peer) |
+
+These metrics are only active when `federation.enabled = true`. The federation broker exposes them on the same `/metrics` endpoint as other components (default port: 9105).
+
 ### Alerting Rules
 
 Example alerting rules (PromQL-compatible):

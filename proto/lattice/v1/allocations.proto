@@ -87,6 +87,8 @@ message SubmitRequest {
 message SubmitResponse {
   // IDs of created allocations
   repeated string allocation_ids = 1;
+  // DAG ID (set when submission was a DagSpec)
+  string dag_id = 2;
 }
 
 message DagSpec {
@@ -169,6 +171,8 @@ message LifecycleSpec {
   }
   Type type = 1;
   google.protobuf.Duration walltime = 2;  // for BOUNDED
+  // Preemption class: 0 = lowest priority (most preemptible),
+  // higher = harder to preempt. Values 0-7 recommended.
   uint32 preemption_class = 3;
 
   // For REACTIVE
@@ -246,6 +250,8 @@ message AllocationStatus {
   google.protobuf.Timestamp completed_at = 7;
   int32 exit_code = 8;
   string message = 9;
+  // Authenticated user who submitted this allocation
+  string user = 10;
 }
 
 message CancelRequest {
@@ -276,6 +282,8 @@ message LaunchTasksResponse {
 
 message WatchRequest {
   string allocation_id = 1;  // empty = watch all for this user
+  string tenant = 2;         // filter by tenant (admin use)
+  string vcluster = 3;       // filter by vCluster
 }
 
 message AllocationEvent {

@@ -32,6 +32,15 @@ GET    /v1/allocations/{id}/diagnostics/storage  Storage-specific diagnostics
 GET    /v1/compare                           Cross-allocation metric comparison
 ```
 
+**DAGs** — Workflow graph management.
+```
+POST   /v1/dags                    Submit a DAG of allocations
+GET    /v1/dags                    List DAGs (filterable by tenant, user, state)
+GET    /v1/dags/{id}               Get DAG status (overall state + per-allocation states)
+GET    /v1/dags/{id}/graph         Get DAG structure (allocations + dependency edges)
+DELETE /v1/dags/{id}               Cancel all allocations in a DAG
+```
+
 **Session** — Interactive allocation with WebSocket terminal.
 ```
 POST   /v1/sessions                 Create interactive session
@@ -149,6 +158,8 @@ dag:
       depends_on: [{ ref: "train", condition: "any" }]
 ```
 
+**DAG size limit:** Maximum 1000 allocations per DAG (configurable). Submissions exceeding this limit are rejected at validation time. See [dag-scheduling.md](dag-scheduling.md) for details.
+
 #### Task Groups (Job Arrays)
 
 ```yaml
@@ -225,8 +236,8 @@ The protobuf definitions in `proto/lattice/v1/allocations.proto` currently cover
 | AllocationService (submit, get, list, cancel, update, watch, checkpoint) | Defined | Core allocation lifecycle |
 | Observability RPCs (attach, logs, metrics, diagnostics, compare) | Defined | Part of AllocationService |
 | DAG RPCs (get, list, cancel) | Defined | Part of AllocationService |
-| NodeService (list, drain, undrain, status) | Planned | Will be a separate service proto |
-| TenantService (CRUD, quota management) | Planned | Will be a separate service proto |
+| NodeService (list, get, drain, undrain, disable) | Defined | `proto/lattice/v1/nodes.proto` |
+| AdminService (tenant CRUD, vCluster CRUD, Raft status, backup verify) | Defined | `proto/lattice/v1/admin.proto` |
 | AuditService (medical audit log queries) | Planned | Will be a separate service proto |
 | SessionService (create, terminal) | Planned | May merge into AllocationService or be separate |
 | AccountingService (usage queries) | Planned | May integrate with Waldur API directly |

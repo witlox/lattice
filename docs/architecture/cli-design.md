@@ -224,6 +224,7 @@ lattice dag cancel dag-789           # Cancel a DAG
 ```bash
 lattice cache warm --image=prgenv-gnu/24.11:v1 --group=3
 lattice cache status --node=x1000c0s0b0n0
+lattice cache evict --image=prgenv-gnu/24.11:v1 --node=x1000c0s0b0n0
 ```
 
 ## Admin Commands (`lattice admin`)

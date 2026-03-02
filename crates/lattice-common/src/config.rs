@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Top-level Lattice configuration.
@@ -23,6 +24,34 @@ pub struct LatticeConfig {
     /// Federation (optional)
     #[serde(default)]
     pub federation: Option<FederationConfig>,
+
+    /// Node agent configuration
+    #[serde(default)]
+    pub node_agent: Option<NodeAgentConfig>,
+
+    /// Network (VNI pool) configuration
+    #[serde(default)]
+    pub network: Option<NetworkConfig>,
+
+    /// Checkpoint broker configuration
+    #[serde(default)]
+    pub checkpoint: Option<CheckpointConfig>,
+
+    /// Scheduling cycle configuration
+    #[serde(default)]
+    pub scheduling: Option<SchedulingConfig>,
+
+    /// External accounting (Waldur) integration
+    #[serde(default)]
+    pub accounting: Option<AccountingConfig>,
+
+    /// API rate limiting
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
+
+    /// Slurm compatibility layer configuration
+    #[serde(default)]
+    pub compat: Option<CompatConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,4 +139,170 @@ pub struct FederationPeer {
     pub name: String,
     pub broker_address: String,
     pub sovra_workspace_id: String,
+}
+
+// ─── Node Agent ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeAgentConfig {
+    /// Heartbeat interval from node agent to quorum (seconds)
+    pub heartbeat_interval_seconds: u64,
+    /// Heartbeat timeout before marking node Degraded (seconds)
+    pub heartbeat_timeout_seconds: u64,
+    /// Grace period before marking node Down (seconds)
+    pub grace_period_seconds: u64,
+    /// Extended grace period for medical nodes (seconds)
+    pub medical_grace_period_seconds: u64,
+}
+
+impl Default for NodeAgentConfig {
+    fn default() -> Self {
+        Self {
+            heartbeat_interval_seconds: 10,
+            heartbeat_timeout_seconds: 30,
+            grace_period_seconds: 120,
+            medical_grace_period_seconds: 600,
+        }
+    }
+}
+
+// ─── Network ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    /// Start of the VNI pool range (inclusive)
+    pub vni_pool_start: u32,
+    /// End of the VNI pool range (inclusive)
+    pub vni_pool_end: u32,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            vni_pool_start: 100,
+            vni_pool_end: 4095,
+        }
+    }
+}
+
+// ─── Checkpoint ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointConfig {
+    /// How often the checkpoint broker evaluates the cost function (seconds)
+    pub evaluation_interval_seconds: u64,
+    /// Timeout for a checkpoint operation to complete (seconds)
+    pub checkpoint_timeout_seconds: u64,
+    /// Maximum time an application can defer a checkpoint request (seconds)
+    pub max_deferral_seconds: u64,
+}
+
+impl Default for CheckpointConfig {
+    fn default() -> Self {
+        Self {
+            evaluation_interval_seconds: 30,
+            checkpoint_timeout_seconds: 300,
+            max_deferral_seconds: 60,
+        }
+    }
+}
+
+// ─── Scheduling ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulingConfig {
+    /// Main scheduling cycle interval (seconds)
+    pub cycle_interval_seconds: u64,
+    /// Maximum number of jobs to consider during backfill pass
+    pub backfill_depth: u32,
+}
+
+impl Default for SchedulingConfig {
+    fn default() -> Self {
+        Self {
+            cycle_interval_seconds: 5,
+            backfill_depth: 100,
+        }
+    }
+}
+
+// ─── Accounting ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountingConfig {
+    /// Enable external accounting integration
+    pub enabled: bool,
+    /// Waldur API URL
+    pub waldur_api_url: String,
+    /// Kubernetes secret reference for Waldur API token
+    pub waldur_token_secret_ref: String,
+    /// Interval for pushing accounting events to Waldur (seconds)
+    pub push_interval_seconds: u64,
+    /// Local buffer size for accounting events before push
+    pub buffer_size: u32,
+}
+
+impl Default for AccountingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            waldur_api_url: String::new(),
+            waldur_token_secret_ref: String::new(),
+            push_interval_seconds: 60,
+            buffer_size: 1000,
+        }
+    }
+}
+
+// ─── Rate Limiting ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Maximum concurrent Attach sessions per user
+    pub attach_max_concurrent: u32,
+    /// Maximum concurrent StreamLogs sessions per user
+    pub stream_logs_max_concurrent: u32,
+    /// Maximum QueryMetrics requests per minute per user
+    pub query_metrics_per_minute: u32,
+    /// Maximum concurrent StreamMetrics sessions per user
+    pub stream_metrics_max_concurrent: u32,
+    /// Maximum Diagnostics requests per minute per user
+    pub diagnostics_per_minute: u32,
+    /// Maximum Compare requests per minute per user
+    pub compare_per_minute: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            attach_max_concurrent: 5,
+            stream_logs_max_concurrent: 10,
+            query_metrics_per_minute: 60,
+            stream_metrics_max_concurrent: 5,
+            diagnostics_per_minute: 10,
+            compare_per_minute: 10,
+        }
+    }
+}
+
+// ─── Compatibility ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompatConfig {
+    /// Set SLURM_* environment variables in allocation environment
+    pub set_slurm_env: bool,
+    /// Slurm partition name → vCluster ID mapping
+    pub partition_mapping: HashMap<String, String>,
+    /// Slurm QOS name → preemption class mapping
+    pub qos_mapping: HashMap<String, u32>,
+}
+
+impl Default for CompatConfig {
+    fn default() -> Self {
+        Self {
+            set_slurm_env: true,
+            partition_mapping: HashMap::new(),
+            qos_mapping: HashMap::new(),
+        }
+    }
 }
