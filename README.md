@@ -10,7 +10,7 @@ Lattice is a distributed workload scheduler designed for large-scale scientific 
 - **Intent-based API with Slurm compatibility** — agents submit intents, users can use familiar `sbatch`-like commands
 - **Distributed control plane** — Raft quorum for global state, per-vCluster schedulers for workload-specific policies
 - **uenv-native software delivery** — SquashFS-based user environments as the default, OCI containers when isolation is needed
-- **Medical/regulated workload support** — user-level node claims, dedicated nodes, encrypted storage, full audit trail
+- **Sensitive/regulated workload support** — user-level node claims, dedicated nodes, encrypted storage, full audit trail
 - **Federation as opt-in** — multi-site operation via Sovra trust layer, system fully functional without it
 
 ## Architecture Overview
