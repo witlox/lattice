@@ -135,7 +135,7 @@ All major decisions are recorded as ADRs in docs/decisions/. Key ones:
 - ADR-009: Two-tier quota enforcement
 
 ### Architecture Docs (docs/architecture/)
-Detailed design documents: system-architecture, api-design, scheduling-algorithm, telemetry, observability, sensitive-workloads, checkpoint-broker, conformance, data-plane, federation, failure-modes, security, upgrades, gpu-topology, quota-enforcement, dag-scheduling, autoscaling, accounting, node-lifecycle, preemption, data-staging, deployment, sessions, cli-design, slurm-migration, testing-strategy, network-domains, tuning-guide, troubleshooting.
+Detailed design documents: system-architecture, api-design, scheduling-algorithm, telemetry, observability, sensitive-workloads, checkpoint-broker, conformance, data-plane, federation, failure-modes, security, upgrades, gpu-topology, memory-topology, quota-enforcement, dag-scheduling, autoscaling, accounting, node-lifecycle, preemption, data-staging, deployment, sessions, cli-design, slurm-migration, testing-strategy, network-domains, tuning-guide, troubleshooting.
 
 ## Coding Conventions
 
