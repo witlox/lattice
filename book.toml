@@ -1,0 +1,12 @@
+[book]
+title = "Lattice Documentation"
+description = "A distributed workload scheduler for HPC and AI workloads"
+authors = ["witlox"]
+language = "en"
+src = "docs"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/witlox/lattice"
+edit-url-template = "https://github.com/witlox/lattice/edit/main/{path}"

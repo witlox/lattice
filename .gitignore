@@ -34,6 +34,9 @@ docker-compose.override.yml
 *.swp
 *.swo
 
+# mdBook
+book/
+
 # Environment
 .env
 .env.*
