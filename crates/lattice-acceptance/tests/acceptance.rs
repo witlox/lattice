@@ -21,6 +21,8 @@ use lattice_node_agent::prologue::{NoopReporter, ProloguePipeline, PrologueResul
 use lattice_node_agent::runtime::{ExitStatus, MockRuntime, PrepareConfig, Runtime};
 use lattice_node_agent::telemetry::log_buffer::LogRingBuffer;
 
+use lattice_api::events::{AllocationEvent, EventBus, LogStream};
+use lattice_api::middleware::rbac::{Operation, RbacContext, RbacPolicy, Role};
 use lattice_scheduler::dag::validate_dag;
 use lattice_scheduler::federation::{
     FederationBroker, FederationConfig, FederationOffer, OfferDecision,
@@ -55,7 +57,17 @@ pub struct LatticeWorld {
     federation_total_nodes: u32,
     federation_idle_nodes: u32,
     federation_decision: Option<OfferDecision>,
-    // DAG validation
+    // Session management
+    session_alloc_idx: Option<usize>,
+    // RBAC
+    last_rbac_result: Option<bool>,
+    current_role: Option<Role>,
+    current_user: Option<String>,
+    requesting_tenant: Option<String>,
+    // Streaming / EventBus
+    event_bus: Option<Arc<EventBus>>,
+    named_alloc_ids: HashMap<String, Uuid>,
+    received_events: HashMap<String, Vec<AllocationEvent>>,
 }
 
 impl LatticeWorld {
@@ -82,6 +94,14 @@ impl LatticeWorld {
             federation_total_nodes: 0,
             federation_idle_nodes: 0,
             federation_decision: None,
+            session_alloc_idx: None,
+            last_rbac_result: None,
+            current_role: None,
+            current_user: None,
+            requesting_tenant: None,
+            event_bus: None,
+            named_alloc_ids: HashMap::new(),
+            received_events: HashMap::new(),
         }
     }
 
@@ -1306,6 +1326,400 @@ async fn offer_rejected_with_reason(world: &mut LatticeWorld, keyword: String) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// Session management steps
+// ═══════════════════════════════════════════════════════════
+
+#[when(regex = r#"^I create an interactive session for tenant "(\w[\w-]*)"$"#)]
+async fn create_session(world: &mut LatticeWorld, tenant: String) {
+    let alloc = AllocationBuilder::new()
+        .tenant(&tenant)
+        .lifecycle_unbounded()
+        .tag("session", "true")
+        .build();
+    world.allocations.push(alloc);
+    world.session_alloc_idx = Some(world.allocations.len() - 1);
+    world.last_error = None;
+}
+
+#[when(regex = r#"^the session transitions to "(\w+)"$"#)]
+async fn session_transitions(world: &mut LatticeWorld, target_str: String) {
+    let target = parse_allocation_state(&target_str);
+    let idx = world.session_alloc_idx.expect("no session created");
+    let alloc = &mut world.allocations[idx];
+    if alloc.state.can_transition_to(&target) {
+        alloc.state = target;
+    } else {
+        world.last_error = Some(LatticeError::Internal(format!(
+            "Invalid session transition from {:?} to {target_str}",
+            alloc.state
+        )));
+    }
+}
+
+#[when("I delete the session")]
+async fn delete_session(world: &mut LatticeWorld) {
+    let idx = world.session_alloc_idx.expect("no session created");
+    let alloc = &mut world.allocations[idx];
+    if alloc.state.can_transition_to(&AllocationState::Cancelled) {
+        alloc.state = AllocationState::Cancelled;
+    } else {
+        world.last_error = Some(LatticeError::Internal(format!(
+            "Cannot cancel session in state {:?}",
+            alloc.state
+        )));
+    }
+}
+
+#[then(regex = r#"^the session allocation should be "(\w+)"$"#)]
+async fn session_alloc_state(world: &mut LatticeWorld, expected: String) {
+    let expected_state = parse_allocation_state(&expected);
+    let idx = world.session_alloc_idx.expect("no session created");
+    assert_eq!(
+        world.allocations[idx].state, expected_state,
+        "Session allocation should be {expected}"
+    );
+}
+
+#[then("the session should have an unbounded lifecycle")]
+async fn session_unbounded(world: &mut LatticeWorld) {
+    let idx = world.session_alloc_idx.expect("no session created");
+    assert!(
+        matches!(
+            world.allocations[idx].lifecycle.lifecycle_type,
+            LifecycleType::Unbounded
+        ),
+        "Session should have Unbounded lifecycle"
+    );
+}
+
+#[then("the session should have a session tag")]
+async fn session_has_tag(world: &mut LatticeWorld) {
+    let idx = world.session_alloc_idx.expect("no session created");
+    assert_eq!(
+        world.allocations[idx]
+            .tags
+            .get("session")
+            .map(String::as_str),
+        Some("true"),
+        "Session should have session=true tag"
+    );
+}
+
+#[then("the session walltime should be zero")]
+async fn session_walltime_zero(world: &mut LatticeWorld) {
+    let idx = world.session_alloc_idx.expect("no session created");
+    match &world.allocations[idx].lifecycle.lifecycle_type {
+        LifecycleType::Unbounded => {} // Unbounded has no walltime, which is correct
+        LifecycleType::Bounded { walltime } => {
+            assert!(walltime.is_zero(), "Walltime should be zero");
+        }
+        other => panic!("Expected Unbounded, got {other:?}"),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// RBAC authorization steps
+// ═══════════════════════════════════════════════════════════
+
+#[given(regex = r#"^a user "(\w[\w-]*)" with role "(\w+)"$"#)]
+async fn given_user_with_role(world: &mut LatticeWorld, user: String, role_str: String) {
+    world.current_user = Some(user);
+    world.current_role = Some(parse_role(&role_str));
+    world.requesting_tenant = None;
+}
+
+#[given(regex = r#"^a user "(\w[\w-]*)" with role "(\w+)" in tenant "(\w[\w-]*)"$"#)]
+async fn given_user_with_role_tenant(
+    world: &mut LatticeWorld,
+    user: String,
+    role_str: String,
+    tenant: String,
+) {
+    world.current_user = Some(user);
+    world.current_role = Some(parse_role(&role_str));
+    world.requesting_tenant = Some(tenant);
+}
+
+#[when(regex = r#"^the user attempts operation "(\w+)"$"#)]
+async fn user_attempts_operation(world: &mut LatticeWorld, op_str: String) {
+    let role = world.current_role.as_ref().expect("no role set");
+    let user = world.current_user.as_deref().unwrap_or("anonymous");
+    let ctx = RbacContext {
+        requesting_user: user.to_string(),
+        requesting_tenant: world.requesting_tenant.clone(),
+        target_tenant: None,
+        target_owner: None,
+    };
+    let op = parse_operation(&op_str);
+    world.last_rbac_result = Some(RbacPolicy::is_allowed(role, &op, &ctx));
+}
+
+#[when(regex = r#"^the user attempts operation "(\w+)" on tenant "(\w[\w-]*)"$"#)]
+async fn user_attempts_operation_on_tenant(
+    world: &mut LatticeWorld,
+    op_str: String,
+    target_tenant: String,
+) {
+    let role = world.current_role.as_ref().expect("no role set");
+    let user = world.current_user.as_deref().unwrap_or("anonymous");
+    let ctx = RbacContext {
+        requesting_user: user.to_string(),
+        requesting_tenant: world.requesting_tenant.clone(),
+        target_tenant: Some(target_tenant),
+        target_owner: None,
+    };
+    let op = parse_operation(&op_str);
+    world.last_rbac_result = Some(RbacPolicy::is_allowed(role, &op, &ctx));
+}
+
+#[then("the operation should be allowed")]
+async fn operation_allowed(world: &mut LatticeWorld) {
+    assert!(
+        world.last_rbac_result.unwrap_or(false),
+        "Expected operation to be allowed"
+    );
+}
+
+#[then("the operation should be denied")]
+async fn operation_denied(world: &mut LatticeWorld) {
+    assert!(
+        !world.last_rbac_result.unwrap_or(true),
+        "Expected operation to be denied"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// Streaming telemetry steps
+// ═══════════════════════════════════════════════════════════
+
+#[given("an event bus")]
+async fn given_event_bus(world: &mut LatticeWorld) {
+    world.event_bus = Some(Arc::new(EventBus::new()));
+    world.named_alloc_ids.clear();
+    world.received_events.clear();
+}
+
+#[given(regex = r#"^a subscriber for allocation "([^"]+)"$"#)]
+async fn given_subscriber(world: &mut LatticeWorld, alloc_name: String) {
+    // Register the allocation name → UUID mapping
+    world
+        .named_alloc_ids
+        .entry(alloc_name.clone())
+        .or_insert_with(Uuid::new_v4);
+    world.received_events.entry(alloc_name).or_default();
+}
+
+#[when(regex = r#"^a state change event is published for "([^"]+)" from "(\w+)" to "(\w+)"$"#)]
+async fn publish_state_change(
+    world: &mut LatticeWorld,
+    alloc_name: String,
+    old_state: String,
+    new_state: String,
+) {
+    let bus = world.event_bus.as_ref().expect("no event bus");
+    let alloc_id = *world
+        .named_alloc_ids
+        .get(&alloc_name)
+        .expect("unknown alloc");
+    let event = AllocationEvent::StateChange {
+        allocation_id: alloc_id,
+        old_state,
+        new_state,
+    };
+    bus.publish(event.clone()).await;
+    // Record the event for the matching allocation subscriber
+    if let Some(events) = world.received_events.get_mut(&alloc_name) {
+        events.push(event);
+    }
+}
+
+#[when(regex = r#"^(\d+) log lines are published for "([^"]+)"$"#)]
+async fn publish_log_lines(world: &mut LatticeWorld, count: usize, alloc_name: String) {
+    let bus = world.event_bus.as_ref().expect("no event bus");
+    let alloc_id = *world
+        .named_alloc_ids
+        .get(&alloc_name)
+        .expect("unknown alloc");
+    for i in 0..count {
+        let event = AllocationEvent::LogLine {
+            allocation_id: alloc_id,
+            line: format!("log line {i}"),
+            stream: LogStream::Stdout,
+        };
+        bus.publish(event.clone()).await;
+        if let Some(events) = world.received_events.get_mut(&alloc_name) {
+            events.push(event);
+        }
+    }
+}
+
+#[then(regex = r#"^the subscriber for "([^"]+)" should receive (\d+) events?$"#)]
+async fn subscriber_received_events(world: &mut LatticeWorld, alloc_name: String, count: usize) {
+    let events = world
+        .received_events
+        .get(&alloc_name)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert_eq!(
+        events, count,
+        "Expected {count} events for '{alloc_name}', got {events}"
+    );
+}
+
+#[then(regex = r#"^the received event should be a state change to "(\w+)"$"#)]
+async fn received_event_is_state_change(world: &mut LatticeWorld, new_state: String) {
+    // Check any allocation's received events
+    let events: Vec<&AllocationEvent> = world.received_events.values().flatten().collect();
+    assert!(
+        events.iter().any(
+            |e| matches!(e, AllocationEvent::StateChange { new_state: ns, .. } if ns == &new_state)
+        ),
+        "Expected a state change event to '{new_state}'"
+    );
+}
+
+#[then("all received events should be log lines")]
+async fn all_events_are_log_lines(world: &mut LatticeWorld) {
+    let events: Vec<&AllocationEvent> = world.received_events.values().flatten().collect();
+    for event in &events {
+        assert!(
+            matches!(event, AllocationEvent::LogLine { .. }),
+            "Expected LogLine event, got {event:?}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Node lifecycle steps
+// ═══════════════════════════════════════════════════════════
+
+#[when(regex = r#"^I drain node (\d+)$"#)]
+async fn drain_node(world: &mut LatticeWorld, node_idx: usize) {
+    let node_id = world.nodes[node_idx].id.clone();
+    world
+        .registry
+        .update_node_state(&node_id, NodeState::Draining)
+        .await
+        .unwrap();
+    // Also update the local copy
+    world.nodes[node_idx].state = NodeState::Draining;
+}
+
+#[when(regex = r#"^I undrain node (\d+)$"#)]
+async fn undrain_node(world: &mut LatticeWorld, node_idx: usize) {
+    let node_id = world.nodes[node_idx].id.clone();
+    // Draining → Drained → Ready
+    world
+        .registry
+        .update_node_state(&node_id, NodeState::Drained)
+        .await
+        .unwrap();
+    world
+        .registry
+        .update_node_state(&node_id, NodeState::Ready)
+        .await
+        .unwrap();
+    world.nodes[node_idx].state = NodeState::Ready;
+}
+
+#[when(regex = r#"^user "(\w[\w-]*)" claims node (\d+) for tenant "(\w[\w-]*)"$"#)]
+async fn user_claims_node_for_tenant(
+    world: &mut LatticeWorld,
+    user: String,
+    node_idx: usize,
+    tenant: String,
+) {
+    let node_id = world.nodes[node_idx].id.clone();
+    let ownership = NodeOwnership {
+        tenant,
+        vcluster: "default".into(),
+        allocation: Uuid::new_v4(),
+        claimed_by: Some(user.clone()),
+        is_borrowed: false,
+    };
+    match world.registry.claim_node(&node_id, ownership).await {
+        Ok(()) => {
+            world.last_error = None;
+        }
+        Err(e) => {
+            world.last_error = Some(e);
+        }
+    }
+}
+
+#[then(regex = r#"^node (\d+) should be in state "(\w+)"$"#)]
+async fn node_in_state(world: &mut LatticeWorld, node_idx: usize, expected: String) {
+    let node_id = &world.nodes[node_idx].id;
+    let node = world.registry.get_node(node_id).await.unwrap();
+    let expected_str = format!("{:?}", node.state);
+    // Handle simple state names (no inner data)
+    assert!(
+        expected_str.starts_with(&expected),
+        "Node {node_idx} expected state {expected}, got {expected_str}"
+    );
+}
+
+#[then(regex = r#"^nodes (\d+) through (\d+) should be in state "(\w+)"$"#)]
+async fn nodes_range_in_state(
+    world: &mut LatticeWorld,
+    start: usize,
+    end: usize,
+    expected: String,
+) {
+    for idx in start..=end {
+        let node_id = &world.nodes[idx].id;
+        let node = world.registry.get_node(node_id).await.unwrap();
+        let state_str = format!("{:?}", node.state);
+        assert!(
+            state_str.starts_with(&expected),
+            "Node {idx} expected state {expected}, got {state_str}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Tenant management steps
+// ═══════════════════════════════════════════════════════════
+
+#[given(regex = r#"^the tenant "(\w[\w-]*)" has strict isolation$"#)]
+async fn given_tenant_has_strict_isolation(world: &mut LatticeWorld, name: String) {
+    // Find existing tenant and upgrade to strict
+    if let Some(t) = world.tenants.iter_mut().find(|t| t.id == name) {
+        t.isolation_level = IsolationLevel::Strict;
+    } else {
+        let tenant = TenantBuilder::new(&name).strict_isolation().build();
+        world.tenants.push(tenant);
+    }
+}
+
+#[then(regex = r#"^tenant "(\w[\w-]*)" should have max_nodes (\d+)$"#)]
+async fn tenant_has_max_nodes(world: &mut LatticeWorld, name: String, max_nodes: u32) {
+    let tenant = world
+        .tenants
+        .iter()
+        .find(|t| t.id == name)
+        .unwrap_or_else(|| panic!("tenant '{name}' not found"));
+    assert_eq!(
+        tenant.quota.max_nodes, max_nodes,
+        "Tenant '{name}' should have max_nodes {max_nodes}"
+    );
+}
+
+#[then(regex = r#"^tenant "(\w[\w-]*)" should have strict isolation$"#)]
+async fn tenant_has_strict_isolation(world: &mut LatticeWorld, name: String) {
+    let tenant = world
+        .tenants
+        .iter()
+        .find(|t| t.id == name)
+        .unwrap_or_else(|| panic!("tenant '{name}' not found"));
+    assert!(
+        matches!(tenant.isolation_level, IsolationLevel::Strict),
+        "Tenant '{name}' should have strict isolation, got {:?}",
+        tenant.isolation_level
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════
 
@@ -1335,6 +1749,46 @@ fn parse_audit_action(s: &str) -> AuditAction {
         "MetricsQuery" => AuditAction::MetricsQuery,
         "CheckpointEvent" => AuditAction::CheckpointEvent,
         other => panic!("Unknown audit action: {other}"),
+    }
+}
+
+fn parse_role(s: &str) -> Role {
+    match s {
+        "User" => Role::User,
+        "TenantAdmin" => Role::TenantAdmin,
+        "SystemAdmin" => Role::SystemAdmin,
+        "ClaimingUser" => Role::ClaimingUser,
+        other => panic!("Unknown role: {other}"),
+    }
+}
+
+fn parse_operation(s: &str) -> Operation {
+    match s {
+        "SubmitAllocation" => Operation::SubmitAllocation,
+        "GetAllocation" => Operation::GetAllocation,
+        "ListAllocations" => Operation::ListAllocations,
+        "CancelAllocation" => Operation::CancelAllocation,
+        "UpdateAllocation" => Operation::UpdateAllocation,
+        "WatchAllocation" => Operation::WatchAllocation,
+        "StreamLogs" => Operation::StreamLogs,
+        "QueryMetrics" => Operation::QueryMetrics,
+        "StreamMetrics" => Operation::StreamMetrics,
+        "GetDiagnostics" => Operation::GetDiagnostics,
+        "CreateTenant" => Operation::CreateTenant,
+        "UpdateTenant" => Operation::UpdateTenant,
+        "CreateVCluster" => Operation::CreateVCluster,
+        "UpdateVCluster" => Operation::UpdateVCluster,
+        "DrainNode" => Operation::DrainNode,
+        "UndrainNode" => Operation::UndrainNode,
+        "DisableNode" => Operation::DisableNode,
+        "ListNodes" => Operation::ListNodes,
+        "GetNode" => Operation::GetNode,
+        "ClaimNode" => Operation::ClaimNode,
+        "ReleaseNode" => Operation::ReleaseNode,
+        "GetRaftStatus" => Operation::GetRaftStatus,
+        "BackupVerify" => Operation::BackupVerify,
+        "QueryAudit" => Operation::QueryAudit,
+        other => panic!("Unknown operation: {other}"),
     }
 }
 

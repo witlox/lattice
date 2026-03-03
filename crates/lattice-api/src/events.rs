@@ -66,6 +66,12 @@ pub struct EventBus {
     channels: RwLock<HashMap<Uuid, broadcast::Sender<AllocationEvent>>>,
 }
 
+impl std::fmt::Debug for EventBus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventBus").finish()
+    }
+}
+
 impl EventBus {
     /// Create a new, empty event bus.
     pub fn new() -> Self {

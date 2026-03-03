@@ -36,6 +36,9 @@ prometheus = { workspace = true }
 [dev-dependencies]
 tokio-test = { workspace = true }
 lattice-test-harness = { path = "../lattice-test-harness" }
+lattice-scheduler = { path = "../lattice-scheduler" }
+lattice-checkpoint = { path = "../lattice-checkpoint" }
+chrono = { workspace = true }
 wiremock = { workspace = true }
 rcgen = { workspace = true }
 tempfile = { workspace = true }
