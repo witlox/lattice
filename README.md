@@ -2,7 +2,7 @@
 
 **A scheduler for HPC and AI workloads.**
 
-Lattice is a distributed workload scheduler designed for large-scale scientific computing, AI/ML training, inference services, and regulated (medical) workloads. It supports both finite (batch) and infinite (service) jobs on full-node allocations, with topology-aware placement, federated multi-site operation, and a unified API for both human users and autonomous agents.
+Lattice is a distributed workload scheduler designed for large-scale scientific computing, AI/ML training, inference services, and sensitive/regulated workloads. It supports both finite (batch) and infinite (service) jobs on full-node allocations, with topology-aware placement, federated multi-site operation, and a unified API for both human users and autonomous agents.
 
 ## Key Design Principles
 
@@ -31,7 +31,7 @@ See [docs/architecture/](docs/architecture/) for detailed design documents.
 
 ```
 lattice/
-├── .claude/              # Claude coding context (CLAUDE.md, etc.)
+├── CLAUDE.md             # Claude coding context 
 ├── crates/               # Rust workspace
 │   ├── lattice-common/   # Shared types, config, error handling
 │   ├── lattice-quorum/   # Raft consensus + global state

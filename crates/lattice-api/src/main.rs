@@ -58,11 +58,17 @@ async fn main() -> Result<()> {
         checkpoint: Arc::new(lattice_test_harness::mocks::MockCheckpointBroker::new()),
         quorum: Some(quorum),
         events: lattice_api::events::new_event_bus(),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
     });
 
     let server_config = ServerConfig {
         grpc_addr: args.grpc_addr.parse()?,
         rest_addr: args.rest_addr.parse()?,
+        tls: None,
     };
 
     serve(state, server_config)

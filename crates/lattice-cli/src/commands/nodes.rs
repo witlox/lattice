@@ -2,6 +2,8 @@
 
 use clap::Args;
 
+use crate::client::LatticeGrpcClient;
+use crate::convert::{build_list_nodes_request, node_status_to_info};
 use crate::output::{OutputFormat, TableRow};
 
 /// Arguments for the nodes command.
@@ -100,6 +102,28 @@ pub fn format_nodes(nodes: &[NodeInfo], format: OutputFormat) -> String {
             crate::output::render_json(&items)
         }
     }
+}
+
+/// Execute the nodes command: list or inspect nodes via gRPC.
+pub async fn execute(
+    args: &NodesArgs,
+    client: &mut LatticeGrpcClient,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    if let Some(ref id) = args.id {
+        let status = client.get_node(id).await?;
+        let info = node_status_to_info(&status);
+        let output = format_nodes(&[info], format);
+        print!("{output}");
+    } else {
+        let req = build_list_nodes_request(args);
+        let resp = client.list_nodes(req).await?;
+        let infos: Vec<NodeInfo> = resp.nodes.iter().map(node_status_to_info).collect();
+        let output = format_nodes(&infos, format);
+        print!("{output}");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

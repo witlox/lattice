@@ -1,0 +1,22 @@
+# Multi-stage build for the lattice CLI
+# Thin client: connects to lattice-server via gRPC
+
+FROM rust:1.83-slim-bookworm AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+RUN cargo build --release --bin lattice
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/lattice /usr/local/bin/
+
+ENTRYPOINT ["lattice"]

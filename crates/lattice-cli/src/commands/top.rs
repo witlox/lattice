@@ -6,6 +6,10 @@
 
 use clap::Args;
 
+use crate::client::LatticeGrpcClient;
+use crate::convert::build_query_metrics_request;
+use crate::output::OutputFormat;
+
 /// Arguments for the top command.
 #[derive(Args, Debug)]
 pub struct TopArgs {
@@ -33,25 +37,61 @@ pub struct TopArgs {
     pub sort: String,
 }
 
-/// Execute the top command (stub — real gRPC call will come later).
-pub async fn execute(args: &TopArgs) -> anyhow::Result<()> {
-    if let Some(ref alloc_id) = args.alloc_id {
-        println!("Resource usage for allocation {alloc_id}:");
-    } else {
-        println!("Cluster-wide resource usage:");
+/// Execute the top command: query metrics snapshot via gRPC.
+pub async fn execute(
+    args: &TopArgs,
+    client: &mut LatticeGrpcClient,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let alloc_id = match &args.alloc_id {
+        Some(id) => id.clone(),
+        None => {
+            eprintln!("Cluster-wide top requires an allocation ID for now.");
+            return Ok(());
+        }
+    };
+
+    let req = build_query_metrics_request(&alloc_id);
+    let snapshot = client.query_metrics(req).await?;
+
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "allocation_id": snapshot.allocation_id,
+                "summary": snapshot.summary.as_ref().map(|s| serde_json::json!({
+                    "gpu_utilization_mean": s.gpu_utilization_mean,
+                    "cpu_utilization_mean": s.cpu_utilization_mean,
+                    "memory_used_bytes": s.memory_used_bytes,
+                    "memory_total_bytes": s.memory_total_bytes,
+                })),
+                "nodes": snapshot.nodes.len(),
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+        _ => {
+            println!("Resource usage for allocation {}:", snapshot.allocation_id);
+            if let Some(ref summary) = snapshot.summary {
+                println!("  GPU Utilization: {:.1}%", summary.gpu_utilization_mean);
+                println!("  CPU Utilization: {:.1}%", summary.cpu_utilization_mean);
+                if summary.memory_total_bytes > 0 {
+                    let pct = (summary.memory_used_bytes as f64
+                        / summary.memory_total_bytes as f64)
+                        * 100.0;
+                    println!("  Memory: {pct:.1}% used");
+                }
+            }
+            for node in &snapshot.nodes {
+                println!("  Node {}: CPU {:.1}%", node.node_id, node.cpu_utilization);
+                for gpu in &node.gpus {
+                    println!(
+                        "    GPU {}: {:.1}% util, {:.0}W, {:.0}C",
+                        gpu.index, gpu.utilization, gpu.power_draw_watts, gpu.temperature_celsius
+                    );
+                }
+            }
+        }
     }
-    if let Some(ref tenant) = args.tenant {
-        println!("  Tenant filter: {tenant}");
-    }
-    if let Some(ref vcluster) = args.vcluster {
-        println!("  vCluster filter: {vcluster}");
-    }
-    if args.per_gpu {
-        println!("  Per-GPU breakdown enabled");
-    }
-    println!("  Refresh interval: {}s", args.interval);
-    println!("  Sort by: {}", args.sort);
-    println!("Would connect to lattice-server and stream metrics");
+
     Ok(())
 }
 

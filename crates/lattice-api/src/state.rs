@@ -4,9 +4,14 @@
 
 use std::sync::Arc;
 
-use lattice_common::traits::{AllocationStore, AuditLog, CheckpointBroker, NodeRegistry};
+use lattice_common::traits::{
+    AccountingService, AllocationStore, AuditLog, CheckpointBroker, NodeRegistry, StorageService,
+};
+use lattice_common::tsdb_client::TsdbClient;
 
 use crate::events::EventBus;
+use crate::middleware::oidc::OidcValidator;
+use crate::middleware::rate_limit::RateLimiter;
 
 /// Shared state for the API server, holding trait-object references
 /// to the backing stores and services.
@@ -20,4 +25,14 @@ pub struct ApiState {
     pub quorum: Option<Arc<lattice_quorum::QuorumClient>>,
     /// Event bus for streaming RPCs (watch, stream_logs, stream_metrics).
     pub events: Arc<EventBus>,
+    /// Optional TSDB client for metrics push/query (e.g., VictoriaMetrics).
+    pub tsdb: Option<Arc<dyn TsdbClient>>,
+    /// Optional VAST/Lustre storage integration for data staging, QoS, wipe.
+    pub storage: Option<Arc<dyn StorageService>>,
+    /// Optional Waldur accounting integration for billing/resource tracking.
+    pub accounting: Option<Arc<dyn AccountingService>>,
+    /// Optional OIDC token validator for authentication.
+    pub oidc: Option<Arc<dyn OidcValidator>>,
+    /// Optional per-user rate limiter.
+    pub rate_limiter: Option<Arc<RateLimiter>>,
 }

@@ -92,10 +92,15 @@ pub struct ApiConfig {
     pub rest_address: Option<String>,
     /// OIDC provider URL for token validation
     pub oidc_issuer: String,
-    /// TLS certificate path
+    /// TLS certificate path (PEM)
     pub tls_cert: Option<PathBuf>,
-    /// TLS key path
+    /// TLS private key path (PEM)
     pub tls_key: Option<PathBuf>,
+    /// CA certificate path (PEM) for mTLS client verification.
+    /// When set, the server requires clients to present a certificate
+    /// signed by this CA.
+    #[serde(default)]
+    pub tls_ca: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,6 +4,10 @@
 //! See docs/architecture/observability.md.
 
 use clap::Args;
+use tokio_stream::StreamExt;
+
+use crate::client::{ClientConfig, LatticeGrpcClient};
+use crate::convert::build_watch_request;
 
 /// Arguments for the watch command.
 #[derive(Args, Debug)]
@@ -24,19 +28,41 @@ pub struct WatchArgs {
     pub until: Option<String>,
 }
 
-/// Execute the watch command (stub — real gRPC call will come later).
-pub async fn execute(args: &WatchArgs) -> anyhow::Result<()> {
-    println!("Watching allocation {}...", args.alloc_id);
-    if args.alerts_only {
-        println!("  Showing alerts only");
+/// Execute the watch command: stream allocation events via gRPC.
+pub async fn execute(
+    args: &WatchArgs,
+    client: &mut LatticeGrpcClient,
+    config: &ClientConfig,
+) -> anyhow::Result<()> {
+    eprintln!("Watching allocation {} (Ctrl+C to stop)...", args.alloc_id);
+
+    let req = build_watch_request(
+        &args.alloc_id,
+        config.tenant.as_deref(),
+        config.vcluster.as_deref(),
+    );
+    let mut stream = client.watch(req).await?;
+
+    while let Some(event) = stream.next().await {
+        let event = event?;
+        println!(
+            "[{}] {} - {}",
+            event
+                .timestamp
+                .map(|t| t.seconds.to_string())
+                .unwrap_or_default(),
+            event.event_type,
+            event.message,
+        );
+
+        if let Some(ref until_state) = args.until {
+            if event.event_type == "state_change" && event.message.contains(until_state.as_str()) {
+                eprintln!("Reached target state: {until_state}");
+                break;
+            }
+        }
     }
-    if let Some(ref metric) = args.metric {
-        println!("  Tracking metric: {metric}");
-    }
-    if let Some(ref until) = args.until {
-        println!("  Will stop when state reaches: {until}");
-    }
-    println!("Would connect to lattice-server and stream state changes (Ctrl+C to stop)");
+
     Ok(())
 }
 

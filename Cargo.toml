@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "2026.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/lattice-scheduler/lattice"
@@ -23,9 +23,11 @@ repository = "https://github.com/lattice-scheduler/lattice"
 tokio = { version = "1", features = ["full"] }
 
 # gRPC / Protobuf
-tonic = "0.12"
+tonic = { version = "0.12", features = ["tls"] }
 prost = "0.13"
+prost-types = "0.13"
 tonic-build = "0.12"
+tokio-stream = "0.1"
 
 # Raft consensus
 openraft = { version = "0.10.0-alpha.14", features = ["serde"] }
@@ -62,11 +64,24 @@ async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
 axum = "0.7"
 
+# JWT / OIDC
+jsonwebtoken = "9"
+
+# Metrics
+prometheus = "0.13"
+
+# GPU discovery (optional)
+nvml-wrapper = "0.10"
+
+# Test cert generation
+rcgen = "0.13"
+
 # Testing
 proptest = "1"
 tokio-test = "0.4"
 cucumber = "0.22"
 wiremock = "0.6"
+tempfile = "3"
 
 [profile.release]
 lto = true

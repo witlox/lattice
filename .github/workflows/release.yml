@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  schedule:
+    # Weekly on Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (skip publishing)"
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for commit count
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Compute the release version from Cargo.toml + commit count
+      - name: Compute version
+        id: version
+        run: |
+          VERSION=$(./scripts/set-version.sh --dry-run)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Computed version: $VERSION"
+
+      # Skip if this version was already released
+      - name: Check if tag exists
+        id: check_tag
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${{ steps.version.outputs.version }} already exists, skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Patch all version files
+      - name: Set version
+        if: steps.check_tag.outputs.exists == 'false'
+        run: ./scripts/set-version.sh
+
+      # Verify: fmt, clippy, test, deny
+      - name: Check formatting
+        if: steps.check_tag.outputs.exists == 'false'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        if: steps.check_tag.outputs.exists == 'false'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        if: steps.check_tag.outputs.exists == 'false'
+        run: cargo test --workspace
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        if: steps.check_tag.outputs.exists == 'false'
+
+      # Build release binaries
+      - name: Build release
+        if: steps.check_tag.outputs.exists == 'false'
+        run: cargo build --workspace --release
+
+      # Package binaries
+      - name: Package binaries
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          mkdir -p dist
+          cp target/release/lattice-server dist/ 2>/dev/null || true
+          cp target/release/lattice-agent dist/ 2>/dev/null || true
+          cp target/release/lattice dist/ 2>/dev/null || true
+          cp target/release/rm-replay dist/ 2>/dev/null || true
+          cd dist
+          for bin in *; do
+            tar czf "${bin}-linux-amd64.tar.gz" "$bin"
+          done
+
+      # Create tag and GitHub release
+      - name: Create release
+        if: steps.check_tag.outputs.exists == 'false' && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create "$TAG" dist/*.tar.gz \
+            --title "Lattice $VERSION" \
+            --generate-notes

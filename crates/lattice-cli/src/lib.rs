@@ -11,4 +11,5 @@ pub mod commands;
 pub mod compat;
 pub mod completions;
 pub mod config_file;
+pub mod convert;
 pub mod output;

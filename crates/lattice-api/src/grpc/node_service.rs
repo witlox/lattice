@@ -130,6 +130,11 @@ mod tests {
             checkpoint: Arc::new(MockCheckpointBroker::new()),
             quorum: None,
             events: crate::events::new_event_bus(),
+            tsdb: None,
+            storage: None,
+            accounting: None,
+            oidc: None,
+            rate_limiter: None,
         })
     }
 

@@ -22,5 +22,8 @@ pub use events::{AllocationEvent, EventBus};
 pub use grpc::admin_service::LatticeAdminService;
 pub use grpc::allocation_service::LatticeAllocationService;
 pub use grpc::node_service::LatticeNodeService;
-pub use server::{serve, serve_grpc, serve_rest, ServerConfig};
+pub use server::{
+    serve, serve_grpc, serve_grpc_with_tls, serve_rest, BearerToken, MiddlewareLayer,
+    RequestOperation, ServerConfig, TlsConfig, TlsConfigError,
+};
 pub use state::ApiState;

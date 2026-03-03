@@ -5,6 +5,10 @@
 
 use clap::{Args, Subcommand};
 
+use crate::client::{ClientConfig, LatticeGrpcClient};
+use crate::convert::allocation_status_to_info;
+use crate::output::OutputFormat;
+
 /// Arguments for the dag command.
 #[derive(Args, Debug)]
 pub struct DagArgs {
@@ -55,29 +59,73 @@ pub struct DagCancelArgs {
     pub pending_only: bool,
 }
 
-/// Execute the dag command (stub).
-pub async fn execute(args: &DagArgs) -> anyhow::Result<()> {
+/// Execute the dag command via gRPC.
+pub async fn execute(
+    args: &DagArgs,
+    client: &mut LatticeGrpcClient,
+    _config: &ClientConfig,
+    format: OutputFormat,
+    quiet: bool,
+) -> anyhow::Result<()> {
     match &args.command {
         DagCommand::Submit(submit_args) => {
-            println!("Submitting DAG from: {}", submit_args.file);
-            if let Some(ref t) = submit_args.tenant {
-                println!("  Tenant: {t}");
-            }
-            println!("Would parse DAG file and submit to lattice-server");
+            let content = std::fs::read_to_string(&submit_args.file).map_err(|e| {
+                anyhow::anyhow!("failed to read DAG file {}: {e}", submit_args.file)
+            })?;
+            // DAG files are YAML descriptions; for now we parse them as
+            // a simple list of allocation specs that form a DAG.
+            // The real implementation would use serde_yaml to parse the
+            // file into DagSpec. For now, we submit as a raw entrypoint.
+            let _ = content; // acknowledged but not fully parsed yet
+            eprintln!(
+                "DAG submission from YAML files is not yet implemented. \
+                 Use `lattice submit` with --depends-on for simple DAG workflows."
+            );
         }
         DagCommand::Status(status_args) => {
-            println!("DAG status for: {}", status_args.dag_id);
-            if status_args.detail {
-                println!("  Showing detailed per-stage status");
+            let dag = client.get_dag(&status_args.dag_id).await?;
+            match format {
+                OutputFormat::Json => {
+                    let allocs: Vec<serde_json::Value> = dag
+                        .allocations
+                        .iter()
+                        .map(|a| {
+                            let info = allocation_status_to_info(a);
+                            serde_json::json!({
+                                "id": info.id,
+                                "state": info.state,
+                                "nodes": info.nodes,
+                            })
+                        })
+                        .collect();
+                    let json = serde_json::json!({
+                        "dag_id": dag.dag_id,
+                        "state": dag.state,
+                        "allocations": allocs,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                _ => {
+                    println!("DAG {} [{}]", dag.dag_id, dag.state);
+                    for a in &dag.allocations {
+                        let info = allocation_status_to_info(a);
+                        println!("  {} - {} ({} nodes)", info.id, info.state, info.nodes);
+                    }
+                }
             }
-            println!("Would query lattice-server for DAG status");
         }
         DagCommand::Cancel(cancel_args) => {
-            println!("Cancelling DAG: {}", cancel_args.dag_id);
-            if cancel_args.pending_only {
-                println!("  Only cancelling pending stages");
+            let resp = client.cancel_dag(&cancel_args.dag_id).await?;
+            if !quiet {
+                if resp.success {
+                    println!(
+                        "Cancelled DAG {}: {} allocation(s) cancelled",
+                        cancel_args.dag_id, resp.allocations_cancelled
+                    );
+                } else {
+                    eprintln!("Failed to cancel DAG: {}", cancel_args.dag_id);
+                }
             }
-            println!("Would send cancel request to lattice-server");
         }
     }
     Ok(())

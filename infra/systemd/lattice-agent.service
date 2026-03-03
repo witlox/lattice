@@ -1,0 +1,35 @@
+[Unit]
+Description=Lattice Node Agent
+Documentation=https://github.com/lattice-scheduler/lattice
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/lattice-agent --node-id %H --quorum-endpoint ${LATTICE_QUORUM_ENDPOINT}
+EnvironmentFile=-/etc/lattice/agent.env
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=20
+TimeoutStopSec=30
+WatchdogSec=60
+
+# Agent needs root for nsenter/mount namespace operations,
+# uenv SquashFS mounts, and eBPF program loading.
+# Drop to lattice user only if these are not needed.
+User=root
+Group=root
+
+# File descriptor limits
+LimitNOFILE=65536
+
+# Allow mount namespace operations
+AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_NET_ADMIN
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lattice-agent
+
+[Install]
+WantedBy=multi-user.target

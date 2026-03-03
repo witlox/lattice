@@ -2,6 +2,8 @@
 
 use clap::Args;
 
+use crate::client::{ClientConfig, LatticeGrpcClient};
+use crate::convert::{allocation_status_to_info, build_list_request};
 use crate::output::{OutputFormat, TableRow};
 
 /// Arguments for the status command.
@@ -119,6 +121,43 @@ pub fn format_allocations(allocations: &[AllocationInfo], format: OutputFormat) 
             crate::output::render_json(&items)
         }
     }
+}
+
+/// Execute the status command: either get a single allocation or list.
+pub async fn execute(
+    args: &StatusArgs,
+    client: &mut LatticeGrpcClient,
+    config: &ClientConfig,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    if let Some(ref id) = args.id {
+        let status = client.get_allocation(id).await?;
+        let info = allocation_status_to_info(&status);
+        let output = format_allocations(&[info], format);
+        print!("{output}");
+    } else {
+        let user_filter = if args.mine {
+            Some(config.user.as_str())
+        } else {
+            args.user.as_deref()
+        };
+        let req = build_list_request(
+            user_filter,
+            config.tenant.as_deref(),
+            config.vcluster.as_deref(),
+            args.state.as_deref(),
+        );
+        let resp = client.list_allocations(req).await?;
+        let infos: Vec<AllocationInfo> = resp
+            .allocations
+            .iter()
+            .map(allocation_status_to_info)
+            .collect();
+        let output = format_allocations(&infos, format);
+        print!("{output}");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,0 +1,211 @@
+# Lattice Development Stack
+# 3-node quorum + 2 compute agents + VictoriaMetrics + Grafana
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f lattice-server-1
+#   docker compose down -v
+
+services:
+  # ── Quorum Nodes (3-node Raft cluster) ────────────────────
+
+  lattice-server-1:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.server
+    container_name: lattice-server-1
+    command:
+      - "--config"
+      - "/etc/lattice/config.yaml"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+      LATTICE_QUORUM_NODE_ID: "1"
+      LATTICE_API_GRPC_ADDRESS: "0.0.0.0:50051"
+      LATTICE_API_REST_ADDRESS: "0.0.0.0:8080"
+      LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
+    ports:
+      - "50051:50051"
+      - "8080:8080"
+    volumes:
+      - ./configs/server-1.yaml:/etc/lattice/config.yaml:ro
+      - server1-data:/var/lib/lattice
+    networks:
+      - lattice-net
+    healthcheck:
+      test: ["CMD", "lattice-server", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  lattice-server-2:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.server
+    container_name: lattice-server-2
+    command:
+      - "--config"
+      - "/etc/lattice/config.yaml"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+      LATTICE_QUORUM_NODE_ID: "2"
+      LATTICE_API_GRPC_ADDRESS: "0.0.0.0:50051"
+      LATTICE_API_REST_ADDRESS: "0.0.0.0:8080"
+      LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
+    ports:
+      - "50052:50051"
+      - "8081:8080"
+    volumes:
+      - ./configs/server-2.yaml:/etc/lattice/config.yaml:ro
+      - server2-data:/var/lib/lattice
+    networks:
+      - lattice-net
+    healthcheck:
+      test: ["CMD", "lattice-server", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  lattice-server-3:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.server
+    container_name: lattice-server-3
+    command:
+      - "--config"
+      - "/etc/lattice/config.yaml"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+      LATTICE_QUORUM_NODE_ID: "3"
+      LATTICE_API_GRPC_ADDRESS: "0.0.0.0:50051"
+      LATTICE_API_REST_ADDRESS: "0.0.0.0:8080"
+      LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
+    ports:
+      - "50053:50051"
+      - "8082:8080"
+    volumes:
+      - ./configs/server-3.yaml:/etc/lattice/config.yaml:ro
+      - server3-data:/var/lib/lattice
+    networks:
+      - lattice-net
+    healthcheck:
+      test: ["CMD", "lattice-server", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Compute Agents ────────────────────────────────────────
+
+  lattice-agent-1:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.agent
+    container_name: lattice-agent-1
+    command:
+      - "--node-id"
+      - "x1000c0s0b0n0"
+      - "--quorum-endpoint"
+      - "http://lattice-server-1:50051"
+      - "--cpu-cores"
+      - "64"
+      - "--memory-gb"
+      - "512"
+      - "--gpu-count"
+      - "4"
+      - "--gpu-type"
+      - "GH200"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+    networks:
+      - lattice-net
+    depends_on:
+      lattice-server-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  lattice-agent-2:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.agent
+    container_name: lattice-agent-2
+    command:
+      - "--node-id"
+      - "x1000c0s0b0n1"
+      - "--quorum-endpoint"
+      - "http://lattice-server-1:50051"
+      - "--cpu-cores"
+      - "128"
+      - "--memory-gb"
+      - "1024"
+      - "--gpu-count"
+      - "8"
+      - "--gpu-type"
+      - "MI300X"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+    networks:
+      - lattice-net
+    depends_on:
+      lattice-server-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Observability Stack ───────────────────────────────────
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.101.0
+    container_name: lattice-victoriametrics
+    ports:
+      - "8428:8428"
+    volumes:
+      - vm-data:/victoria-metrics-data
+    command:
+      - "-retentionPeriod=30d"
+      - "-httpListenAddr=:8428"
+    networks:
+      - lattice-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8428/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: lattice-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: lattice
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - lattice-net
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  server1-data:
+  server2-data:
+  server3-data:
+  vm-data:
+  grafana-data:
+
+networks:
+  lattice-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

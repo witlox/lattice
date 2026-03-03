@@ -110,6 +110,11 @@ fn test_state() -> Arc<ApiState> {
         checkpoint: Arc::new(MockCheckpointBroker::new()),
         quorum: None,
         events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
     })
 }
 

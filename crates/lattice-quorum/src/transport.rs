@@ -3,9 +3,15 @@
 //! Implements openraft's `RaftNetworkFactory` and `RaftNetworkV2` traits
 //! using tonic gRPC for inter-node communication. Each Raft message is
 //! JSON-serialized into a bytes payload and transported via the `RaftService` proto.
+//!
+//! ## TLS
+//!
+//! When a [`PeerTlsConfig`] is provided to [`GrpcNetworkFactory::with_tls`],
+//! all peer connections use TLS with optional mTLS (client certificate).
 
 use std::collections::HashMap;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use openraft::error::{RPCError, StreamingError, Unreachable};
@@ -16,7 +22,7 @@ use openraft::raft::{
 };
 use openraft::storage::Snapshot;
 use tokio::sync::RwLock;
-use tonic::transport::Channel;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tracing::{debug, warn};
 
 use crate::proto::raft_service_client::RaftServiceClient;
@@ -25,16 +31,83 @@ use crate::TypeConfig;
 
 type VoteOf = openraft::vote::Vote<TypeConfig>;
 
+// ─── Peer TLS configuration ─────────────────────────────────────────────────
+
+/// TLS configuration for Raft peer-to-peer connections (client side).
+#[derive(Debug, Clone)]
+pub struct PeerTlsConfig {
+    /// CA certificate PEM for verifying peer server certificates.
+    pub ca_cert_pem: Vec<u8>,
+    /// Optional client identity (cert + key) for mTLS.
+    pub client_identity: Option<(Vec<u8>, Vec<u8>)>,
+    /// Domain name override for TLS verification (useful when peers use IPs).
+    pub domain_override: Option<String>,
+}
+
+impl PeerTlsConfig {
+    /// Load a peer TLS config from file paths.
+    pub fn from_paths(
+        ca_path: &PathBuf,
+        client_cert_path: Option<&PathBuf>,
+        client_key_path: Option<&PathBuf>,
+        domain_override: Option<String>,
+    ) -> Result<Self, io::Error> {
+        let ca_cert_pem = std::fs::read(ca_path)?;
+        let client_identity = match (client_cert_path, client_key_path) {
+            (Some(cert), Some(key)) => {
+                let cert_pem = std::fs::read(cert)?;
+                let key_pem = std::fs::read(key)?;
+                Some((cert_pem, key_pem))
+            }
+            _ => None,
+        };
+        Ok(Self {
+            ca_cert_pem,
+            client_identity,
+            domain_override,
+        })
+    }
+
+    /// Build a `tonic::transport::ClientTlsConfig` from this configuration.
+    fn to_tonic_client_tls(&self) -> ClientTlsConfig {
+        let mut tls =
+            ClientTlsConfig::new().ca_certificate(Certificate::from_pem(&self.ca_cert_pem));
+
+        if let Some(ref domain) = self.domain_override {
+            tls = tls.domain_name(domain);
+        }
+
+        if let Some((ref cert, ref key)) = self.client_identity {
+            tls = tls.identity(Identity::from_pem(cert, key));
+        }
+
+        tls
+    }
+}
+
+// ─── Network factory ────────────────────────────────────────────────────────
+
 /// Maps node IDs to their gRPC addresses for connection management.
 #[derive(Clone)]
 pub struct GrpcNetworkFactory {
     addresses: Arc<RwLock<HashMap<u64, String>>>,
+    /// Optional TLS configuration for peer connections.
+    tls: Option<PeerTlsConfig>,
 }
 
 impl GrpcNetworkFactory {
     pub fn new() -> Self {
         Self {
             addresses: Arc::new(RwLock::new(HashMap::new())),
+            tls: None,
+        }
+    }
+
+    /// Create a new factory with TLS enabled for peer connections.
+    pub fn with_tls(tls: PeerTlsConfig) -> Self {
+        Self {
+            addresses: Arc::new(RwLock::new(HashMap::new())),
+            tls: Some(tls),
         }
     }
 
@@ -75,6 +148,7 @@ impl RaftNetworkFactory<TypeConfig> for GrpcNetworkFactory {
             target,
             address,
             client: None,
+            tls: self.tls.clone(),
         }
     }
 }
@@ -84,6 +158,8 @@ pub struct GrpcNetwork {
     target: u64,
     address: String,
     client: Option<RaftServiceClient<Channel>>,
+    /// Optional TLS configuration for this connection.
+    tls: Option<PeerTlsConfig>,
 }
 
 impl GrpcNetwork {
@@ -91,29 +167,43 @@ impl GrpcNetwork {
         &mut self,
     ) -> Result<&mut RaftServiceClient<Channel>, RPCError<TypeConfig>> {
         if self.client.is_none() {
+            let use_tls = self.tls.is_some();
             let endpoint = if self.address.starts_with("http") {
                 self.address.clone()
+            } else if use_tls {
+                format!("https://{}", self.address)
             } else {
                 format!("http://{}", self.address)
             };
 
-            debug!("Connecting to Raft peer {} at {}", self.target, endpoint);
+            debug!(
+                "Connecting to Raft peer {} at {} (TLS={})",
+                self.target, endpoint, use_tls
+            );
 
-            let channel = Channel::from_shared(endpoint)
-                .map_err(|e| {
+            let mut channel_builder = Channel::from_shared(endpoint).map_err(|e| {
+                RPCError::Unreachable(Unreachable::new(&io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid address for node {}: {}", self.target, e),
+                )))
+            })?;
+
+            if let Some(ref tls_cfg) = self.tls {
+                let client_tls = tls_cfg.to_tonic_client_tls();
+                channel_builder = channel_builder.tls_config(client_tls).map_err(|e| {
                     RPCError::Unreachable(Unreachable::new(&io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("Invalid address for node {}: {}", self.target, e),
-                    )))
-                })?
-                .connect()
-                .await
-                .map_err(|e| {
-                    RPCError::Unreachable(Unreachable::new(&io::Error::new(
-                        io::ErrorKind::ConnectionRefused,
-                        format!("Cannot connect to node {}: {}", self.target, e),
+                        format!("TLS config error for node {}: {}", self.target, e),
                     )))
                 })?;
+            }
+
+            let channel = channel_builder.connect().await.map_err(|e| {
+                RPCError::Unreachable(Unreachable::new(&io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    format!("Cannot connect to node {}: {}", self.target, e),
+                )))
+            })?;
 
             self.client = Some(RaftServiceClient::new(channel));
         }
@@ -280,6 +370,7 @@ mod tests {
     fn grpc_network_factory_default() {
         let factory = GrpcNetworkFactory::default();
         assert!(Arc::strong_count(&factory.addresses) == 1);
+        assert!(factory.tls.is_none());
     }
 
     #[tokio::test]
@@ -291,5 +382,52 @@ mod tests {
         let addrs = factory.addresses.read().await;
         assert_eq!(addrs.get(&1).unwrap(), "127.0.0.1:9000");
         assert_eq!(addrs.get(&2).unwrap(), "127.0.0.1:9001");
+    }
+
+    #[test]
+    fn grpc_network_factory_with_tls() {
+        let tls_cfg = PeerTlsConfig {
+            ca_cert_pem: b"dummy-ca-cert".to_vec(),
+            client_identity: None,
+            domain_override: Some("raft.lattice.local".to_string()),
+        };
+        let factory = GrpcNetworkFactory::with_tls(tls_cfg);
+        assert!(factory.tls.is_some());
+        assert_eq!(
+            factory.tls.as_ref().unwrap().domain_override.as_deref(),
+            Some("raft.lattice.local")
+        );
+    }
+
+    #[test]
+    fn peer_tls_config_builds_client_tls() {
+        // Use a minimal PEM certificate for testing (just checking construction, not validation).
+        let tls_cfg = PeerTlsConfig {
+            ca_cert_pem: b"-----BEGIN CERTIFICATE-----\nMIIBfTCCASOgAwIBAgIRAK...\n-----END CERTIFICATE-----\n".to_vec(),
+            client_identity: Some((
+                b"-----BEGIN CERTIFICATE-----\nclient-cert\n-----END CERTIFICATE-----\n".to_vec(),
+                b"-----BEGIN PRIVATE KEY-----\nclient-key\n-----END PRIVATE KEY-----\n".to_vec(),
+            )),
+            domain_override: Some("peer.lattice.local".to_string()),
+        };
+        // to_tonic_client_tls should not panic (it just constructs the config)
+        let _client_tls = tls_cfg.to_tonic_client_tls();
+    }
+
+    #[tokio::test]
+    async fn factory_with_tls_creates_tls_enabled_network() {
+        let tls_cfg = PeerTlsConfig {
+            ca_cert_pem: b"dummy-ca".to_vec(),
+            client_identity: None,
+            domain_override: None,
+        };
+        let mut factory = GrpcNetworkFactory::with_tls(tls_cfg);
+
+        let node = openraft::impls::BasicNode {
+            addr: "10.0.0.1:9000".to_string(),
+        };
+        let network = factory.new_client(1, &node).await;
+        assert!(network.tls.is_some(), "network should inherit TLS config");
+        assert_eq!(network.address, "10.0.0.1:9000");
     }
 }

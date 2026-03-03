@@ -1,131 +1,169 @@
 """
-Lattice gRPC client wrapper with Pythonic interface.
+Lattice HTTP client with Pythonic async interface.
 
 The LatticeClient class provides high-level methods for interacting with a Lattice
-scheduler. This is a stub implementation; full functionality requires generated
-protobuf stubs from proto/lattice/v1/*.proto.
+scheduler's REST API using httpx. All methods are async and support context manager usage.
 """
 
-from typing import AsyncIterator, Iterator, Optional
-import grpc
+import json
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-from .types import Allocation, AllocationState, Node, AllocationMetrics, WatchEvent, LogEntry
+import httpx
+
+from .types import (
+    Allocation,
+    AllocationMetrics,
+    AllocationSpec,
+    LogEntry,
+    Node,
+    Tenant,
+    VCluster,
+    WatchEvent,
+)
+
+
+class LatticeError(Exception):
+    """Base exception for Lattice client errors."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class LatticeNotFoundError(LatticeError):
+    """Raised when a requested resource is not found (404)."""
+    pass
+
+
+class LatticeAuthError(LatticeError):
+    """Raised when authentication fails (401/403)."""
+    pass
 
 
 class LatticeClient:
     """
     Python client for Lattice distributed workload scheduler.
 
-    Connects to a lattice-api gRPC server and provides methods for job submission,
+    Connects to a lattice-api REST server and provides methods for job submission,
     status queries, cancellation, and observability (logs, metrics, watch streams).
 
     Example:
-        async with LatticeClient("lattice-api.example.com", 50051) as client:
-            alloc_id = await client.submit(
+        async with LatticeClient("lattice-api.example.com", 8080) as client:
+            alloc = await client.submit(AllocationSpec(
                 entrypoint="python train.py",
-                nodes=1,
                 cpus=8,
                 memory_gb=32,
-                gpus=1
-            )
-            status = await client.status(alloc_id)
-            print(f"Job {alloc_id}: {status.state}")
+                gpus=1,
+            ))
+            status = await client.status(alloc.id)
+            print(f"Job {alloc.id}: {status.state}")
     """
 
     def __init__(
         self,
         host: str = "localhost",
-        port: int = 50051,
+        port: int = 8080,
         token: Optional[str] = None,
+        timeout: float = 30.0,
+        scheme: str = "http",
     ):
         """
         Initialize a Lattice client.
 
         Args:
-            host: gRPC server hostname or IP address. Defaults to "localhost".
-            port: gRPC server port. Defaults to 50051.
-            token: Optional authentication token for secure channels (not yet implemented).
+            host: API server hostname or IP address. Defaults to "localhost".
+            port: API server port. Defaults to 8080.
+            token: Optional Bearer token for authentication.
+            timeout: Request timeout in seconds. Defaults to 30.0.
+            scheme: URL scheme ("http" or "https"). Defaults to "http".
         """
         self.host = host
         self.port = port
         self.token = token
-        self.channel: Optional[grpc.aio.Channel] = None
+        self.timeout = timeout
+        self.scheme = scheme
+        self.base_url = f"{scheme}://{host}:{port}"
+        self._client: Optional[httpx.AsyncClient] = None
         self.connected = False
 
-    async def __aenter__(self):
+    def _headers(self) -> Dict[str, str]:
+        """Build request headers including auth token if set."""
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    async def connect(self) -> None:
+        """
+        Create the underlying httpx.AsyncClient.
+
+        This is called automatically when using the async context manager.
+        """
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        self.connected = True
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+            self.connected = False
+
+    async def __aenter__(self) -> "LatticeClient":
         """Async context manager entry."""
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Async context manager exit."""
-        await self.disconnect()
+        await self.close()
 
-    async def connect(self):
-        """
-        Establish connection to Lattice gRPC server.
+    def _ensure_client(self) -> httpx.AsyncClient:
+        """Return the httpx client, raising if not connected."""
+        if self._client is None:
+            raise LatticeError("Client is not connected. Use 'async with' or call connect().")
+        return self._client
 
-        Raises:
-            NotImplementedError: gRPC channel setup requires protobuf stubs.
-        """
-        raise NotImplementedError(
-            "gRPC channel initialization requires generated protobuf stubs from "
-            "proto/lattice/v1/*.proto. Run 'buf generate' to generate Python bindings."
-        )
+    def _raise_for_status(self, response: httpx.Response) -> None:
+        """Check HTTP response status and raise appropriate LatticeError."""
+        if response.status_code == 404:
+            raise LatticeNotFoundError(
+                f"Resource not found: {response.text}", status_code=404
+            )
+        if response.status_code in (401, 403):
+            raise LatticeAuthError(
+                f"Authentication failed: {response.text}", status_code=response.status_code
+            )
+        if response.status_code >= 400:
+            raise LatticeError(
+                f"Request failed ({response.status_code}): {response.text}",
+                status_code=response.status_code,
+            )
 
-    async def disconnect(self):
-        """Close the gRPC channel."""
-        if self.channel:
-            await self.channel.close()
-            self.connected = False
+    # ── Allocation Operations ──
 
-    async def submit(
-        self,
-        entrypoint: str,
-        nodes: int = 1,
-        cpus: float = 1.0,
-        memory_gb: float = 4.0,
-        gpus: int = 0,
-        gpu_memory_gb: float = 0.0,
-        storage_gb: float = 0.0,
-        priority_class: str = "normal",
-        tenant_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        network_domain: Optional[str] = None,
-        uenv: Optional[str] = None,
-        labels: Optional[dict] = None,
-        annotations: Optional[dict] = None,
-    ) -> str:
+    async def submit(self, spec: AllocationSpec) -> Allocation:
         """
         Submit an allocation (job or service) to Lattice.
 
         Args:
-            entrypoint: Command to execute (e.g., "python train.py").
-            nodes: Number of nodes required. Defaults to 1.
-            cpus: CPUs per node. Defaults to 1.0.
-            memory_gb: Memory per node in GB. Defaults to 4.0.
-            gpus: Number of GPUs per node. Defaults to 0.
-            gpu_memory_gb: GPU memory per node in GB. Defaults to 0.0.
-            storage_gb: Storage requirement in GB. Defaults to 0.0.
-            priority_class: Priority class ("low", "normal", "high"). Defaults to "normal".
-            tenant_id: Tenant identifier for quota enforcement. Optional.
-            user_id: User identifier for audit logging. Optional.
-            network_domain: Network domain for L3 reachability. Optional.
-            uenv: uenv image for software delivery. Optional.
-            labels: Metadata labels (key-value pairs). Optional.
-            annotations: Annotations for user metadata. Optional.
+            spec: AllocationSpec describing the workload.
 
         Returns:
-            Allocation ID as a string.
+            The created Allocation with its assigned ID and initial state.
 
         Raises:
-            NotImplementedError: Requires generated protobuf stubs.
+            LatticeError: On submission failure.
+            LatticeAuthError: On authentication failure.
         """
-        raise NotImplementedError(
-            "submit() requires generated protobuf stubs. "
-            "Run 'buf generate' in the root of the Lattice repository to generate "
-            "proto/gen/python/ bindings and import them here."
-        )
+        client = self._ensure_client()
+        response = await client.post("/v1/allocations", json=spec.to_dict())
+        self._raise_for_status(response)
+        return Allocation.from_dict(response.json())
 
     async def status(self, alloc_id: str) -> Allocation:
         """
@@ -138,12 +176,12 @@ class LatticeClient:
             Allocation object with current state, resource usage, and metadata.
 
         Raises:
-            NotImplementedError: Requires generated protobuf stubs.
+            LatticeNotFoundError: If the allocation does not exist.
         """
-        raise NotImplementedError(
-            "status() requires generated protobuf stubs. "
-            "Run 'buf generate' to generate proto/gen/python/ bindings."
-        )
+        client = self._ensure_client()
+        response = await client.get(f"/v1/allocations/{alloc_id}")
+        self._raise_for_status(response)
+        return Allocation.from_dict(response.json())
 
     async def cancel(self, alloc_id: str) -> bool:
         """
@@ -153,122 +191,281 @@ class LatticeClient:
             alloc_id: Allocation ID to cancel.
 
         Returns:
-            True if cancellation was successful.
+            True if cancellation was accepted.
 
         Raises:
-            NotImplementedError: Requires generated protobuf stubs.
+            LatticeNotFoundError: If the allocation does not exist.
         """
-        raise NotImplementedError(
-            "cancel() requires generated protobuf stubs. "
-            "Run 'buf generate' to generate proto/gen/python/ bindings."
-        )
+        client = self._ensure_client()
+        response = await client.delete(f"/v1/allocations/{alloc_id}")
+        self._raise_for_status(response)
+        return True
 
-    async def list_nodes(self) -> list[Node]:
+    async def list_allocations(
+        self,
+        tenant_id: Optional[str] = None,
+        state: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Allocation]:
+        """
+        List allocations with optional filtering.
+
+        Args:
+            tenant_id: Filter by tenant ID. Optional.
+            state: Filter by allocation state. Optional.
+            limit: Maximum number of results to return. Defaults to 100.
+            offset: Offset for pagination. Defaults to 0.
+
+        Returns:
+            List of Allocation objects.
+        """
+        client = self._ensure_client()
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if tenant_id:
+            params["tenant_id"] = tenant_id
+        if state:
+            params["state"] = state
+        response = await client.get("/v1/allocations", params=params)
+        self._raise_for_status(response)
+        data = response.json()
+        items = data if isinstance(data, list) else data.get("allocations", [])
+        return [Allocation.from_dict(item) for item in items]
+
+    # ── Node Operations ──
+
+    async def list_nodes(self) -> List[Node]:
         """
         List all compute nodes in the cluster.
 
         Returns:
             List of Node objects with availability status.
+        """
+        client = self._ensure_client()
+        response = await client.get("/v1/nodes")
+        self._raise_for_status(response)
+        data = response.json()
+        items = data if isinstance(data, list) else data.get("nodes", [])
+        return [Node.from_dict(item) for item in items]
+
+    async def get_node(self, node_name: str) -> Node:
+        """
+        Get details for a specific node.
+
+        Args:
+            node_name: Node name.
+
+        Returns:
+            Node object.
 
         Raises:
-            NotImplementedError: Requires generated protobuf stubs.
+            LatticeNotFoundError: If the node does not exist.
         """
-        raise NotImplementedError(
-            "list_nodes() requires generated protobuf stubs. "
-            "Run 'buf generate' to generate proto/gen/python/ bindings."
-        )
+        client = self._ensure_client()
+        response = await client.get(f"/v1/nodes/{node_name}")
+        self._raise_for_status(response)
+        return Node.from_dict(response.json())
+
+    # ── Observability ──
 
     async def watch(self, alloc_id: str) -> AsyncIterator[WatchEvent]:
         """
-        Stream allocation lifecycle events (watch pattern).
+        Stream allocation lifecycle events via server-sent events (SSE).
 
-        Yields events as the allocation transitions through states:
-        created -> running -> completed (or failed/cancelled).
+        Yields events as the allocation transitions through states.
 
         Args:
             alloc_id: Allocation ID to watch.
 
         Yields:
             WatchEvent objects with event type and updated allocation state.
-
-        Raises:
-            NotImplementedError: Requires generated protobuf stubs.
-
-        Example:
-            async for event in client.watch(alloc_id):
-                print(f"Event: {event.event_type}, State: {event.allocation.state}")
-                if event.allocation.state == AllocationState.COMPLETED:
-                    break
         """
-        raise NotImplementedError(
-            "watch() requires generated protobuf stubs. "
-            "Run 'buf generate' to generate proto/gen/python/ bindings."
-        )
+        client = self._ensure_client()
+        async with client.stream(
+            "GET",
+            f"/v1/allocations/{alloc_id}/watch",
+            headers={"Accept": "text/event-stream"},
+        ) as response:
+            self._raise_for_status(response)
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if line.startswith("data:"):
+                    data_str = line[5:].strip()
+                    if data_str:
+                        try:
+                            event_data = json.loads(data_str)
+                            yield WatchEvent.from_dict(event_data)
+                        except (json.JSONDecodeError, KeyError):
+                            continue
 
     async def logs(
         self, alloc_id: str, follow: bool = False, lines: int = 100
-    ) -> Iterator[LogEntry]:
+    ) -> AsyncIterator[LogEntry]:
         """
         Stream logs from an allocation.
 
-        Logs are dual-path (ring buffer live + S3 persistent) per ADR-004.
-
         Args:
             alloc_id: Allocation ID to fetch logs from.
-            follow: If True, follow new logs as they arrive (like `tail -f`).
+            follow: If True, follow new logs as they arrive (like tail -f).
             lines: Number of previous lines to retrieve. Defaults to 100.
 
         Yields:
             LogEntry objects with timestamp, level, and message.
-
-        Raises:
-            NotImplementedError: Requires generated protobuf stubs.
-
-        Example:
-            async for entry in client.logs(alloc_id, follow=True):
-                print(f"[{entry.level}] {entry.message}")
         """
-        raise NotImplementedError(
-            "logs() requires generated protobuf stubs. "
-            "Run 'buf generate' to generate proto/gen/python/ bindings."
-        )
+        client = self._ensure_client()
+        params: Dict[str, Any] = {"lines": lines}
+        if follow:
+            params["follow"] = "true"
+
+        if follow:
+            async with client.stream(
+                "GET",
+                f"/v1/allocations/{alloc_id}/logs",
+                params=params,
+                headers={"Accept": "text/event-stream"},
+            ) as response:
+                self._raise_for_status(response)
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if data_str:
+                            try:
+                                entry_data = json.loads(data_str)
+                                yield LogEntry.from_dict(entry_data)
+                            except (json.JSONDecodeError, KeyError):
+                                continue
+        else:
+            response = await client.get(
+                f"/v1/allocations/{alloc_id}/logs", params=params
+            )
+            self._raise_for_status(response)
+            data = response.json()
+            items = data if isinstance(data, list) else data.get("entries", [])
+            for item in items:
+                yield LogEntry.from_dict(item)
 
     async def metrics(self, alloc_id: str) -> AllocationMetrics:
         """
-        Get current metrics for an allocation (GPU util, CPU, memory, I/O, etc).
-
-        Metrics are queried from TSDB with configurable resolution per ADR-004.
+        Get current metrics for an allocation.
 
         Args:
             alloc_id: Allocation ID to query.
 
         Returns:
             AllocationMetrics object with current utilization data.
-
-        Raises:
-            NotImplementedError: Requires generated protobuf stubs.
         """
-        raise NotImplementedError(
-            "metrics() requires generated protobuf stubs. "
-            "Run 'buf generate' to generate proto/gen/python/ bindings."
-        )
+        client = self._ensure_client()
+        response = await client.get(f"/v1/allocations/{alloc_id}/metrics")
+        self._raise_for_status(response)
+        return AllocationMetrics.from_dict(response.json())
 
     async def stream_metrics(self, alloc_id: str) -> AsyncIterator[AllocationMetrics]:
         """
-        Stream metrics from an allocation (real-time feed).
-
-        Per ADR-004, StreamMetrics fans out to node agents with configurable resolution.
+        Stream metrics from an allocation via SSE.
 
         Args:
             alloc_id: Allocation ID to stream metrics from.
 
         Yields:
             AllocationMetrics objects at regular intervals.
+        """
+        client = self._ensure_client()
+        async with client.stream(
+            "GET",
+            f"/v1/allocations/{alloc_id}/metrics/stream",
+            headers={"Accept": "text/event-stream"},
+        ) as response:
+            self._raise_for_status(response)
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if line.startswith("data:"):
+                    data_str = line[5:].strip()
+                    if data_str:
+                        try:
+                            metrics_data = json.loads(data_str)
+                            yield AllocationMetrics.from_dict(metrics_data)
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+
+    # ── Tenant Operations ──
+
+    async def list_tenants(self) -> List[Tenant]:
+        """
+        List all tenants.
+
+        Returns:
+            List of Tenant objects.
+        """
+        client = self._ensure_client()
+        response = await client.get("/v1/tenants")
+        self._raise_for_status(response)
+        data = response.json()
+        items = data if isinstance(data, list) else data.get("tenants", [])
+        return [Tenant.from_dict(item) for item in items]
+
+    async def get_tenant(self, tenant_id: str) -> Tenant:
+        """
+        Get details for a specific tenant.
+
+        Args:
+            tenant_id: Tenant ID.
+
+        Returns:
+            Tenant object.
 
         Raises:
-            NotImplementedError: Requires generated protobuf stubs.
+            LatticeNotFoundError: If the tenant does not exist.
         """
-        raise NotImplementedError(
-            "stream_metrics() requires generated protobuf stubs. "
-            "Run 'buf generate' to generate proto/gen/python/ bindings."
-        )
+        client = self._ensure_client()
+        response = await client.get(f"/v1/tenants/{tenant_id}")
+        self._raise_for_status(response)
+        return Tenant.from_dict(response.json())
+
+    # ── VCluster Operations ──
+
+    async def list_vclusters(self) -> List[VCluster]:
+        """
+        List all vClusters.
+
+        Returns:
+            List of VCluster objects.
+        """
+        client = self._ensure_client()
+        response = await client.get("/v1/vclusters")
+        self._raise_for_status(response)
+        data = response.json()
+        items = data if isinstance(data, list) else data.get("vclusters", [])
+        return [VCluster.from_dict(item) for item in items]
+
+    async def get_vcluster(self, name: str) -> VCluster:
+        """
+        Get details for a specific vCluster.
+
+        Args:
+            name: VCluster name.
+
+        Returns:
+            VCluster object.
+
+        Raises:
+            LatticeNotFoundError: If the vCluster does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.get(f"/v1/vclusters/{name}")
+        self._raise_for_status(response)
+        return VCluster.from_dict(response.json())
+
+    # ── Health ──
+
+    async def health(self) -> Dict[str, Any]:
+        """
+        Check the health of the Lattice API server.
+
+        Returns:
+            Dictionary with health status information.
+        """
+        client = self._ensure_client()
+        response = await client.get("/healthz")
+        self._raise_for_status(response)
+        return response.json()

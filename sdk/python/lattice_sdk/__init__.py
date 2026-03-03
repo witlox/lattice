@@ -1,30 +1,31 @@
 """
-Lattice Python SDK - Pythonic wrapper for Lattice gRPC API.
+Lattice Python SDK - Pythonic wrapper for Lattice REST API.
 
 Lattice is a distributed workload scheduler that sits between Slurm (HPC batch)
 and Kubernetes (cloud services). This SDK provides a high-level interface for
 submitting jobs, monitoring status, and observing metrics and logs.
 
 Example:
-    async with LatticeClient("lattice-api.example.com", 50051) as client:
-        alloc_id = await client.submit(
+    async with LatticeClient("lattice-api.example.com", 8080) as client:
+        alloc = await client.submit(AllocationSpec(
             entrypoint="python train.py",
             nodes=2,
             cpus=16,
             memory_gb=64,
-            gpus=2
-        )
-        async for event in client.watch(alloc_id):
-            print(f"Job {alloc_id}: {event.allocation.state}")
+            gpus=2,
+        ))
+        async for event in client.watch(alloc.id):
+            print(f"Job {alloc.id}: {event.allocation.state}")
 """
 
 __version__ = "0.1.0"
 __author__ = "Lattice Contributors"
 
-from .client import LatticeClient
+from .client import LatticeClient, LatticeError, LatticeNotFoundError, LatticeAuthError
 from .types import (
     Allocation,
     AllocationMetrics,
+    AllocationSpec,
     AllocationState,
     LogEntry,
     Node,
@@ -36,8 +37,12 @@ from .types import (
 
 __all__ = [
     "LatticeClient",
+    "LatticeError",
+    "LatticeNotFoundError",
+    "LatticeAuthError",
     "Allocation",
     "AllocationMetrics",
+    "AllocationSpec",
     "AllocationState",
     "LogEntry",
     "Node",

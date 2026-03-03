@@ -2,6 +2,10 @@
 
 use clap::Args;
 
+use crate::client::{ClientConfig, LatticeGrpcClient};
+use crate::convert::build_submit_request;
+use crate::output::OutputFormat;
+
 /// Arguments for the submit command.
 #[derive(Args, Debug)]
 pub struct SubmitArgs {
@@ -149,6 +153,52 @@ impl SubmitDescription {
             self.project = directives.job_name.clone();
         }
     }
+}
+
+/// Execute the submit command: build a SubmitRequest and send it via gRPC.
+pub async fn execute(
+    args: &SubmitArgs,
+    client: &mut LatticeGrpcClient,
+    config: &ClientConfig,
+    format: OutputFormat,
+    quiet: bool,
+) -> anyhow::Result<()> {
+    let mut desc = args.to_submission(config.tenant.as_deref());
+
+    if let Some(ref path) = desc.script_path {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read script {path}: {e}"))?;
+        let directives = crate::compat::parse_sbatch_script(&content);
+        for warn in &directives.warnings {
+            if !quiet {
+                eprintln!("Warning: {warn}");
+            }
+        }
+        desc.merge_sbatch_directives(&directives);
+    }
+
+    let req = build_submit_request(&desc, &config.user, config.vcluster.as_deref());
+    let resp = client.submit(req).await?;
+
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "allocation_ids": resp.allocation_ids,
+                "dag_id": if resp.dag_id.is_empty() { None } else { Some(&resp.dag_id) },
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+        _ => {
+            if !resp.dag_id.is_empty() {
+                println!("Submitted DAG: {}", resp.dag_id);
+            }
+            for id in &resp.allocation_ids {
+                println!("Submitted allocation: {id}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

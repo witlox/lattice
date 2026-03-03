@@ -5,6 +5,10 @@
 
 use clap::{Args, Subcommand};
 
+use crate::client::{ClientConfig, LatticeGrpcClient};
+use crate::convert::{allocation_status_to_info, build_list_request, build_submit_request};
+use crate::output::OutputFormat;
+
 /// Arguments for the session command.
 #[derive(Args, Debug)]
 pub struct SessionArgs {
@@ -73,47 +77,67 @@ pub struct SessionDestroyArgs {
     pub force: bool,
 }
 
-/// Execute the session command (stub — real gRPC calls will come later).
-pub async fn execute(args: &SessionArgs) -> anyhow::Result<()> {
+/// Execute the session command via gRPC.
+pub async fn execute(
+    args: &SessionArgs,
+    client: &mut LatticeGrpcClient,
+    config: &ClientConfig,
+    format: OutputFormat,
+    quiet: bool,
+) -> anyhow::Result<()> {
     match &args.command {
         SessionCommand::List(list_args) => {
-            println!("Listing sessions:");
-            if list_args.mine {
-                println!("  Filtering to own sessions");
-            }
-            if let Some(ref state) = list_args.state {
-                println!("  State filter: {state}");
-            }
-            println!("Would connect to lattice-server and list sessions");
+            let user_filter = if list_args.mine {
+                Some(config.user.as_str())
+            } else {
+                None
+            };
+            let req = build_list_request(
+                user_filter,
+                config.tenant.as_deref(),
+                config.vcluster.as_deref(),
+                list_args.state.as_deref(),
+            );
+            let resp = client.list_allocations(req).await?;
+            let infos: Vec<_> = resp
+                .allocations
+                .iter()
+                .map(allocation_status_to_info)
+                .collect();
+            let output = crate::commands::status::format_allocations(&infos, format);
+            print!("{output}");
         }
         SessionCommand::Create(create_args) => {
-            println!("Creating interactive session:");
-            if let Some(n) = create_args.nodes {
-                println!("  Nodes: {n}");
+            let desc = crate::commands::submit::SubmitDescription {
+                tenant: config.tenant.clone(),
+                project: create_args.name.clone(),
+                nodes: create_args.nodes,
+                walltime: create_args
+                    .walltime
+                    .as_deref()
+                    .and_then(crate::compat::parse_slurm_time),
+                uenv: create_args.uenv.clone(),
+                view: create_args.view.clone(),
+                ..Default::default()
+            };
+            let req = build_submit_request(&desc, &config.user, config.vcluster.as_deref());
+            let resp = client.submit(req).await?;
+
+            if !quiet {
+                for id in &resp.allocation_ids {
+                    println!("Session created: {id}");
+                }
             }
-            if let Some(ref w) = create_args.walltime {
-                println!("  Walltime: {w}");
-            }
-            if let Some(ref u) = create_args.uenv {
-                println!("  uenv: {u}");
-            }
-            if let Some(ref v) = create_args.view {
-                println!("  View: {v}");
-            }
-            if let Some(ref c) = create_args.constraint {
-                println!("  Constraint: {c}");
-            }
-            if let Some(ref name) = create_args.name {
-                println!("  Name: {name}");
-            }
-            println!("Would connect to lattice-server and create session");
         }
         SessionCommand::Destroy(destroy_args) => {
-            println!("Destroying session {}:", destroy_args.session_id);
-            if destroy_args.force {
-                println!("  Force mode enabled");
+            let resp = client.cancel(&destroy_args.session_id).await?;
+            if !quiet {
+                if resp.success {
+                    println!("Session destroyed: {}", destroy_args.session_id);
+                } else {
+                    eprintln!("Failed to destroy session: {}", destroy_args.session_id);
+                }
             }
-            println!("Would connect to lattice-server and destroy session");
         }
     }
     Ok(())

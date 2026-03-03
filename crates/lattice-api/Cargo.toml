@@ -13,7 +13,7 @@ lattice-common = { path = "../lattice-common" }
 lattice-quorum = { path = "../lattice-quorum" }
 lattice-test-harness = { path = "../lattice-test-harness" }
 tokio = { workspace = true }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = { workspace = true }
 prost = { workspace = true }
 prost-types = "0.13"
@@ -29,7 +29,14 @@ axum = { workspace = true }
 async-trait = { workspace = true }
 tower = "0.5"
 clap = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+prometheus = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
 lattice-test-harness = { path = "../lattice-test-harness" }
+wiremock = { workspace = true }
+rcgen = { workspace = true }
+tempfile = { workspace = true }
+serde_yaml = { workspace = true }

@@ -4,6 +4,10 @@
 //! S3 for persistent historical logs. See docs/architecture/observability.md.
 
 use clap::Args;
+use tokio_stream::StreamExt;
+
+use crate::client::LatticeGrpcClient;
+use crate::convert::build_log_stream_request;
 
 /// Arguments for the logs command.
 #[derive(Args, Debug)]
@@ -32,23 +36,25 @@ pub struct LogsArgs {
     pub timestamps: bool,
 }
 
-/// Execute the logs command (stub — real gRPC call will come later).
-pub async fn execute(args: &LogsArgs) -> anyhow::Result<()> {
-    let stream = if args.stderr { "stderr" } else { "stdout" };
-    println!("Logs for allocation {} ({stream}):", args.alloc_id);
-    if let Some(ref node) = args.node {
-        println!("  Filtering to node: {node}");
+/// Execute the logs command: stream logs from an allocation via gRPC.
+pub async fn execute(args: &LogsArgs, client: &mut LatticeGrpcClient) -> anyhow::Result<()> {
+    let req = build_log_stream_request(args);
+    let mut stream = client.stream_logs(req).await?;
+
+    while let Some(entry) = stream.next().await {
+        let entry = entry?;
+        let data = String::from_utf8_lossy(&entry.data);
+        if args.timestamps {
+            if let Some(ref ts) = entry.timestamp {
+                print!("[{}] ", ts.seconds);
+            }
+        }
+        if !entry.node_id.is_empty() {
+            print!("[{}] ", entry.node_id);
+        }
+        print!("{data}");
     }
-    if let Some(n) = args.tail {
-        println!("  Showing last {n} lines");
-    }
-    if args.follow {
-        println!("  Following output (Ctrl+C to stop)...");
-    }
-    if args.timestamps {
-        println!("  Timestamps enabled");
-    }
-    println!("Would connect to lattice-server and stream logs");
+
     Ok(())
 }
 

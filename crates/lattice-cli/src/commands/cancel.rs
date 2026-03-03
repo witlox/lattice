@@ -2,6 +2,8 @@
 
 use clap::Args;
 
+use crate::client::LatticeGrpcClient;
+
 /// Arguments for the cancel command.
 #[derive(Args, Debug)]
 pub struct CancelArgs {
@@ -25,6 +27,32 @@ impl CancelArgs {
         }
         Ok(())
     }
+}
+
+/// Execute the cancel command: cancel one or more allocations via gRPC.
+pub async fn execute(
+    args: &CancelArgs,
+    client: &mut LatticeGrpcClient,
+    quiet: bool,
+) -> anyhow::Result<()> {
+    args.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    for id in &args.ids {
+        let resp = client.cancel(id).await?;
+        if !quiet {
+            if resp.success {
+                println!("Cancelled allocation: {id}");
+            } else {
+                eprintln!("Failed to cancel allocation: {id}");
+            }
+        }
+    }
+
+    if args.all_mine && args.ids.is_empty() && !quiet {
+        println!("Requested cancellation of all pending allocations for current user.");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

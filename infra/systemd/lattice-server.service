@@ -1,0 +1,39 @@
+[Unit]
+Description=Lattice Scheduler Server
+Documentation=https://github.com/lattice-scheduler/lattice
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/lattice-server --config /etc/lattice/server.yaml
+EnvironmentFile=-/etc/lattice/server.env
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+WatchdogSec=60
+
+User=lattice
+Group=lattice
+
+# File descriptor limits (Raft + gRPC connections)
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lattice
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lattice-server
+
+[Install]
+WantedBy=multi-user.target

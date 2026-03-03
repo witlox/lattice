@@ -4,6 +4,10 @@
 //! See docs/architecture/observability.md for details.
 
 use clap::Args;
+use tokio_stream::StreamExt;
+
+use crate::client::LatticeGrpcClient;
+use lattice_common::proto::lattice::v1 as pb;
 
 /// Arguments for the attach command.
 #[derive(Args, Debug)]
@@ -20,18 +24,56 @@ pub struct AttachArgs {
     pub command: Option<String>,
 }
 
-/// Execute the attach command (stub — real gRPC call will come later).
-pub async fn execute(args: &AttachArgs) -> anyhow::Result<()> {
-    println!("Attaching to allocation {}...", args.alloc_id);
+/// Execute the attach command via gRPC bidirectional streaming.
+pub async fn execute(args: &AttachArgs, client: &mut LatticeGrpcClient) -> anyhow::Result<()> {
+    eprintln!("Attaching to allocation {}...", args.alloc_id);
     if let Some(ref node) = args.node {
-        println!("  Target node: {node}");
+        eprintln!("  Target node: {node}");
     }
     if let Some(ref cmd) = args.command {
-        println!("  Command: {cmd}");
+        eprintln!("  Command: {cmd}");
     } else {
-        println!("  Opening interactive shell");
+        eprintln!("  Opening interactive shell");
     }
-    println!("Would connect to lattice-server and attach via nsenter");
+
+    let start = pb::AttachInput {
+        input: Some(pb::attach_input::Input::Start(pb::AttachStart {
+            allocation_id: args.alloc_id.clone(),
+            node_id: args.node.clone().unwrap_or_default(),
+            command: args.command.clone().unwrap_or_default(),
+            rows: 24,
+            cols: 80,
+        })),
+    };
+
+    let input_stream = tokio_stream::once(start);
+
+    let mut output_stream: tonic::Streaming<pb::AttachOutput> =
+        client.allocations.attach(input_stream).await?.into_inner();
+
+    while let Some(msg) = output_stream.next().await {
+        let msg = msg?;
+        match msg.output {
+            Some(pb::attach_output::Output::Data(bytes)) => {
+                use std::io::Write;
+                std::io::stdout().write_all(&bytes)?;
+                std::io::stdout().flush()?;
+            }
+            Some(pb::attach_output::Output::ExitCode(code)) => {
+                eprintln!("\nProcess exited with code {code}");
+                if code != 0 {
+                    std::process::exit(code);
+                }
+                break;
+            }
+            Some(pb::attach_output::Output::Error(err)) => {
+                eprintln!("Attach error: {err}");
+                std::process::exit(1);
+            }
+            None => {}
+        }
+    }
+
     Ok(())
 }
 

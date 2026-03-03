@@ -1,0 +1,29 @@
+# Multi-stage build for lattice-agent
+# The per-node daemon: heartbeat, allocation lifecycle, telemetry, runtime management
+
+FROM rust:1.83-slim-bookworm AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+RUN cargo build --release --bin lattice-agent
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -r lattice && useradd -r -g lattice lattice
+
+COPY --from=builder /build/target/release/lattice-agent /usr/local/bin/
+
+# Agent typically runs as root for nsenter/mount namespace operations
+# but can be dropped to lattice user if privileges are not needed
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/lattice-agent", "--version"]
+
+ENTRYPOINT ["lattice-agent"]
