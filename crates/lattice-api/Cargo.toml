@@ -8,8 +8,15 @@ license.workspace = true
 name = "lattice-server"
 path = "src/main.rs"
 
+[features]
+default = []
+oidc = []
+federation = ["lattice-common/federation"]
+accounting = ["lattice-common/accounting"]
+
 [dependencies]
 lattice-common = { path = "../lattice-common" }
+lattice-node-agent = { path = "../lattice-node-agent" }
 lattice-quorum = { path = "../lattice-quorum" }
 lattice-test-harness = { path = "../lattice-test-harness" }
 tokio = { workspace = true }
@@ -32,6 +39,7 @@ clap = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
 prometheus = { workspace = true }
+serde_yaml = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
@@ -43,3 +51,4 @@ wiremock = { workspace = true }
 rcgen = { workspace = true }
 tempfile = { workspace = true }
 serde_yaml = { workspace = true }
+base64 = "0.22"

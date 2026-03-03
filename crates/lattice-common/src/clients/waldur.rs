@@ -130,6 +130,129 @@ impl AccountingClient for InMemoryAccountingClient {
     }
 }
 
+/// HTTP-based Waldur client for real accounting integration.
+///
+/// Events are buffered locally and flushed asynchronously to avoid
+/// blocking the scheduler hot path. Waldur unavailability never blocks
+/// (per ADR-008).
+#[cfg(feature = "accounting")]
+pub struct HttpWaldurClient {
+    config: WaldurConfig,
+    client: reqwest::Client,
+    buffer: std::sync::Mutex<Vec<AccountingEvent>>,
+}
+
+#[cfg(feature = "accounting")]
+impl HttpWaldurClient {
+    /// Create a new HTTP Waldur client with the given configuration.
+    pub fn new(config: WaldurConfig) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            config,
+            buffer: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[cfg(feature = "accounting")]
+#[async_trait]
+impl AccountingClient for HttpWaldurClient {
+    async fn submit_event(&self, event: AccountingEvent) -> Result<(), String> {
+        let events_to_flush = {
+            let mut buf = self.buffer.lock().map_err(|e| e.to_string())?;
+            buf.push(event);
+
+            // Auto-flush when buffer reaches max size.
+            if buf.len() >= self.config.max_buffer_size {
+                Some(buf.drain(..).collect::<Vec<_>>())
+            } else {
+                None
+            }
+        }; // Lock released here.
+
+        if let Some(events) = events_to_flush {
+            self.flush_events(&events).await?;
+        }
+        Ok(())
+    }
+
+    async fn flush(&self) -> Result<usize, String> {
+        let events: Vec<AccountingEvent> = {
+            let mut buf = self.buffer.lock().map_err(|e| e.to_string())?;
+            buf.drain(..).collect()
+        };
+        let count = events.len();
+        if count > 0 {
+            self.flush_events(&events).await?;
+        }
+        Ok(count)
+    }
+
+    async fn query_usage(
+        &self,
+        tenant_id: &str,
+        resource_type: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<f64, String> {
+        let url = format!("{}/api/accounting/usage/", self.config.api_url);
+
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.config.api_token)
+            .query(&[
+                ("tenant_id", tenant_id),
+                ("resource_type", resource_type),
+                ("from", &from.to_rfc3339()),
+                ("to", &to.to_rfc3339()),
+            ])
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Waldur query failed: {status}: {text}"));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct UsageResponse {
+            total: f64,
+        }
+
+        let result = resp
+            .json::<UsageResponse>()
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(result.total)
+    }
+}
+
+#[cfg(feature = "accounting")]
+impl HttpWaldurClient {
+    async fn flush_events(&self, events: &[AccountingEvent]) -> Result<(), String> {
+        let url = format!("{}/api/accounting/events/", self.config.api_url);
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.api_token)
+            .json(events)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Waldur flush failed: {status}: {text}"));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +374,148 @@ mod tests {
         assert!(config.api_url.contains("waldur"));
         assert_eq!(config.flush_interval_secs, 60);
         assert_eq!(config.max_buffer_size, 1000);
+    }
+
+    // ─── HttpWaldurClient tests ────────────────────────────────────
+
+    #[cfg(feature = "accounting")]
+    #[tokio::test]
+    async fn http_client_submit_and_flush() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/accounting/events/"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config = WaldurConfig {
+            api_url: server.uri(),
+            api_token: "test-token".to_string(),
+            max_buffer_size: 1000,
+            ..Default::default()
+        };
+        let client = HttpWaldurClient::new(config);
+
+        client
+            .submit_event(sample_event("t1", "gpu_hours", 10.0))
+            .await
+            .unwrap();
+        client
+            .submit_event(sample_event("t1", "gpu_hours", 5.0))
+            .await
+            .unwrap();
+
+        let count = client.flush().await.unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[cfg(feature = "accounting")]
+    #[tokio::test]
+    async fn http_client_flush_empty_buffer() {
+        let config = WaldurConfig {
+            api_url: "http://unused.example.com".to_string(),
+            api_token: "test-token".to_string(),
+            ..Default::default()
+        };
+        let client = HttpWaldurClient::new(config);
+        let count = client.flush().await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[cfg(feature = "accounting")]
+    #[tokio::test]
+    async fn http_client_query_usage() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/accounting/usage/"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"total": 42.5})),
+            )
+            .mount(&server)
+            .await;
+
+        let config = WaldurConfig {
+            api_url: server.uri(),
+            api_token: "test-token".to_string(),
+            ..Default::default()
+        };
+        let client = HttpWaldurClient::new(config);
+
+        let total = client
+            .query_usage(
+                "physics",
+                "gpu_hours",
+                Utc::now() - Duration::hours(24),
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!((total - 42.5).abs() < 0.001);
+    }
+
+    #[cfg(feature = "accounting")]
+    #[tokio::test]
+    async fn http_client_auto_flush_on_max_buffer() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/accounting/events/"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(1) // Should be called once when buffer hits max
+            .mount(&server)
+            .await;
+
+        let config = WaldurConfig {
+            api_url: server.uri(),
+            api_token: "test-token".to_string(),
+            max_buffer_size: 2, // Very small buffer for testing
+            ..Default::default()
+        };
+        let client = HttpWaldurClient::new(config);
+
+        // First event: buffered.
+        client
+            .submit_event(sample_event("t1", "gpu_hours", 1.0))
+            .await
+            .unwrap();
+
+        // Second event: triggers auto-flush (buffer size >= max_buffer_size).
+        client
+            .submit_event(sample_event("t1", "gpu_hours", 2.0))
+            .await
+            .unwrap();
+
+        // Buffer should be empty now.
+        let count = client.flush().await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[cfg(feature = "accounting")]
+    #[tokio::test]
+    async fn http_client_flush_error_propagates() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/accounting/events/"))
+            .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("server error"))
+            .mount(&server)
+            .await;
+
+        let config = WaldurConfig {
+            api_url: server.uri(),
+            api_token: "test-token".to_string(),
+            ..Default::default()
+        };
+        let client = HttpWaldurClient::new(config);
+        client
+            .submit_event(sample_event("t1", "gpu_hours", 1.0))
+            .await
+            .unwrap();
+
+        let err = client.flush().await.unwrap_err();
+        assert!(err.contains("500"));
     }
 }

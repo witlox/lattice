@@ -27,6 +27,14 @@ async-trait = { workspace = true }
 tokio-stream = "0.1"
 sha2 = "0.10"
 
+[features]
+default = []
+nvidia = ["dep:nvml-wrapper"]
+
+[dependencies.nvml-wrapper]
+workspace = true
+optional = true
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 lattice-test-harness = { path = "../lattice-test-harness" }

@@ -10,6 +10,7 @@ use lattice_common::types::{AllocationState, CostWeights, Node, TopologyModel};
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
+use crate::autoscaler::{Autoscaler, ScaleDecision};
 use crate::cycle::{run_cycle, CycleInput};
 use crate::placement::PlacementDecision;
 
@@ -50,6 +51,14 @@ pub trait SchedulerCommandSink: Send + Sync {
         &self,
         alloc_id: lattice_common::types::AllocId,
     ) -> Result<(), lattice_common::error::LatticeError>;
+    /// Notify of a scale-up decision (default: no-op).
+    async fn scale_up(&self, _count: u32) -> Result<(), lattice_common::error::LatticeError> {
+        Ok(())
+    }
+    /// Notify of a scale-down decision (default: no-op).
+    async fn scale_down(&self, _count: u32) -> Result<(), lattice_common::error::LatticeError> {
+        Ok(())
+    }
 }
 
 /// Configuration for the scheduler loop.
@@ -78,6 +87,7 @@ pub struct SchedulerLoop<R: SchedulerStateReader, S: SchedulerCommandSink> {
     reader: Arc<R>,
     sink: Arc<S>,
     config: SchedulerLoopConfig,
+    autoscaler: Option<tokio::sync::Mutex<Autoscaler>>,
 }
 
 impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
@@ -86,75 +96,113 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
             reader,
             sink,
             config,
+            autoscaler: None,
         }
+    }
+
+    /// Attach an autoscaler that will be evaluated after each scheduling cycle.
+    pub fn with_autoscaler(mut self, autoscaler: Autoscaler) -> Self {
+        self.autoscaler = Some(tokio::sync::Mutex::new(autoscaler));
+        self
     }
 
     /// Run a single scheduling cycle. Returns the number of allocations placed.
     pub async fn run_once(&self) -> Result<usize, lattice_common::error::LatticeError> {
         let pending = self.reader.pending_allocations().await?;
-        if pending.is_empty() {
-            debug!("No pending allocations, skipping cycle");
-            return Ok(0);
-        }
-
         let running = self.reader.running_allocations().await?;
         let nodes = self.reader.available_nodes().await?;
-        let tenants = self.reader.tenants().await?;
-        let topology = self.reader.topology().await;
-
-        let input = CycleInput {
-            pending,
-            running,
-            nodes,
-            tenants,
-            topology,
-            data_readiness: HashMap::new(),
-            energy_price: self.config.energy_price,
-        };
-
-        let result = run_cycle(&input, &self.config.weights);
 
         let mut placed_count = 0;
-        for decision in &result.decisions {
-            match decision {
-                PlacementDecision::Place {
-                    allocation_id,
-                    nodes,
-                } => {
-                    debug!(alloc_id = %allocation_id, nodes = nodes.len(), "Placing allocation");
-                    if let Err(e) = self.sink.assign_nodes(*allocation_id, nodes.clone()).await {
-                        error!(alloc_id = %allocation_id, error = %e, "Failed to assign nodes");
-                        continue;
+
+        if !pending.is_empty() {
+            let tenants = self.reader.tenants().await?;
+            let topology = self.reader.topology().await;
+
+            let input = CycleInput {
+                pending: pending.clone(),
+                running: running.clone(),
+                nodes: nodes.clone(),
+                tenants,
+                topology,
+                data_readiness: HashMap::new(),
+                energy_price: self.config.energy_price,
+            };
+
+            let result = run_cycle(&input, &self.config.weights);
+
+            for decision in &result.decisions {
+                match decision {
+                    PlacementDecision::Place {
+                        allocation_id,
+                        nodes,
+                    } => {
+                        debug!(alloc_id = %allocation_id, nodes = nodes.len(), "Placing allocation");
+                        if let Err(e) = self.sink.assign_nodes(*allocation_id, nodes.clone()).await
+                        {
+                            error!(alloc_id = %allocation_id, error = %e, "Failed to assign nodes");
+                            continue;
+                        }
+                        if let Err(e) = self.sink.set_running(*allocation_id).await {
+                            error!(alloc_id = %allocation_id, error = %e, "Failed to set Running");
+                            continue;
+                        }
+                        placed_count += 1;
                     }
-                    if let Err(e) = self.sink.set_running(*allocation_id).await {
-                        error!(alloc_id = %allocation_id, error = %e, "Failed to set Running");
-                        continue;
+                    PlacementDecision::Preempt {
+                        allocation_id,
+                        nodes,
+                        victims,
+                    } => {
+                        warn!(
+                            alloc_id = %allocation_id,
+                            nodes = nodes.len(),
+                            victims = victims.len(),
+                            "Preemption needed (not yet implemented)"
+                        );
                     }
-                    placed_count += 1;
-                }
-                PlacementDecision::Preempt {
-                    allocation_id,
-                    nodes,
-                    victims,
-                } => {
-                    warn!(
-                        alloc_id = %allocation_id,
-                        nodes = nodes.len(),
-                        victims = victims.len(),
-                        "Preemption needed (not yet implemented)"
-                    );
-                }
-                PlacementDecision::Defer {
-                    allocation_id,
-                    reason,
-                } => {
-                    debug!(alloc_id = %allocation_id, reason = %reason, "Deferred allocation");
+                    PlacementDecision::Defer {
+                        allocation_id,
+                        reason,
+                    } => {
+                        debug!(alloc_id = %allocation_id, reason = %reason, "Deferred allocation");
+                    }
                 }
             }
+
+            if placed_count > 0 {
+                info!(placed = placed_count, "Scheduling cycle completed");
+            }
+        } else {
+            debug!("No pending allocations, skipping cycle");
         }
 
-        if placed_count > 0 {
-            info!(placed = placed_count, "Scheduling cycle completed");
+        // Evaluate autoscaler after placement decisions (always, even when no pending).
+        if let Some(ref autoscaler) = self.autoscaler {
+            let queue_depth = pending.len() as u32;
+            let total_nodes = nodes.len() as u32;
+            let running_count = running.len() as f64;
+            let avg_utilization = if total_nodes > 0 {
+                running_count / total_nodes as f64
+            } else {
+                0.0
+            };
+
+            let mut scaler = autoscaler.lock().await;
+            match scaler.evaluate(total_nodes, avg_utilization, queue_depth) {
+                ScaleDecision::ScaleUp { count } => {
+                    info!(count, "Autoscaler: scale up");
+                    if let Err(e) = self.sink.scale_up(count).await {
+                        warn!(error = %e, "Failed to execute scale-up");
+                    }
+                }
+                ScaleDecision::ScaleDown { count } => {
+                    info!(count, "Autoscaler: scale down");
+                    if let Err(e) = self.sink.scale_down(count).await {
+                        warn!(error = %e, "Failed to execute scale-down");
+                    }
+                }
+                ScaleDecision::NoChange => {}
+            }
         }
 
         Ok(placed_count)
@@ -529,6 +577,157 @@ mod tests {
         let result = sched.run_once().await;
         assert!(result.is_err());
     }
+
+    // ─── Autoscaler integration tests ─────────────────────────────────
+
+    struct ScaleTrackingSink {
+        assigned: Mutex<Vec<(AllocId, Vec<String>)>>,
+        running: Mutex<Vec<AllocId>>,
+        assign_count: AtomicUsize,
+        scale_ups: Mutex<Vec<u32>>,
+        scale_downs: Mutex<Vec<u32>>,
+    }
+
+    impl ScaleTrackingSink {
+        fn new() -> Self {
+            Self {
+                assigned: Mutex::new(Vec::new()),
+                running: Mutex::new(Vec::new()),
+                assign_count: AtomicUsize::new(0),
+                scale_ups: Mutex::new(Vec::new()),
+                scale_downs: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SchedulerCommandSink for ScaleTrackingSink {
+        async fn assign_nodes(
+            &self,
+            alloc_id: AllocId,
+            nodes: Vec<String>,
+        ) -> Result<(), LatticeError> {
+            self.assigned.lock().await.push((alloc_id, nodes));
+            self.assign_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        async fn set_running(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
+            self.running.lock().await.push(alloc_id);
+            Ok(())
+        }
+        async fn scale_up(&self, count: u32) -> Result<(), LatticeError> {
+            self.scale_ups.lock().await.push(count);
+            Ok(())
+        }
+        async fn scale_down(&self, count: u32) -> Result<(), LatticeError> {
+            self.scale_downs.lock().await.push(count);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn autoscaler_triggers_scale_up_when_queue_not_empty() {
+        use crate::autoscaler::AutoscalerConfig;
+
+        let alloc = AllocationBuilder::new().tenant("t1").nodes(10).build();
+        let reader = Arc::new(make_reader(vec![alloc], 4));
+        let sink = Arc::new(ScaleTrackingSink::new());
+
+        let config = SchedulerLoopConfig::default();
+        let scaler = Autoscaler::new(AutoscalerConfig {
+            cooldown_secs: 0,
+            ..Default::default()
+        });
+        let sched = SchedulerLoop::new(reader, sink.clone(), config).with_autoscaler(scaler);
+
+        // Allocation needs 10 nodes but only 4 available → deferred, but queue not empty.
+        let _placed = sched.run_once().await.unwrap();
+
+        // Autoscaler should have triggered scale-up (queue_depth > 0).
+        let scale_ups = sink.scale_ups.lock().await;
+        assert_eq!(scale_ups.len(), 1);
+        assert_eq!(scale_ups[0], 1);
+    }
+
+    #[tokio::test]
+    async fn autoscaler_triggers_scale_down_when_idle() {
+        use crate::autoscaler::AutoscalerConfig;
+
+        // No pending, no running → utilization = 0.0, queue_depth = 0.
+        let reader = Arc::new(make_reader(vec![], 4));
+        let sink = Arc::new(ScaleTrackingSink::new());
+
+        let config = SchedulerLoopConfig::default();
+        let scaler = Autoscaler::new(AutoscalerConfig {
+            cooldown_secs: 0,
+            ..Default::default()
+        });
+        let sched = SchedulerLoop::new(reader, sink.clone(), config).with_autoscaler(scaler);
+
+        let _placed = sched.run_once().await.unwrap();
+
+        // Autoscaler should trigger scale-down (low util, empty queue).
+        let scale_downs = sink.scale_downs.lock().await;
+        assert_eq!(scale_downs.len(), 1);
+        assert_eq!(scale_downs[0], 1);
+    }
+
+    #[tokio::test]
+    async fn autoscaler_no_change_within_band() {
+        use crate::autoscaler::AutoscalerConfig;
+
+        // Create a reader with 2 running (out of 4 nodes) → 50% util, no pending.
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![
+                AllocationBuilder::new()
+                    .tenant("t1")
+                    .state(AllocationState::Running)
+                    .build(),
+                AllocationBuilder::new()
+                    .tenant("t1")
+                    .state(AllocationState::Running)
+                    .build(),
+            ],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(ScaleTrackingSink::new());
+
+        let config = SchedulerLoopConfig::default();
+        let scaler = Autoscaler::new(AutoscalerConfig {
+            cooldown_secs: 0,
+            ..Default::default()
+        });
+        let sched = SchedulerLoop::new(reader, sink.clone(), config).with_autoscaler(scaler);
+
+        let _placed = sched.run_once().await.unwrap();
+
+        // 50% utilization is within the band (0.2, 0.8) → no change.
+        let scale_ups = sink.scale_ups.lock().await;
+        let scale_downs = sink.scale_downs.lock().await;
+        assert!(scale_ups.is_empty());
+        assert!(scale_downs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_autoscaler_means_no_scale_calls() {
+        let alloc = AllocationBuilder::new().tenant("t1").nodes(10).build();
+        let reader = Arc::new(make_reader(vec![alloc], 4));
+        let sink = Arc::new(ScaleTrackingSink::new());
+
+        // No autoscaler attached.
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+        let _placed = sched.run_once().await.unwrap();
+
+        let scale_ups = sink.scale_ups.lock().await;
+        let scale_downs = sink.scale_downs.lock().await;
+        assert!(scale_ups.is_empty());
+        assert!(scale_downs.is_empty());
+    }
+
+    // ─── Original tests continue ────────────────────────────────────
 
     #[tokio::test]
     async fn sink_error_skips_allocation() {

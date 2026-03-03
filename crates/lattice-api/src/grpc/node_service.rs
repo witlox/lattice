@@ -135,6 +135,8 @@ mod tests {
             accounting: None,
             oidc: None,
             rate_limiter: None,
+            sovra: None,
+            pty: None,
         })
     }
 

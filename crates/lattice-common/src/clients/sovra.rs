@@ -114,6 +114,124 @@ impl SovraClient for StubSovraClient {
     }
 }
 
+/// HTTP-based Sovra client for real federation deployments.
+///
+/// Communicates with a Sovra server via REST API for credential
+/// exchange, verification, and refresh operations.
+#[cfg(feature = "federation")]
+pub struct HttpSovraClient {
+    config: SovraConfig,
+    client: reqwest::Client,
+}
+
+#[cfg(feature = "federation")]
+impl HttpSovraClient {
+    /// Create a new HTTP Sovra client with the given configuration.
+    pub fn new(config: SovraConfig) -> Self {
+        Self {
+            config,
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
+impl SovraClient for HttpSovraClient {
+    async fn exchange_credentials(
+        &self,
+        remote_site_id: &str,
+    ) -> Result<SovraCredential, SovraError> {
+        let url = format!("{}/api/v1/credentials/exchange", self.config.server_url);
+        let body = serde_json::json!({
+            "site_id": self.config.site_id,
+            "remote_site_id": remote_site_id,
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| SovraError::ConnectionFailed(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SovraError::Unauthorized("exchange rejected".into()));
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(SovraError::ExchangeFailed(format!("{status}: {text}")));
+        }
+
+        resp.json::<SovraCredential>()
+            .await
+            .map_err(|e| SovraError::ExchangeFailed(e.to_string()))
+    }
+
+    async fn verify_credential(&self, credential: &SovraCredential) -> Result<bool, SovraError> {
+        let url = format!("{}/api/v1/credentials/verify", self.config.server_url);
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(credential)
+            .send()
+            .await
+            .map_err(|e| SovraError::ConnectionFailed(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SovraError::Unauthorized("verification rejected".into()));
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(SovraError::ExchangeFailed(format!("{status}: {text}")));
+        }
+
+        #[derive(Deserialize)]
+        struct VerifyResponse {
+            valid: bool,
+        }
+
+        let result = resp
+            .json::<VerifyResponse>()
+            .await
+            .map_err(|e| SovraError::ExchangeFailed(e.to_string()))?;
+
+        Ok(result.valid)
+    }
+
+    async fn refresh(&self) -> Result<SovraCredential, SovraError> {
+        let url = format!("{}/api/v1/credentials/refresh", self.config.server_url);
+        let body = serde_json::json!({
+            "site_id": self.config.site_id,
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| SovraError::ConnectionFailed(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SovraError::Unauthorized("refresh rejected".into()));
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(SovraError::ExchangeFailed(format!("{status}: {text}")));
+        }
+
+        resp.json::<SovraCredential>()
+            .await
+            .map_err(|e| SovraError::ExchangeFailed(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +277,114 @@ mod tests {
         let err = SovraError::ExchangeFailed("timeout".to_string());
         assert!(err.to_string().contains("timeout"));
         assert!(SovraError::TokenExpired.to_string().contains("expired"));
+    }
+
+    // ─── HttpSovraClient tests ─────────────────────────────────────
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn http_client_exchange_credentials() {
+        let server = wiremock::MockServer::start().await;
+
+        let cred = SovraCredential {
+            site_id: "site-a".to_string(),
+            token: "real-token".to_string(),
+            expires_at: 9999999999,
+            scopes: vec!["read".to_string(), "schedule".to_string()],
+        };
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/credentials/exchange"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&cred))
+            .mount(&server)
+            .await;
+
+        let config = SovraConfig {
+            server_url: server.uri(),
+            site_id: "site-a".to_string(),
+            ..Default::default()
+        };
+        let client = HttpSovraClient::new(config);
+        let result = client.exchange_credentials("site-b").await.unwrap();
+        assert_eq!(result.site_id, "site-a");
+        assert_eq!(result.token, "real-token");
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn http_client_verify_credential() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/credentials/verify"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"valid": true})),
+            )
+            .mount(&server)
+            .await;
+
+        let config = SovraConfig {
+            server_url: server.uri(),
+            site_id: "site-a".to_string(),
+            ..Default::default()
+        };
+        let client = HttpSovraClient::new(config);
+        let cred = SovraCredential {
+            site_id: "site-b".to_string(),
+            token: "tok".to_string(),
+            expires_at: 0,
+            scopes: vec![],
+        };
+        assert!(client.verify_credential(&cred).await.unwrap());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn http_client_refresh() {
+        let server = wiremock::MockServer::start().await;
+
+        let cred = SovraCredential {
+            site_id: "site-a".to_string(),
+            token: "refreshed-token".to_string(),
+            expires_at: 9999999999,
+            scopes: vec!["read".to_string()],
+        };
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/credentials/refresh"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&cred))
+            .mount(&server)
+            .await;
+
+        let config = SovraConfig {
+            server_url: server.uri(),
+            site_id: "site-a".to_string(),
+            ..Default::default()
+        };
+        let client = HttpSovraClient::new(config);
+        let result = client.refresh().await.unwrap();
+        assert_eq!(result.token, "refreshed-token");
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn http_client_exchange_unauthorized() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/credentials/exchange"))
+            .respond_with(wiremock::ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let config = SovraConfig {
+            server_url: server.uri(),
+            site_id: "site-a".to_string(),
+            ..Default::default()
+        };
+        let client = HttpSovraClient::new(config);
+        let err = client.exchange_credentials("site-b").await.unwrap_err();
+        assert!(matches!(err, SovraError::Unauthorized(_)));
     }
 }

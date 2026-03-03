@@ -42,6 +42,8 @@ fn e2e_state() -> Arc<ApiState> {
         accounting: None,
         oidc: None,
         rate_limiter: None,
+        sovra: None,
+        pty: None,
     })
 }
 
@@ -58,6 +60,8 @@ fn e2e_state_with_nodes(nodes: Vec<Node>) -> Arc<ApiState> {
         accounting: None,
         oidc: None,
         rate_limiter: None,
+        sovra: None,
+        pty: None,
     })
 }
 
@@ -354,6 +358,8 @@ async fn checkpoint_broker_via_api() {
         accounting: None,
         oidc: None,
         rate_limiter: None,
+        sovra: None,
+        pty: None,
     });
 
     let svc = LatticeAllocationService::new(state.clone());

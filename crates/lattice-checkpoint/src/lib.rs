@@ -15,7 +15,7 @@ pub mod loop_runner;
 pub mod policy;
 pub mod protocol;
 
-pub use broker::LatticeCheckpointBroker;
+pub use broker::{LatticeCheckpointBroker, NodeAgentPool};
 pub use cost_model::{evaluate_checkpoint, CheckpointEvaluation, CheckpointParams};
 pub use loop_runner::CheckpointLoop;
 pub use policy::{evaluate_policy, CheckpointPolicy};

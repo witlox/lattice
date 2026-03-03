@@ -118,6 +118,8 @@ fn test_state() -> Arc<ApiState> {
         accounting: None,
         oidc: None,
         rate_limiter: None,
+        sovra: None,
+        pty: None,
     })
 }
 
@@ -938,6 +940,8 @@ fn rest_test_state() -> Arc<ApiState> {
         accounting: None,
         oidc: None,
         rate_limiter: None,
+        sovra: None,
+        pty: None,
     })
 }
 
@@ -1393,6 +1397,8 @@ async fn rest_audit_returns_entries() {
         accounting: None,
         oidc: None,
         rate_limiter: None,
+        sovra: None,
+        pty: None,
     });
 
     let app = rest::router(state);
@@ -1504,6 +1510,8 @@ fn streaming_test_state() -> Arc<ApiState> {
         accounting: None,
         oidc: None,
         rate_limiter: None,
+        sovra: None,
+        pty: None,
     })
 }
 
@@ -1520,6 +1528,8 @@ fn streaming_test_state_with_tsdb(tsdb: Arc<MockTsdb>) -> Arc<ApiState> {
         accounting: None,
         oidc: None,
         rate_limiter: None,
+        sovra: None,
+        pty: None,
     })
 }
 

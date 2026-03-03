@@ -365,20 +365,120 @@ impl AllocationService for LatticeAllocationService {
             )));
         }
 
-        // In production, this would open a PTY via the node agent.
-        // For now, return a stream that sends an acknowledgement then closes.
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let ack = pb::AttachOutput {
-            output: Some(pb::attach_output::Output::Data(
-                format!(
-                    "attached to allocation {} on node {}\r\n",
-                    alloc_id, start.node_id
-                )
-                .into_bytes(),
-            )),
-        };
-        let _ = tx.send(Ok(ack)).await;
-        drop(tx); // Close the stream after ack
+
+        if let Some(ref pty) = self.state.pty {
+            // Open a PTY session via the backend.
+            let command = if start.command.is_empty() {
+                None
+            } else {
+                Some(start.command.as_str())
+            };
+            let size = lattice_node_agent::pty::TerminalSize {
+                rows: start.rows as u16,
+                cols: start.cols as u16,
+            };
+            let session_id = pty
+                .open(command, size)
+                .await
+                .map_err(|e| Status::internal(format!("failed to open PTY: {e}")))?;
+
+            // Send the attach ack.
+            let ack = pb::AttachOutput {
+                output: Some(pb::attach_output::Output::Data(
+                    format!(
+                        "attached to allocation {} on node {}\r\n",
+                        alloc_id, start.node_id
+                    )
+                    .into_bytes(),
+                )),
+            };
+            let _ = tx.send(Ok(ack)).await;
+
+            // Spawn a task to read from PTY and forward to client.
+            let pty_read = pty.clone();
+            let tx_read = tx.clone();
+            let sid_read = session_id;
+            tokio::spawn(async move {
+                loop {
+                    match pty_read.read(&sid_read).await {
+                        Ok(data) if data.is_empty() => {
+                            // PTY closed — send exit code 0 and stop.
+                            let _ = tx_read
+                                .send(Ok(pb::AttachOutput {
+                                    output: Some(pb::attach_output::Output::ExitCode(0)),
+                                }))
+                                .await;
+                            break;
+                        }
+                        Ok(data) => {
+                            if tx_read
+                                .send(Ok(pb::AttachOutput {
+                                    output: Some(pb::attach_output::Output::Data(data)),
+                                }))
+                                .await
+                                .is_err()
+                            {
+                                break; // client disconnected
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx_read
+                                .send(Ok(pb::AttachOutput {
+                                    output: Some(pb::attach_output::Output::Error(e.to_string())),
+                                }))
+                                .await;
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Spawn a task to read client input and forward to PTY.
+            let pty_write = pty.clone();
+            let sid_write = session_id;
+            tokio::spawn(async move {
+                while let Some(Ok(msg)) = stream.next().await {
+                    match msg.input {
+                        Some(pb::attach_input::Input::Data(data)) => {
+                            if pty_write.write(&sid_write, &data).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(pb::attach_input::Input::Resize(r)) => {
+                            let _ = pty_write
+                                .resize(
+                                    &sid_write,
+                                    lattice_node_agent::pty::TerminalSize {
+                                        rows: r.rows as u16,
+                                        cols: r.cols as u16,
+                                    },
+                                )
+                                .await;
+                        }
+                        Some(pb::attach_input::Input::Signal(sig)) => {
+                            let _ = pty_write.signal(&sid_write, sig).await;
+                        }
+                        _ => {}
+                    }
+                }
+                // Client stream ended — close the PTY session.
+                let _ = pty_write.close(&sid_write).await;
+            });
+        } else {
+            // No PTY backend — send a single acknowledgement then close.
+            let ack = pb::AttachOutput {
+                output: Some(pb::attach_output::Output::Data(
+                    format!(
+                        "attached to allocation {} on node {}\r\n",
+                        alloc_id, start.node_id
+                    )
+                    .into_bytes(),
+                )),
+            };
+            let _ = tx.send(Ok(ack)).await;
+            drop(tx);
+        }
 
         let out_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Response::new(Box::pin(out_stream)))
@@ -596,12 +696,98 @@ impl AllocationService for LatticeAllocationService {
             .await
             .map_err(|e| Status::not_found(e.to_string()))?;
 
-        // Build diagnostics based on assigned nodes
+        // Attempt to query real metrics from TSDB when available.
+        let (
+            net_bandwidth,
+            net_errors,
+            storage_read,
+            storage_write,
+            storage_iops_r,
+            storage_iops_w,
+        ) = if let Some(ref tsdb) = self.state.tsdb {
+            let bw = tsdb
+                .query_instant(&format!(
+                    "lattice_node_network_bandwidth_gbps{{allocation_id=\"{alloc_id}\"}}"
+                ))
+                .await
+                .ok()
+                .and_then(|r| {
+                    r.series
+                        .first()
+                        .and_then(|s| s.values.last().map(|(_, v)| *v))
+                })
+                .unwrap_or(200.0);
+            let errs = tsdb
+                .query_instant(&format!(
+                    "lattice_node_network_errors{{allocation_id=\"{alloc_id}\"}}"
+                ))
+                .await
+                .ok()
+                .and_then(|r| {
+                    r.series
+                        .first()
+                        .and_then(|s| s.values.last().map(|(_, v)| *v as u64))
+                })
+                .unwrap_or(0);
+            let sr = tsdb
+                .query_instant(&format!(
+                    "lattice_storage_read_throughput_gbps{{allocation_id=\"{alloc_id}\"}}"
+                ))
+                .await
+                .ok()
+                .and_then(|r| {
+                    r.series
+                        .first()
+                        .and_then(|s| s.values.last().map(|(_, v)| *v))
+                })
+                .unwrap_or(10.0);
+            let sw = tsdb
+                .query_instant(&format!(
+                    "lattice_storage_write_throughput_gbps{{allocation_id=\"{alloc_id}\"}}"
+                ))
+                .await
+                .ok()
+                .and_then(|r| {
+                    r.series
+                        .first()
+                        .and_then(|s| s.values.last().map(|(_, v)| *v))
+                })
+                .unwrap_or(5.0);
+            let ior = tsdb
+                .query_instant(&format!(
+                    "lattice_storage_iops_read{{allocation_id=\"{alloc_id}\"}}"
+                ))
+                .await
+                .ok()
+                .and_then(|r| {
+                    r.series
+                        .first()
+                        .and_then(|s| s.values.last().map(|(_, v)| *v))
+                })
+                .unwrap_or(10000.0);
+            let iow = tsdb
+                .query_instant(&format!(
+                    "lattice_storage_iops_write{{allocation_id=\"{alloc_id}\"}}"
+                ))
+                .await
+                .ok()
+                .and_then(|r| {
+                    r.series
+                        .first()
+                        .and_then(|s| s.values.last().map(|(_, v)| *v))
+                })
+                .unwrap_or(5000.0);
+            (bw, errs, sr, sw, ior, iow)
+        } else {
+            // Hardcoded defaults when TSDB is not configured.
+            (200.0, 0, 10.0, 5.0, 10000.0, 5000.0)
+        };
+
         let network = pb::NetworkDiagnostics {
             group_span: 1,
             groups: vec![0],
             csig_congestion_avg: 0.0,
-            inter_node_bandwidth_gbps: 200.0,
+            inter_node_bandwidth_gbps: net_bandwidth,
             target_bandwidth_gbps: 200.0,
             node_pairs: alloc
                 .assigned_nodes
@@ -609,12 +795,12 @@ impl AllocationService for LatticeAllocationService {
                 .map(|pair| pb::NodePairBandwidth {
                     source_node: pair[0].clone(),
                     target_node: pair[1].clone(),
-                    bandwidth_gbps: 200.0,
+                    bandwidth_gbps: net_bandwidth,
                     latency_us: 2.0,
                 })
                 .collect(),
             nvlink_throughput_gbps: 900.0,
-            network_errors: 0,
+            network_errors: net_errors,
         };
 
         let storage = pb::StorageDiagnostics {
@@ -625,14 +811,14 @@ impl AllocationService for LatticeAllocationService {
                 .map(|m| pb::MountDiagnostics {
                     mount_path: m.target.clone(),
                     mount_type: "nfs".to_string(),
-                    read_throughput_gbps: 10.0,
-                    write_throughput_gbps: 5.0,
+                    read_throughput_gbps: storage_read,
+                    write_throughput_gbps: storage_write,
                     qos_floor_gbps: 0.0,
                     latency_p50_us: 100.0,
                     latency_p95_us: 500.0,
                     latency_p99_us: 1000.0,
-                    iops_read: 10000.0,
-                    iops_write: 5000.0,
+                    iops_read: storage_iops_r,
+                    iops_write: storage_iops_w,
                     health: "healthy".to_string(),
                 })
                 .collect(),
@@ -981,6 +1167,8 @@ mod tests {
             accounting: None,
             oidc: None,
             rate_limiter: None,
+            sovra: None,
+            pty: None,
         })
     }
 
@@ -997,6 +1185,8 @@ mod tests {
             accounting: None,
             oidc: None,
             rate_limiter: None,
+            sovra: None,
+            pty: None,
         })
     }
 
@@ -1615,5 +1805,122 @@ mod tests {
 
         let running = state.allocations.get(&running_id).await.unwrap();
         assert_eq!(running.state, AllocationState::Running);
+    }
+
+    // ─── PTY Bridge tests ─────────────────────────────────────────
+    // Note: tonic::Streaming cannot be easily constructed in unit tests,
+    // so we test PTY state wiring and preconditions rather than the
+    // full bidirectional streaming flow.
+
+    #[tokio::test]
+    async fn pty_state_present_when_configured() {
+        use lattice_node_agent::pty::{MockPtyBackend, PtyBackend};
+        let pty = Arc::new(MockPtyBackend::new());
+        let state = Arc::new(ApiState {
+            allocations: Arc::new(MockAllocationStore::new()),
+            nodes: Arc::new(MockNodeRegistry::new()),
+            audit: Arc::new(MockAuditLog::new()),
+            checkpoint: Arc::new(MockCheckpointBroker::new()),
+            quorum: None,
+            events: crate::events::new_event_bus(),
+            tsdb: None,
+            storage: None,
+            accounting: None,
+            oidc: None,
+            rate_limiter: None,
+            sovra: None,
+            pty: Some(pty.clone()),
+        });
+        assert!(state.pty.is_some());
+
+        // Verify the PTY backend can open/close sessions
+        let session = pty
+            .open(None, lattice_node_agent::pty::TerminalSize::default())
+            .await
+            .unwrap();
+        assert!(pty.is_open(&session).await);
+        pty.close(&session).await.unwrap();
+        assert!(!pty.is_open(&session).await);
+    }
+
+    #[tokio::test]
+    async fn pty_state_absent_by_default() {
+        let state = test_state();
+        assert!(state.pty.is_none());
+    }
+
+    #[tokio::test]
+    async fn attach_precondition_running_state_with_pty() {
+        use lattice_node_agent::pty::MockPtyBackend;
+        let pty = Arc::new(MockPtyBackend::new());
+        let state = Arc::new(ApiState {
+            allocations: Arc::new(MockAllocationStore::new()),
+            nodes: Arc::new(MockNodeRegistry::new()),
+            audit: Arc::new(MockAuditLog::new()),
+            checkpoint: Arc::new(MockCheckpointBroker::new()),
+            quorum: None,
+            events: crate::events::new_event_bus(),
+            tsdb: None,
+            storage: None,
+            accounting: None,
+            oidc: None,
+            rate_limiter: None,
+            sovra: None,
+            pty: Some(pty),
+        });
+        let svc = LatticeAllocationService::new(state.clone());
+
+        // Submit allocation (stays Pending)
+        let resp = svc
+            .submit(Request::new(single_submit_request("physics")))
+            .await
+            .unwrap();
+        let alloc_id_str = &resp.into_inner().allocation_ids[0];
+        let alloc_id = uuid::Uuid::parse_str(alloc_id_str).unwrap();
+
+        // Verify: pending allocation should not be attachable
+        let alloc = state.allocations.get(&alloc_id).await.unwrap();
+        assert_ne!(alloc.state, AllocationState::Running);
+
+        // Set to running
+        state
+            .allocations
+            .update_state(&alloc_id, AllocationState::Running)
+            .await
+            .unwrap();
+        let alloc = state.allocations.get(&alloc_id).await.unwrap();
+        assert_eq!(alloc.state, AllocationState::Running);
+    }
+
+    #[tokio::test]
+    async fn pty_backend_write_and_read_roundtrip() {
+        use lattice_node_agent::pty::{MockPtyBackend, PtyBackend, TerminalSize};
+        let pty = Arc::new(MockPtyBackend::new());
+        let session = pty.open(None, TerminalSize::default()).await.unwrap();
+
+        // Write data (simulates client input)
+        pty.write(&session, b"ls -la\n").await.unwrap();
+        let written = pty.written_data(&session).await;
+        assert_eq!(written, b"ls -la\n");
+
+        // Enqueue read data (simulates process output)
+        pty.enqueue_read_data(&session, b"total 42\n".to_vec())
+            .await;
+        let output = pty.read(&session).await.unwrap();
+        assert_eq!(output, b"total 42\n");
+
+        // Resize
+        let new_size = TerminalSize {
+            rows: 50,
+            cols: 120,
+        };
+        pty.resize(&session, new_size).await.unwrap();
+        assert_eq!(pty.current_size(&session).await.unwrap(), new_size);
+
+        // Signal
+        pty.signal(&session, 2).await.unwrap();
+        assert_eq!(pty.last_signal(&session).await, Some(2));
+
+        pty.close(&session).await.unwrap();
     }
 }

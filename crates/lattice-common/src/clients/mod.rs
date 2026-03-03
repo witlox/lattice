@@ -12,6 +12,10 @@ pub mod vast;
 pub mod waldur;
 
 pub use openchamj::OpenChamiClient;
+#[cfg(feature = "federation")]
+pub use sovra::HttpSovraClient;
 pub use sovra::{SovraClient, StubSovraClient};
 pub use vast::VastClient;
+#[cfg(feature = "accounting")]
+pub use waldur::HttpWaldurClient;
 pub use waldur::{AccountingClient, InMemoryAccountingClient};

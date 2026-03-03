@@ -3,19 +3,23 @@
 //! Provides JSON endpoints as an alternative to gRPC for CLI and
 //! browser clients.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post, put};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
 
 use lattice_common::types::AllocationState;
 use lattice_common::types::NodeState;
 
 use crate::convert;
+use crate::events::{AllocationEvent, LogStream};
 use crate::state::ApiState;
 
 /// Build the axum REST router.
@@ -35,6 +39,12 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
             get(get_allocation_metrics),
         )
         .route("/api/v1/allocations/:id/logs", get(get_allocation_logs))
+        .route("/api/v1/allocations/:id/watch", get(watch_allocation_sse))
+        .route("/api/v1/allocations/:id/logs/stream", get(stream_logs_sse))
+        .route(
+            "/api/v1/allocations/:id/metrics/stream",
+            get(stream_metrics_sse),
+        )
         .route("/api/v1/sessions", post(create_session))
         .route("/api/v1/sessions/:id", get(get_session))
         .route("/api/v1/sessions/:id", delete(delete_session))
@@ -50,6 +60,8 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
         .route("/api/v1/vclusters", post(create_vcluster))
         .route("/api/v1/vclusters", get(list_vclusters))
         .route("/api/v1/vclusters/:id", get(get_vcluster))
+        .route("/api/v1/vclusters/:id/queue", get(vcluster_queue))
+        .route("/api/v1/accounting/usage", get(accounting_usage))
         .route("/api/v1/raft/status", get(raft_status))
         .route("/api/v1/nodes", get(list_nodes))
         .route("/api/v1/nodes/:id", get(get_node))
@@ -82,7 +94,7 @@ pub struct ListQuery {
     pub vcluster: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AllocationResponse {
     pub id: String,
     pub tenant: String,
@@ -1416,6 +1428,231 @@ async fn undrain_node(
     }
 }
 
+// ─── SSE Streaming Endpoints ──────────────────────────────────
+
+async fn watch_allocation_sse(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, Json<ErrorResponse>),
+> {
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid id: {e}"),
+            }),
+        )
+    })?;
+
+    // Verify the allocation exists.
+    state.allocations.get(&uuid).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    let rx = state.events.subscribe(uuid).await;
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|item| match item {
+        Ok(AllocationEvent::StateChange {
+            old_state,
+            new_state,
+            ..
+        }) => {
+            let data = serde_json::json!({
+                "old_state": old_state,
+                "new_state": new_state,
+            });
+            Some(Ok(Event::default()
+                .event("state_change")
+                .data(data.to_string())))
+        }
+        _ => None,
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+async fn stream_logs_sse(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, Json<ErrorResponse>),
+> {
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid id: {e}"),
+            }),
+        )
+    })?;
+
+    state.allocations.get(&uuid).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    let rx = state.events.subscribe(uuid).await;
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|item| match item {
+        Ok(AllocationEvent::LogLine {
+            line, stream: ls, ..
+        }) => {
+            let stream_name = match ls {
+                LogStream::Stdout => "stdout",
+                LogStream::Stderr => "stderr",
+            };
+            let data = serde_json::json!({
+                "line": line,
+                "stream": stream_name,
+            });
+            Some(Ok(Event::default().event("log").data(data.to_string())))
+        }
+        _ => None,
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+async fn stream_metrics_sse(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, Json<ErrorResponse>),
+> {
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid id: {e}"),
+            }),
+        )
+    })?;
+
+    state.allocations.get(&uuid).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    let rx = state.events.subscribe(uuid).await;
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|item| match item {
+        Ok(AllocationEvent::MetricPoint {
+            metric_name,
+            value,
+            timestamp_epoch_ms,
+            ..
+        }) => {
+            let data = serde_json::json!({
+                "metric": metric_name,
+                "value": value,
+                "timestamp_ms": timestamp_epoch_ms,
+            });
+            Some(Ok(Event::default().event("metric").data(data.to_string())))
+        }
+        _ => None,
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+// ─── vCluster Queue ───────────────────────────────────────────
+
+async fn vcluster_queue(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let filter = lattice_common::traits::AllocationFilter {
+        vcluster: Some(id.clone()),
+        state: Some(AllocationState::Pending),
+        ..Default::default()
+    };
+    match state.allocations.list(&filter).await {
+        Ok(allocations) => {
+            let resp: Vec<AllocationResponse> = allocations
+                .iter()
+                .map(|a| AllocationResponse {
+                    id: a.id.to_string(),
+                    tenant: a.tenant.clone(),
+                    project: a.project.clone(),
+                    state: convert::allocation_state_to_str(&a.state).to_string(),
+                    assigned_nodes: a.assigned_nodes.clone(),
+                    user: a.user.clone(),
+                })
+                .collect();
+            (StatusCode::OK, Json(resp)).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+// ─── Accounting Usage ─────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+pub struct AccountingUsageQuery {
+    pub tenant: String,
+    pub resource_type: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AccountingUsageResponse {
+    pub tenant: String,
+    pub remaining_budget: Option<f64>,
+}
+
+async fn accounting_usage(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<AccountingUsageQuery>,
+) -> impl IntoResponse {
+    if let Some(ref accounting) = state.accounting {
+        match accounting.remaining_budget(&query.tenant).await {
+            Ok(budget) => (
+                StatusCode::OK,
+                Json(AccountingUsageResponse {
+                    tenant: query.tenant,
+                    remaining_budget: budget,
+                }),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::OK,
+            Json(AccountingUsageResponse {
+                tenant: query.tenant,
+                remaining_budget: None,
+            }),
+        )
+            .into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,6 +1679,8 @@ mod tests {
             accounting: None,
             oidc: None,
             rate_limiter: None,
+            sovra: None,
+            pty: None,
         })
     }
 
@@ -1460,6 +1699,8 @@ mod tests {
             accounting: None,
             oidc: None,
             rate_limiter: None,
+            sovra: None,
+            pty: None,
         })
     }
 
@@ -1734,6 +1975,8 @@ mod tests {
             accounting: None,
             oidc: None,
             rate_limiter: None,
+            sovra: None,
+            pty: None,
         });
         let app = router(state);
         let resp = app
@@ -2022,5 +2265,181 @@ mod tests {
         let status: RaftStatusResponse = serde_json::from_slice(&body).unwrap();
         assert!(status.available);
         assert!(status.leader.is_some());
+    }
+
+    #[tokio::test]
+    async fn sse_watch_returns_200_for_valid_allocation() {
+        let state = test_state();
+        // First submit an allocation
+        let app = router(state.clone());
+        let body = serde_json::json!({"tenant": "physics", "entrypoint": "train.py"});
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/allocations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let submit: SubmitResponse = serde_json::from_slice(&body).unwrap();
+
+        // Watch endpoint should return 200 (SSE stream)
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!(
+                        "/api/v1/allocations/{}/watch",
+                        submit.allocation_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn sse_watch_returns_404_for_missing_allocation() {
+        let state = test_state();
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!(
+                        "/api/v1/allocations/{}/watch",
+                        uuid::Uuid::new_v4()
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn sse_logs_stream_returns_200() {
+        let state = test_state();
+        let app = router(state.clone());
+        let body = serde_json::json!({"tenant": "physics", "entrypoint": "train.py"});
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/allocations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let submit: SubmitResponse = serde_json::from_slice(&body).unwrap();
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!(
+                        "/api/v1/allocations/{}/logs/stream",
+                        submit.allocation_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn sse_metrics_stream_returns_200() {
+        let state = test_state();
+        let app = router(state.clone());
+        let body = serde_json::json!({"tenant": "physics", "entrypoint": "train.py"});
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/allocations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let submit: SubmitResponse = serde_json::from_slice(&body).unwrap();
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!(
+                        "/api/v1/allocations/{}/metrics/stream",
+                        submit.allocation_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn vcluster_queue_returns_pending_allocations() {
+        let state = test_state();
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/v1/vclusters/default/queue")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let queue: Vec<AllocationResponse> = serde_json::from_slice(&body).unwrap();
+        assert!(queue.is_empty()); // No pending allocations
+    }
+
+    #[tokio::test]
+    async fn accounting_usage_without_service() {
+        let state = test_state();
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/v1/accounting/usage?tenant=physics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let usage: AccountingUsageResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(usage.tenant, "physics");
+        assert!(usage.remaining_budget.is_none());
     }
 }

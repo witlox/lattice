@@ -4,10 +4,12 @@
 
 use std::sync::Arc;
 
+use lattice_common::clients::SovraClient;
 use lattice_common::traits::{
     AccountingService, AllocationStore, AuditLog, CheckpointBroker, NodeRegistry, StorageService,
 };
 use lattice_common::tsdb_client::TsdbClient;
+use lattice_node_agent::pty::PtyBackend;
 
 use crate::events::EventBus;
 use crate::middleware::oidc::OidcValidator;
@@ -35,4 +37,8 @@ pub struct ApiState {
     pub oidc: Option<Arc<dyn OidcValidator>>,
     /// Optional per-user rate limiter.
     pub rate_limiter: Option<Arc<RateLimiter>>,
+    /// Optional Sovra federation client for cross-site credential exchange.
+    pub sovra: Option<Arc<dyn SovraClient>>,
+    /// Optional PTY backend for interactive attach sessions.
+    pub pty: Option<Arc<dyn PtyBackend>>,
 }
