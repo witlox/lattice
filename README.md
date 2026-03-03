@@ -1,101 +1,123 @@
-# Lattice
+<p align="center">
+  <img src="logo.png" alt="Lattice" width="360">
+</p>
 
-**A scheduler for HPC and AI workloads.**
+<p align="center">
+  <a href="https://github.com/witlox/lattice/actions/workflows/ci.yml"><img src="https://github.com/witlox/lattice/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/witlox/lattice/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/witlox/lattice"><img src="https://img.shields.io/badge/rust-stable-orange.svg" alt="Rust"></a>
+</p>
 
-Lattice is a distributed workload scheduler designed for large-scale scientific computing, AI/ML training, inference services, and sensitive/regulated workloads. It supports both finite (batch) and infinite (service) jobs on full-node allocations, with topology-aware placement, federated multi-site operation, and a unified API for both human users and autonomous agents.
+---
 
-## Key Design Principles
+A distributed workload scheduler for large-scale scientific computing, AI/ML training, inference services, and regulated workloads. Lattice schedules both finite jobs (batch training, simulations) and infinite jobs (inference services, monitoring) on shared HPC infrastructure with topology-aware placement and a unified API for human users and autonomous agents.
 
-- **Full-node scheduling with intra-node packing** — the scheduler reasons about whole nodes; the node agent handles container/process packing via Sarus and uenv
-- **Intent-based API with Slurm compatibility** — agents submit intents, users can use familiar `sbatch`-like commands
+## Design Principles
+
+- **Full-node scheduling** — the scheduler reasons about whole nodes; the node agent handles intra-node packing via Sarus and uenv
+- **Intent-based API with Slurm compatibility** — agents declare what they need, users can use familiar `sbatch`-like commands
 - **Distributed control plane** — Raft quorum for global state, per-vCluster schedulers for workload-specific policies
-- **uenv-native software delivery** — SquashFS-based user environments as the default, OCI containers when isolation is needed
-- **Sensitive/regulated workload support** — user-level node claims, dedicated nodes, encrypted storage, full audit trail
-- **Federation as opt-in** — multi-site operation via Sovra trust layer, system fully functional without it
+- **uenv-native software delivery** — SquashFS user environments as the default, OCI containers when isolation is needed
+- **Regulated workload support** — user-level node claims, dedicated nodes, encrypted storage, full audit trail with 7-year retention
+- **Federation as opt-in** — multi-site operation via Sovra trust layer, fully functional without it
 
-## Architecture Overview
+## Architecture
 
 ```
-User Plane:       FirecREST API Gateway (OIDC/SAML)
-Software Plane:   uenv (squashfs) + Sarus (OCI) + Registry
-Scheduling Plane: Raft Quorum + vCluster Schedulers (knapsack)
-Data Plane:       VAST (NFS/S3) tiered storage + data mover
-Network Fabric:   Slingshot / Ultra Ethernet (libfabric)
-Node Plane:       Node Agent + squashfs-mount + eBPF telemetry
-Infrastructure:   OpenCHAMI (Redfish BMC, boot, inventory)
+User Plane         FirecREST API Gateway (OIDC/SAML)
+Software Plane     uenv (SquashFS) + Sarus (OCI) + Registry
+Scheduling Plane   Raft Quorum + vCluster Schedulers (knapsack)
+Data Plane         VAST (NFS/S3) tiered storage + data mover
+Network Fabric     Slingshot / Ultra Ethernet (libfabric)
+Node Plane         Node Agent + mount namespaces + eBPF telemetry
+Infrastructure     OpenCHAMI (Redfish BMC, boot, inventory)
 ```
 
-See [docs/architecture/](docs/architecture/) for detailed design documents.
+The scheduler uses a multi-dimensional knapsack algorithm with a composite cost function covering priority, wait time, fair share, topology fitness, data readiness, backlog pressure, energy cost, checkpoint efficiency, and conformance fitness. Weights are tunable per vCluster and testable offline with the RM-Replay simulator.
+
+See [docs/architecture/](docs/architecture/) for detailed design documents and [docs/decisions/](docs/decisions/) for ADRs.
 
 ## Repository Structure
 
 ```
-lattice/
-├── CLAUDE.md             # Claude coding context 
-├── crates/               # Rust workspace
-│   ├── lattice-common/   # Shared types, config, error handling
-│   ├── lattice-quorum/   # Raft consensus + global state
-│   ├── lattice-scheduler/# vCluster scheduler (knapsack solver)
-│   ├── lattice-node-agent/# Per-node daemon
-│   ├── lattice-api/      # gRPC + REST API server
-│   ├── lattice-cli/      # CLI (lattice command + compat layer)
-│   └── lattice-checkpoint/# Checkpoint broker
-├── proto/                # Protobuf definitions (the API contract)
-├── sdk/
-│   └── python/           # Python SDK + agent framework
-├── infra/
-│   ├── openchami/        # OpenCHAMI integration configs
-│   └── telemetry/        # eBPF programs, telemetry pipeline
-├── tools/
-│   ├── rm-replay/        # Scheduler simulator (Python)
-│   └── compat-layer/     # Slurm compatibility translation
-├── tests/
-│   ├── integration/      # Cross-crate integration tests
-│   └── e2e/              # End-to-end cluster tests
-└── docs/                 # All design documentation
-    ├── architecture/     # System design documents
-    ├── decisions/        # Architecture Decision Records (ADRs)
-    ├── references/       # External references and research
-    └── runbooks/         # Operational procedures
+crates/
+├── lattice-common/        Shared types, config, protobuf bindings
+├── lattice-quorum/        Raft consensus, global state machine, audit log
+├── lattice-scheduler/     vCluster schedulers, knapsack solver, cost function
+├── lattice-api/           gRPC (tonic) + REST (axum) server, OIDC, RBAC, mTLS
+├── lattice-checkpoint/    Checkpoint broker, cost evaluator
+├── lattice-node-agent/    Per-node daemon, GPU discovery, eBPF telemetry
+├── lattice-cli/           CLI binary (submit/status/cancel/session/telemetry)
+├── lattice-test-harness/  Shared mocks, fixtures, builders
+└── lattice-acceptance/    BDD scenarios (cucumber) + property tests (proptest)
+proto/                     Protobuf definitions (API contract)
+sdk/python/                Python SDK (httpx REST client, 18 async methods)
+tools/rm-replay/           Scheduler simulator (real + simple cost modes)
+infra/                     Dockerfiles, docker-compose, systemd, Grafana, alerting
+scripts/                   Release version patching
+docs/
+├── architecture/          31 design documents
+├── decisions/             Architecture Decision Records
+└── references/            External references
 ```
-
-## Technology Stack
-
-| Component | Language | Rationale |
-|---|---|---|
-| Scheduler core (quorum, schedulers, node agent, API, CLI) | Rust | Memory safety, no GC pauses, correctness-critical |
-| Infrastructure services (OpenCHAMI, federation broker) | Go | Ecosystem alignment with OpenCHAMI/Sovra |
-| User-facing SDK, agents, simulator | Python | ML ecosystem, scientific workflow community |
-| eBPF telemetry programs | C/BPF | Kernel interface requirement |
-| squashfs-mount, Sarus | C/C++ | Existing components, integrated as-is |
 
 ## Building
 
 ```bash
-# Rust workspace
+# Build the workspace
 cargo build --workspace
 
-# Python SDK
-cd sdk/python && pip install -e .
+# Run all tests (968 unit/integration + 46 BDD scenarios)
+cargo nextest run --workspace
+cargo test -p lattice-acceptance
 
-# Protobuf generation
-cd proto && buf generate
+# Lint and check
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
+cargo deny check
+
+# Or use just
+just all
 ```
 
-## Status
+### Python SDK
 
-🚧 **Pre-alpha** — Architecture design phase. See [docs/decisions/](docs/decisions/) for current ADRs.
+```bash
+cd sdk/python
+pip install -e .
+pytest
+```
+
+### Docker
+
+```bash
+cd infra/docker
+docker compose up
+```
+
+## Technology Stack
+
+| Component | Language | Key Dependencies |
+|---|---|---|
+| Scheduler core (9 crates) | Rust | tokio, tonic, prost, openraft, axum |
+| Security | Rust | jsonwebtoken (OIDC), rcgen (mTLS), RBAC middleware |
+| Observability | Rust | prometheus, eBPF (Linux), nvml-wrapper (NVIDIA) |
+| User SDK | Python | httpx, pytest |
+| Simulator | Rust | Real cost evaluator from lattice-scheduler |
+| Protobuf | buf | Rust (tonic/prost), Python (grpcio) generation |
+| Deployment | Docker/systemd | Multi-stage builds, Grafana dashboards |
+
+## External Integrations
+
+| System | Role |
+|---|---|
+| [OpenCHAMI](https://openchami.org) | Infrastructure management (Redfish BMC) |
+| [FirecREST](https://github.com/eth-cscs/firecrest) | User API gateway |
+| [uenv](https://github.com/eth-cscs/uenv) / [Sarus](https://github.com/eth-cscs/sarus) | Software delivery (SquashFS / OCI) |
+| [Sovra](https://github.com/witlox/sovra) | Federation trust (optional) |
+| VAST | Tiered storage (NFS + S3) |
+| Waldur | Accounting and billing (optional) |
 
 ## License
 
-Apache-2.0 (TBD)
-
-## References
-
-- [CSCS Alps vCluster architecture](https://arxiv.org/abs/2507.02404)
-- [OpenCHAMI](https://openchami.org)
-- [FirecREST](https://github.com/eth-cscs/firecrest)
-- [uenv](https://github.com/eth-cscs/uenv)
-- [Sarus](https://github.com/eth-cscs/sarus)
-- [Sovra](https://github.com/witlox/sovra)
-- [Ultra Ethernet Consortium](https://ultraethernet.org)
+[Apache-2.0](LICENSE)
