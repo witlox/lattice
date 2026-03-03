@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/witlox/lattice/actions/workflows/ci.yml"><img src="https://github.com/witlox/lattice/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/witlox/lattice"><img src="https://codecov.io/gh/witlox/lattice/branch/main/graph/badge.svg" alt="Coverage"></a>
   <a href="https://github.com/witlox/lattice/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
   <a href="https://github.com/witlox/lattice"><img src="https://img.shields.io/badge/rust-stable-orange.svg" alt="Rust"></a>
 </p>
