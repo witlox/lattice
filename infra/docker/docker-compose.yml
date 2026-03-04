@@ -32,7 +32,7 @@ services:
     networks:
       - lattice-net
     healthcheck:
-      test: ["CMD", "lattice-server", "--version"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -62,7 +62,7 @@ services:
     networks:
       - lattice-net
     healthcheck:
-      test: ["CMD", "lattice-server", "--version"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -92,7 +92,7 @@ services:
     networks:
       - lattice-net
     healthcheck:
-      test: ["CMD", "lattice-server", "--version"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -121,6 +121,7 @@ services:
       - "GH200"
     environment:
       RUST_LOG: "info,lattice=debug"
+      LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
     networks:
       - lattice-net
     depends_on:
@@ -148,6 +149,7 @@ services:
       - "MI300X"
     environment:
       RUST_LOG: "info,lattice=debug"
+      LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
     networks:
       - lattice-net
     depends_on:

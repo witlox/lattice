@@ -57,6 +57,95 @@ pub use store::MemLogStore;
 pub use transport::GrpcNetworkFactory;
 pub use transport_server::RaftTransportServer;
 
+/// Create a quorum from configuration.
+///
+/// - If `peers` is empty → single-node in-memory quorum (test/dev mode).
+/// - If `peers` is non-empty → multi-node gRPC-based quorum with real Raft transport.
+///
+/// Returns `(QuorumClient, Option<JoinHandle>)`. The handle is the Raft
+/// transport server task; `None` for single-node mode.
+pub async fn create_quorum_from_config(
+    config: &lattice_common::config::QuorumConfig,
+) -> Result<(QuorumClient, Option<tokio::task::JoinHandle<()>>), anyhow::Error> {
+    if config.peers.is_empty() {
+        // Single-node mode — delegate to test quorum
+        let client = create_test_quorum().await?;
+        return Ok((client, None));
+    }
+
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    let node_id = config.node_id;
+
+    let network_factory = GrpcNetworkFactory::new();
+    let mut members = BTreeMap::new();
+
+    // Register self
+    members.insert(
+        node_id,
+        openraft::impls::BasicNode::new(config.raft_listen_address.clone()),
+    );
+    network_factory
+        .register(node_id, config.raft_listen_address.clone())
+        .await;
+
+    // Register peers
+    for peer in &config.peers {
+        members.insert(
+            peer.id,
+            openraft::impls::BasicNode::new(peer.address.clone()),
+        );
+        network_factory
+            .register(peer.id, peer.address.clone())
+            .await;
+    }
+
+    let state = Arc::new(RwLock::new(GlobalState::new()));
+    let raft_config = Arc::new(
+        openraft::Config {
+            heartbeat_interval: config.heartbeat_interval_ms,
+            election_timeout_min: config.election_timeout_ms,
+            election_timeout_max: config.election_timeout_ms * 2,
+            ..Default::default()
+        }
+        .validate()?,
+    );
+
+    let log_store = MemLogStore::new();
+    let sm = LatticeStateMachine::new(Arc::clone(&state));
+
+    let raft =
+        openraft::Raft::new(node_id, raft_config, network_factory.clone(), log_store, sm).await?;
+
+    // Start Raft transport server
+    let listener = tokio::net::TcpListener::bind(&config.raft_listen_address).await?;
+    let server = RaftTransportServer::new(raft.clone());
+    let handle = tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        let _ = tonic::transport::Server::builder()
+            .add_service(proto::raft_service_server::RaftServiceServer::new(server))
+            .serve_with_incoming(incoming)
+            .await;
+    });
+
+    // Give server time to start
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Node 1 initializes the cluster; others wait for membership
+    if node_id == 1 {
+        raft.initialize(members).await?;
+    }
+
+    // Wait for leader election (with timeout)
+    raft.wait(Some(std::time::Duration::from_secs(10)))
+        .metrics(|m| m.current_leader.is_some(), "leader elected")
+        .await?;
+
+    Ok((QuorumClient::new(raft, state), Some(handle)))
+}
+
 /// Create a single-node quorum for testing.
 ///
 /// Returns a `QuorumClient` with a fully initialized single-node Raft cluster.
@@ -314,6 +403,32 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].action, AuditAction::NodeClaim);
     }
+
+    #[tokio::test]
+    async fn from_config_no_peers() {
+        use lattice_common::config::QuorumConfig;
+        let config = QuorumConfig::default();
+        let (client, handle) = create_quorum_from_config(&config).await.unwrap();
+        assert!(
+            handle.is_none(),
+            "single-node mode should return None handle"
+        );
+
+        // Verify it works
+        let node = NodeBuilder::new().id("cfg-test").build();
+        client
+            .propose(commands::Command::RegisterNode(node))
+            .await
+            .unwrap();
+        let got = client.get_node(&"cfg-test".to_string()).await.unwrap();
+        assert_eq!(got.id, "cfg-test");
+    }
+
+    // Note: The multi-node config test is covered by `grpc_three_node_cluster_*`
+    // tests which use the lower-level `create_test_grpc_cluster`. The
+    // `create_quorum_from_config` multi-node path uses the same underlying
+    // mechanisms (GrpcNetworkFactory + RaftTransportServer) so we test it
+    // indirectly. A full integration test requires Docker (see tests/e2e/).
 
     #[tokio::test]
     async fn grpc_three_node_cluster_leader_election() {

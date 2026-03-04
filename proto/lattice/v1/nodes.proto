@@ -23,6 +23,12 @@ service NodeService {
 
   // Disable a node (mark as permanently unavailable until re-enabled)
   rpc DisableNode(DisableNodeRequest) returns (DisableNodeResponse);
+
+  // Register a compute node with the quorum
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+  // Send a heartbeat from a compute node
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 // ─── Request / Response Messages ────────────────────────────
@@ -100,4 +106,34 @@ message NodeStatus {
 
   // Active allocations on this node
   repeated string allocation_ids = 40;
+}
+
+// ─── RegisterNode ────────────────────────────────────────────
+
+message RegisterNodeRequest {
+  string node_id = 1;
+  string gpu_type = 2;
+  uint32 gpu_count = 3;
+  uint32 cpu_cores = 4;
+  uint64 memory_gb = 5;
+  repeated string features = 6;
+}
+
+message RegisterNodeResponse {
+  bool success = 1;
+}
+
+// ─── Heartbeat ───────────────────────────────────────────────
+
+message HeartbeatRequest {
+  string node_id = 1;
+  bool healthy = 2;
+  repeated string issues = 3;
+  uint32 running_allocations = 4;
+  string conformance_fingerprint = 5;
+  uint64 sequence = 6;
+}
+
+message HeartbeatResponse {
+  bool accepted = 1;
 }

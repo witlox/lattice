@@ -14,7 +14,7 @@ RUN cargo build --release --bin lattice-server
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd -r lattice && useradd -r -g lattice lattice && \
     mkdir -p /etc/lattice && chown lattice:lattice /etc/lattice
@@ -23,11 +23,11 @@ COPY --from=builder /build/target/release/lattice-server /usr/local/bin/
 
 USER lattice
 
-# gRPC + REST
-EXPOSE 50051 8080
+# gRPC + REST + Raft
+EXPOSE 50051 8080 9000
 
-HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
-    CMD ["/usr/local/bin/lattice-server", "--version"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=5 \
+    CMD ["curl", "-sf", "http://localhost:8080/healthz"]
 
 ENTRYPOINT ["lattice-server"]
 CMD ["--config", "/etc/lattice/config.yaml"]

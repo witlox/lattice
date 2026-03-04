@@ -11,6 +11,7 @@ pub mod attach;
 pub mod checkpoint_handler;
 pub mod conformance;
 pub mod epilogue;
+pub mod grpc_client;
 pub mod health;
 pub mod heartbeat;
 pub mod heartbeat_loop;

@@ -54,6 +54,43 @@ pub struct LatticeConfig {
     pub compat: Option<CompatConfig>,
 }
 
+impl Default for LatticeConfig {
+    fn default() -> Self {
+        Self {
+            role: NodeRole::Combined,
+            quorum: QuorumConfig::default(),
+            api: ApiConfig {
+                grpc_address: "0.0.0.0:50051".to_string(),
+                rest_address: Some("0.0.0.0:8080".to_string()),
+                oidc_issuer: String::new(),
+                tls_cert: None,
+                tls_key: None,
+                tls_ca: None,
+            },
+            storage: StorageConfig {
+                vast_api_url: None,
+                s3_endpoint: String::new(),
+                nfs_home_path: "/home".to_string(),
+                local_scratch_path: "/scratch".to_string(),
+            },
+            telemetry: TelemetryConfig {
+                default_mode: "prod".to_string(),
+                tsdb_endpoint: String::new(),
+                prod_interval_seconds: 30,
+                ebpf_programs_path: PathBuf::from("/opt/lattice/ebpf"),
+            },
+            federation: None,
+            node_agent: None,
+            network: None,
+            checkpoint: None,
+            scheduling: None,
+            accounting: None,
+            rate_limit: None,
+            compat: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeRole {
     /// Quorum member (runs Raft + API server)
@@ -76,6 +113,26 @@ pub struct QuorumConfig {
     pub heartbeat_interval_ms: u64,
     /// Log compaction threshold
     pub snapshot_threshold: u64,
+    /// Address for the Raft transport to listen on
+    #[serde(default = "default_raft_listen_address")]
+    pub raft_listen_address: String,
+}
+
+fn default_raft_listen_address() -> String {
+    "0.0.0.0:9000".to_string()
+}
+
+impl Default for QuorumConfig {
+    fn default() -> Self {
+        Self {
+            node_id: 1,
+            peers: Vec::new(),
+            election_timeout_ms: 500,
+            heartbeat_interval_ms: 100,
+            snapshot_threshold: 10000,
+            raft_listen_address: default_raft_listen_address(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -408,5 +465,25 @@ telemetry:
         assert!(cfg.federation.is_none());
         assert!(cfg.node_agent.is_none());
         assert!(cfg.network.is_none());
+        // raft_listen_address defaults when omitted
+        assert_eq!(cfg.quorum.raft_listen_address, "0.0.0.0:9000");
+    }
+
+    #[test]
+    fn quorum_config_defaults() {
+        let cfg = QuorumConfig::default();
+        assert_eq!(cfg.node_id, 1);
+        assert!(cfg.peers.is_empty());
+        assert_eq!(cfg.raft_listen_address, "0.0.0.0:9000");
+    }
+
+    #[test]
+    fn lattice_config_defaults() {
+        let cfg = LatticeConfig::default();
+        assert_eq!(cfg.quorum.node_id, 1);
+        assert!(cfg.quorum.peers.is_empty());
+        assert_eq!(cfg.api.grpc_address, "0.0.0.0:50051");
+        assert!(cfg.telemetry.tsdb_endpoint.is_empty());
+        assert!(cfg.federation.is_none());
     }
 }

@@ -8,7 +8,7 @@ use tonic::{Request, Response, Status};
 
 use lattice_common::proto::lattice::v1 as pb;
 use lattice_common::proto::lattice::v1::node_service_server::NodeService;
-use lattice_common::types::NodeState;
+use lattice_common::types::{Node, NodeCapabilities, NodeState};
 
 use crate::convert;
 use crate::state::ApiState;
@@ -111,6 +111,68 @@ impl NodeService for LatticeNodeService {
 
         Ok(Response::new(pb::DisableNodeResponse { success: true }))
     }
+
+    async fn register_node(
+        &self,
+        request: Request<pb::RegisterNodeRequest>,
+    ) -> Result<Response<pb::RegisterNodeResponse>, Status> {
+        let req = request.into_inner();
+
+        let node = Node {
+            id: req.node_id.clone(),
+            state: NodeState::Ready,
+            capabilities: NodeCapabilities {
+                gpu_type: if req.gpu_type.is_empty() {
+                    None
+                } else {
+                    Some(req.gpu_type)
+                },
+                gpu_count: req.gpu_count,
+                cpu_cores: req.cpu_cores,
+                memory_gb: req.memory_gb,
+                features: req.features,
+                gpu_topology: None,
+            },
+            group: 0,
+            owner: None,
+            conformance_fingerprint: None,
+            last_heartbeat: None,
+        };
+
+        // Propose through Raft if quorum is available
+        if let Some(ref quorum) = self.state.quorum {
+            quorum
+                .propose(lattice_quorum::QuorumCommand::RegisterNode(node))
+                .await
+                .map_err(|e| Status::internal(format!("raft propose failed: {e}")))?;
+        } else {
+            return Err(Status::unavailable("quorum not available"));
+        }
+
+        tracing::info!(node_id = %req.node_id, "node registered via gRPC");
+        Ok(Response::new(pb::RegisterNodeResponse { success: true }))
+    }
+
+    async fn heartbeat(
+        &self,
+        request: Request<pb::HeartbeatRequest>,
+    ) -> Result<Response<pb::HeartbeatResponse>, Status> {
+        let req = request.into_inner();
+
+        if let Some(ref quorum) = self.state.quorum {
+            quorum
+                .propose(lattice_quorum::QuorumCommand::RecordHeartbeat {
+                    id: req.node_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                })
+                .await
+                .map_err(|e| Status::internal(format!("raft propose failed: {e}")))?;
+        } else {
+            return Err(Status::unavailable("quorum not available"));
+        }
+
+        Ok(Response::new(pb::HeartbeatResponse { accepted: true }))
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +260,105 @@ mod tests {
             .unwrap();
 
         assert!(resp.get_ref().success);
+    }
+
+    async fn test_state_with_quorum() -> Arc<ApiState> {
+        let quorum = lattice_quorum::create_test_quorum().await.unwrap();
+        let quorum = Arc::new(quorum);
+        Arc::new(ApiState {
+            allocations: quorum.clone(),
+            nodes: quorum.clone(),
+            audit: quorum.clone(),
+            checkpoint: Arc::new(MockCheckpointBroker::new()),
+            quorum: Some(quorum),
+            events: crate::events::new_event_bus(),
+            tsdb: None,
+            storage: None,
+            accounting: None,
+            oidc: None,
+            rate_limiter: None,
+            sovra: None,
+            pty: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn register_node_via_raft() {
+        let state = test_state_with_quorum().await;
+        let svc = LatticeNodeService::new(state.clone());
+
+        let resp = svc
+            .register_node(Request::new(pb::RegisterNodeRequest {
+                node_id: "x1000c0s0b0n0".to_string(),
+                gpu_type: "GH200".to_string(),
+                gpu_count: 4,
+                cpu_cores: 72,
+                memory_gb: 512,
+                features: vec!["slingshot".to_string()],
+            }))
+            .await
+            .unwrap();
+
+        assert!(resp.get_ref().success);
+
+        // Verify node is now in the registry
+        let got = svc
+            .get_node(Request::new(pb::GetNodeRequest {
+                node_id: "x1000c0s0b0n0".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(got.get_ref().node_id, "x1000c0s0b0n0");
+        assert_eq!(got.get_ref().gpu_type, "GH200");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_via_raft() {
+        let state = test_state_with_quorum().await;
+        let svc = LatticeNodeService::new(state);
+
+        // First register the node
+        svc.register_node(Request::new(pb::RegisterNodeRequest {
+            node_id: "hb-test-node".to_string(),
+            gpu_type: "".to_string(),
+            gpu_count: 0,
+            cpu_cores: 64,
+            memory_gb: 256,
+            features: vec![],
+        }))
+        .await
+        .unwrap();
+
+        // Send heartbeat
+        let resp = svc
+            .heartbeat(Request::new(pb::HeartbeatRequest {
+                node_id: "hb-test-node".to_string(),
+                healthy: true,
+                issues: vec![],
+                running_allocations: 2,
+                conformance_fingerprint: "abc123".to_string(),
+                sequence: 1,
+            }))
+            .await
+            .unwrap();
+
+        assert!(resp.get_ref().accepted);
+    }
+
+    #[tokio::test]
+    async fn register_node_fails_without_quorum() {
+        let state = test_state(1);
+        let svc = LatticeNodeService::new(state);
+
+        let result = svc
+            .register_node(Request::new(pb::RegisterNodeRequest {
+                node_id: "no-quorum".to_string(),
+                ..Default::default()
+            }))
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::Unavailable);
     }
 
     #[tokio::test]

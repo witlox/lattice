@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use serde::Deserialize;
 use tracing::info;
 
 use lattice_api::{serve, ApiState, ServerConfig};
+use lattice_common::config::LatticeConfig;
+use lattice_common::tsdb_client::{VictoriaMetricsClient, VictoriaMetricsConfig};
 
 #[derive(Parser)]
 #[command(
@@ -24,83 +25,13 @@ struct Args {
     #[arg(short, long, default_value = "/etc/lattice/config.yaml")]
     config: String,
 
-    /// gRPC listen address
-    #[arg(long, default_value = "0.0.0.0:50051")]
-    grpc_addr: String,
+    /// gRPC listen address (overrides config)
+    #[arg(long)]
+    grpc_addr: Option<String>,
 
-    /// REST listen address
-    #[arg(long, default_value = "0.0.0.0:8080")]
-    rest_addr: String,
-}
-
-/// Top-level configuration loaded from YAML.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct LatticeConfig {
-    /// OIDC authentication settings. When `issuer_url` is set, JWT
-    /// validation is enabled; otherwise the stub validator is used.
-    #[cfg(feature = "oidc")]
-    oidc: Option<OidcSection>,
-
-    /// Sovra federation settings. When `server_url` is set, the HTTP
-    /// client is used; otherwise federation is disabled.
-    #[cfg(feature = "federation")]
-    sovra: Option<SovraSection>,
-
-    /// Waldur accounting settings. When `api_url` is set, the HTTP
-    /// client is used; otherwise accounting is disabled.
-    #[cfg(feature = "accounting")]
-    waldur: Option<WaldurSection>,
-}
-
-#[cfg(feature = "oidc")]
-#[derive(Debug, Deserialize)]
-struct OidcSection {
-    issuer_url: String,
-    audience: String,
-    #[serde(default)]
-    required_scopes: Vec<String>,
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Deserialize)]
-struct SovraSection {
-    server_url: String,
-    site_id: String,
-    #[serde(default = "default_key_path")]
-    key_path: String,
-    #[serde(default = "default_refresh_interval")]
-    refresh_interval_secs: u64,
-}
-
-#[cfg(feature = "federation")]
-fn default_key_path() -> String {
-    "/etc/lattice/sovra.key".to_string()
-}
-#[cfg(feature = "federation")]
-fn default_refresh_interval() -> u64 {
-    3600
-}
-
-#[cfg(feature = "accounting")]
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Fields used when adapter bridges AccountingClient → AccountingService.
-struct WaldurSection {
-    api_url: String,
-    api_token: String,
-    #[serde(default = "default_flush_interval")]
-    flush_interval_secs: u64,
-    #[serde(default = "default_max_buffer")]
-    max_buffer_size: usize,
-}
-
-#[cfg(feature = "accounting")]
-fn default_flush_interval() -> u64 {
-    60
-}
-#[cfg(feature = "accounting")]
-fn default_max_buffer() -> usize {
-    1000
+    /// REST listen address (overrides config)
+    #[arg(long)]
+    rest_addr: Option<String>,
 }
 
 #[tokio::main]
@@ -114,12 +45,8 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    info!("Starting lattice-server");
-    info!("gRPC address: {}", args.grpc_addr);
-    info!("REST address: {}", args.rest_addr);
-
-    // Load optional config file (missing file is OK — all defaults).
-    let _config: LatticeConfig = match std::fs::read_to_string(&args.config) {
+    // Load config file with fallback to defaults.
+    let config: LatticeConfig = match std::fs::read_to_string(&args.config) {
         Ok(contents) => serde_yaml::from_str(&contents)?,
         Err(_) => {
             info!("No config file at {}, using defaults", args.config);
@@ -127,33 +54,66 @@ async fn main() -> Result<()> {
         }
     };
 
-    // ── OIDC ────────────────────────────────────────────────────────────
+    let grpc_addr = args
+        .grpc_addr
+        .unwrap_or_else(|| config.api.grpc_address.clone());
+    let rest_addr = args.rest_addr.unwrap_or_else(|| {
+        config
+            .api
+            .rest_address
+            .clone()
+            .unwrap_or_else(|| "0.0.0.0:8080".to_string())
+    });
+
+    info!("Starting lattice-server");
+    info!("gRPC address: {}", grpc_addr);
+    info!("REST address: {}", rest_addr);
+
+    // ── Raft Quorum ────────────────────────────────────────────────────────
+    let (quorum, _raft_handle) = lattice_quorum::create_quorum_from_config(&config.quorum).await?;
+    let quorum = Arc::new(quorum);
+
+    if config.quorum.peers.is_empty() {
+        info!("Single-node quorum (dev mode)");
+    } else {
+        info!(
+            "Multi-node quorum: node_id={}, {} peers",
+            config.quorum.node_id,
+            config.quorum.peers.len()
+        );
+    }
+
+    // ── OIDC ──────────────────────────────────────────────────────────────
     #[cfg(feature = "oidc")]
     let oidc: Option<Arc<dyn lattice_api::middleware::oidc::OidcValidator>> =
-        _config.oidc.as_ref().map(|c| {
-            info!("OIDC enabled: issuer={}", c.issuer_url);
+        if !config.api.oidc_issuer.is_empty() {
+            info!("OIDC enabled: issuer={}", config.api.oidc_issuer);
             let oidc_config = lattice_api::middleware::oidc::OidcConfig {
-                issuer_url: c.issuer_url.clone(),
-                audience: c.audience.clone(),
-                required_scopes: c.required_scopes.clone(),
+                issuer_url: config.api.oidc_issuer.clone(),
+                audience: String::new(),
+                required_scopes: vec![],
             };
-            Arc::new(lattice_api::middleware::oidc::JwtOidcValidator::new(
-                oidc_config,
-            )) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>
-        });
+            Some(
+                Arc::new(lattice_api::middleware::oidc::JwtOidcValidator::new(
+                    oidc_config,
+                )) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>,
+            )
+        } else {
+            None
+        };
     #[cfg(not(feature = "oidc"))]
     let oidc: Option<Arc<dyn lattice_api::middleware::oidc::OidcValidator>> = None;
 
-    // ── Sovra ───────────────────────────────────────────────────────────
+    // ── Sovra ─────────────────────────────────────────────────────────────
     #[cfg(feature = "federation")]
     let sovra: Option<Arc<dyn lattice_common::clients::SovraClient>> =
-        _config.sovra.as_ref().map(|c| {
-            info!("Sovra federation enabled: server={}", c.server_url);
+        config.federation.as_ref().map(|fed| {
+            info!("Sovra federation enabled: endpoint={}", fed.sovra_endpoint);
             let sovra_config = lattice_common::clients::sovra::SovraConfig {
-                server_url: c.server_url.clone(),
-                site_id: c.site_id.clone(),
-                key_path: c.key_path.clone(),
-                refresh_interval_secs: c.refresh_interval_secs,
+                server_url: fed.sovra_endpoint.clone(),
+                site_id: fed.workspace_id.clone(),
+                key_path: String::new(),
+                refresh_interval_secs: 3600,
             };
             Arc::new(lattice_common::clients::HttpSovraClient::new(sovra_config))
                 as Arc<dyn lattice_common::clients::SovraClient>
@@ -161,19 +121,31 @@ async fn main() -> Result<()> {
     #[cfg(not(feature = "federation"))]
     let sovra: Option<Arc<dyn lattice_common::clients::SovraClient>> = None;
 
-    // ── Waldur ──────────────────────────────────────────────────────────
-    // HttpWaldurClient implements AccountingClient (low-level event API),
-    // while ApiState.accounting expects AccountingService (allocation-level).
-    // Config is parsed; a thin adapter can bridge them when needed.
+    // ── Waldur ────────────────────────────────────────────────────────────
     #[cfg(feature = "accounting")]
-    if let Some(ref c) = _config.waldur {
-        info!("Waldur accounting configured: url={}", c.api_url);
+    if let Some(ref acct) = config.accounting {
+        if acct.enabled {
+            info!("Waldur accounting configured: url={}", acct.waldur_api_url);
+        }
     }
     let accounting: Option<Arc<dyn lattice_common::traits::AccountingService>> = None;
 
-    // For now, use in-memory test quorum. Real Raft wired via Raft transport.
-    let quorum = lattice_quorum::create_test_quorum().await?;
-    let quorum = Arc::new(quorum);
+    // ── TSDB ──────────────────────────────────────────────────────────────
+    let tsdb: Option<Arc<dyn lattice_common::tsdb_client::TsdbClient>> =
+        if config.telemetry.tsdb_endpoint.is_empty() {
+            None
+        } else {
+            info!("TSDB endpoint: {}", config.telemetry.tsdb_endpoint);
+            Some(Arc::new(VictoriaMetricsClient::new(
+                VictoriaMetricsConfig {
+                    base_url: config.telemetry.tsdb_endpoint.clone(),
+                    ..Default::default()
+                },
+            )))
+        };
+
+    // ── TLS ───────────────────────────────────────────────────────────────
+    let tls = lattice_api::server::tls_config_from_api(&config.api);
 
     let state = Arc::new(ApiState {
         allocations: quorum.clone(),
@@ -182,7 +154,7 @@ async fn main() -> Result<()> {
         checkpoint: Arc::new(lattice_test_harness::mocks::MockCheckpointBroker::new()),
         quorum: Some(quorum),
         events: lattice_api::events::new_event_bus(),
-        tsdb: None,
+        tsdb,
         storage: None,
         accounting,
         oidc,
@@ -192,9 +164,9 @@ async fn main() -> Result<()> {
     });
 
     let server_config = ServerConfig {
-        grpc_addr: args.grpc_addr.parse()?,
-        rest_addr: args.rest_addr.parse()?,
-        tls: None,
+        grpc_addr: grpc_addr.parse()?,
+        rest_addr: rest_addr.parse()?,
+        tls,
     };
 
     serve(state, server_config)
