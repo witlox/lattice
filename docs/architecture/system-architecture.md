@@ -5,37 +5,37 @@
 Lattice is a seven-layer architecture where each layer has a clear responsibility and communicates with adjacent layers via defined interfaces.
 
 ```
-┌─ User Plane ─────────────────────────────────────────────────┐
-│  FirecREST API Gateway (OIDC/SAML)                            │
+┌─ User Plane ───────────────────────────────────────────────────┐
+│  FirecREST API Gateway (OIDC/SAML)                             │
 │  ├── Job lifecycle (submit, monitor, cancel)                   │
 │  ├── Interactive sessions (WebSocket terminal)                 │
 │  ├── Data management (stage, browse, transfer)                 │
 │  ├── uenv management (list, pull, test)                        │
-│  ├── Observability (attach, logs, metrics, diagnostics)          │
+│  ├── Observability (attach, logs, metrics, diagnostics)        │
 │  └── Medical: user-level node claim/release                    │
-└───────────────────────────┬───────────────────────────────────┘
+└───────────────────────────┬────────────────────────────────────┘
                             │
-┌─ Software Plane ──────────┴───────────────────────────────────┐
+┌─ Software Plane ──────────┴────────────────────────────────────┐
 │  Default: uenv (squashfs + mount namespace)                    │
 │  Optional: OCI/Sarus (isolation, third-party images)           │
 │  Registry: JFrog/Nexus → S3 backing (VAST hot tier)            │
 │  Node-local NVMe image cache (optional)                        │
 │  Medical: signed images only, vulnerability-scanned            │
-└───────────────────────────┬───────────────────────────────────┘
+└───────────────────────────┬────────────────────────────────────┘
                             │
-┌─ Scheduling Plane ────────┴───────────────────────────────────┐
+┌─ Scheduling Plane ────────┴────────────────────────────────────┐
 │  Quorum (Raft, 3-5 replicas)                                   │
 │  Strong: (1) node ownership  (2) medical audit log             │
 │  Eventual: job queues, telemetry, quotas                       │
-│                                                                 │
-│  vCluster Schedulers:                                           │
+│                                                                │
+│  vCluster Schedulers:                                          │
 │  ├── HPC: backfill + dragonfly group packing                   │
-│  ├── Service: bin-pack + autoscale                              │
-│  ├── Medical: user-claim reservation, dedicated nodes           │
+│  ├── Service: bin-pack + autoscale                             │
+│  ├── Medical: user-claim reservation, dedicated nodes          │
 │  └── Interactive: FIFO, short-lived, node-sharing via Sarus    │
-└───────────────────────────┬───────────────────────────────────┘
+└───────────────────────────┬────────────────────────────────────┘
                             │
-┌─ Data Plane ──────────────┴───────────────────────────────────┐
+┌─ Data Plane ──────────────┴────────────────────────────────────┐
 │  Hot:  VAST (NFS + S3, single flash tier)                      │
 │    ├── Home dirs, scratch, active datasets (NFS)               │
 │    ├── Checkpoints, image cache, objects (S3)                  │
@@ -44,28 +44,28 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  Warm: Capacity store (S3-compat, cost-optimized)              │
 │  Cold: Tape archive (S3-compat, regulatory retention)          │
 │  Data mover: pre-stages during queue wait, policy-driven       │
-└───────────────────────────┬───────────────────────────────────┘
+└───────────────────────────┬────────────────────────────────────┘
                             │
-┌─ Network Fabric ──────────┴───────────────────────────────────┐
+┌─ Network Fabric ──────────┴────────────────────────────────────┐
 │  Slingshot (current) / Ultra Ethernet (future path)            │
 │  ├── libfabric abstraction for workload communication          │
 │  ├── VNI-based network domains (job isolation)                 │
 │  ├── Traffic classes: compute | management | telemetry         │
 │  ├── CSIG for in-band congestion telemetry                     │
 │  └── Medical: encrypted RDMA, dedicated VNI                    │
-└───────────────────────────┬───────────────────────────────────┘
+└───────────────────────────┬────────────────────────────────────┘
                             │
-┌─ Node Plane ──────────────┴───────────────────────────────────┐
+┌─ Node Plane ──────────────┴────────────────────────────────────┐
 │  Node Agent (per node)                                         │
 │  ├── squashfs-mount (uenv delivery)                            │
 │  ├── Sarus (OCI container runtime, when needed)                │
 │  ├── eBPF telemetry + CSIG tap                                 │
 │  ├── Node-local NVMe (optional): scratch + image cache         │
-│  ├── Conformance fingerprint (driver/firmware/kernel hash)      │
+│  ├── Conformance fingerprint (driver/firmware/kernel hash)     │
 │  └── Health reporting → OpenCHAMI SMD                          │
-└───────────────────────────┬───────────────────────────────────┘
+└───────────────────────────┬────────────────────────────────────┘
                             │
-┌─ Infrastructure Plane ────┴───────────────────────────────────┐
+┌─ Infrastructure Plane ────┴────────────────────────────────────┐
 │  OpenCHAMI                                                     │
 │  ├── Magellan: Redfish BMC discovery & inventory               │
 │  ├── SMD: State Management Daemon (hardware lifecycle)         │
