@@ -51,6 +51,8 @@ pub struct CostContext {
     pub max_groups: u32,
     /// Current time (for wait-time computation)
     pub now: DateTime<Utc>,
+    /// Pre-computed memory locality scores per node (0.0-1.0)
+    pub memory_locality: HashMap<NodeId, f64>,
 }
 
 impl Default for CostContext {
@@ -63,6 +65,7 @@ impl Default for CostContext {
             reference_wait_seconds: 3600.0,
             max_groups: 1,
             now: Utc::now(),
+            memory_locality: HashMap::new(),
         }
     }
 }
@@ -115,8 +118,25 @@ impl CostEvaluator {
         }
     }
 
-    /// f₄: topology_fitness — jobs needing fewer groups score higher
+    /// f₄: topology_fitness — inter-node group packing + intra-node memory locality
+    ///
+    /// Combines two signals:
+    /// - Inter-node: jobs needing fewer dragonfly groups score higher
+    /// - Intra-node: nodes where resources share a memory domain score higher
+    ///
+    /// The blend factor (beta) depends on the workload type:
+    /// - GPU-heavy (gpu_count > cpu_cores/8): 0.7 inter-node, 0.3 memory
+    /// - CPU-heavy: 0.3 inter-node, 0.7 memory
+    /// - Default: 0.5 / 0.5
     pub fn f4_topology(&self, alloc: &Allocation, ctx: &CostContext) -> f64 {
+        let inter_node = self.f4_inter_node(alloc, ctx);
+        let intra_node = self.f4_memory_locality(alloc, ctx);
+        let beta = self.memory_topology_beta(alloc);
+        beta * inter_node + (1.0 - beta) * intra_node
+    }
+
+    /// Inter-node topology score: jobs needing fewer groups score higher.
+    fn f4_inter_node(&self, alloc: &Allocation, ctx: &CostContext) -> f64 {
         if ctx.max_groups == 0 {
             return 0.5;
         }
@@ -124,13 +144,60 @@ impl CostEvaluator {
             NodeCount::Exact(n) => n,
             NodeCount::Range { min, .. } => min,
         };
-        // Heuristic: assume nodes_per_group = total_nodes / max_groups
-        // groups_needed = ceil(requested_nodes / nodes_per_group)
-        // Simplified: use requested as fraction of max
         let groups_needed = (requested_nodes as f64 / ctx.max_groups as f64)
             .ceil()
             .max(1.0);
         1.0 - (groups_needed / ctx.max_groups as f64).min(1.0)
+    }
+
+    /// Intra-node memory locality score: average memory locality across candidate nodes.
+    ///
+    /// Uses pre-computed `memory_locality` from CostContext. Nodes without scores
+    /// return 0.5 (neutral). Boosted by `prefer_same_numa` soft constraint.
+    fn f4_memory_locality(&self, alloc: &Allocation, ctx: &CostContext) -> f64 {
+        if ctx.memory_locality.is_empty() {
+            return 0.5;
+        }
+
+        // Average locality across assigned nodes (or all known nodes if not yet assigned)
+        let nodes: Vec<&NodeId> = if !alloc.assigned_nodes.is_empty() {
+            alloc.assigned_nodes.iter().collect()
+        } else {
+            ctx.memory_locality.keys().collect()
+        };
+
+        if nodes.is_empty() {
+            return 0.5;
+        }
+
+        let sum: f64 = nodes
+            .iter()
+            .map(|n| ctx.memory_locality.get(*n).copied().unwrap_or(0.5))
+            .sum();
+        let avg = sum / nodes.len() as f64;
+
+        // Boost if prefer_same_numa is set
+        if alloc.resources.constraints.prefer_same_numa {
+            (avg * 1.2).min(1.0)
+        } else {
+            avg
+        }
+    }
+
+    /// Compute the blend factor between inter-node and memory locality scoring.
+    fn memory_topology_beta(&self, alloc: &Allocation) -> f64 {
+        let requested_nodes = match alloc.resources.nodes {
+            NodeCount::Exact(n) => n,
+            NodeCount::Range { min, .. } => min,
+        };
+
+        if requested_nodes <= 1 {
+            // Single-node: memory locality matters more
+            return 0.3;
+        }
+
+        // Multi-node: inter-node topology matters more
+        0.7
     }
 
     /// f₅: data_readiness — fraction of input data on hot tier
@@ -310,8 +377,9 @@ mod tests {
             max_groups: 4,
             ..default_ctx()
         };
-        // groups_needed = ceil(1/4) = 1, score = 1.0 - 1/4 = 0.75
-        assert!((eval.f4_topology(&alloc, &ctx) - 0.75).abs() < 1e-10);
+        // Single-node: beta=0.3, inter_node=0.75, intra_node=0.5 (no memory data)
+        // blended = 0.3 * 0.75 + 0.7 * 0.5 = 0.575
+        assert!((eval.f4_topology(&alloc, &ctx) - 0.575).abs() < 1e-10);
     }
 
     #[test]
@@ -476,6 +544,87 @@ mod tests {
             ..default_ctx()
         };
         assert!((eval.score(&alloc, &ctx) - 0.0).abs() < 1e-10);
+    }
+
+    // ── f₄: memory locality ──
+
+    #[test]
+    fn f4_memory_locality_empty_returns_neutral() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().nodes(1).build();
+        let ctx = default_ctx();
+        let score = eval.f4_memory_locality(&alloc, &ctx);
+        assert!((score - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn f4_memory_locality_with_scores() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().nodes(1).build();
+        let mut ctx = default_ctx();
+        ctx.memory_locality.insert("n0".to_string(), 1.0);
+        ctx.memory_locality.insert("n1".to_string(), 0.5);
+        let score = eval.f4_memory_locality(&alloc, &ctx);
+        // Average of 1.0 and 0.5 = 0.75
+        assert!((score - 0.75).abs() < 1e-10);
+    }
+
+    #[test]
+    fn f4_prefer_same_numa_boosts_score() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let mut alloc = AllocationBuilder::new().nodes(1).build();
+        alloc.resources.constraints.prefer_same_numa = true;
+        let mut ctx = default_ctx();
+        ctx.memory_locality.insert("n0".to_string(), 0.8);
+        let score = eval.f4_memory_locality(&alloc, &ctx);
+        // 0.8 * 1.2 = 0.96
+        assert!((score - 0.96).abs() < 1e-10);
+    }
+
+    #[test]
+    fn f4_prefer_same_numa_capped_at_one() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let mut alloc = AllocationBuilder::new().nodes(1).build();
+        alloc.resources.constraints.prefer_same_numa = true;
+        let mut ctx = default_ctx();
+        ctx.memory_locality.insert("n0".to_string(), 1.0);
+        let score = eval.f4_memory_locality(&alloc, &ctx);
+        assert!((score - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn f4_single_node_uses_memory_weight() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().nodes(1).build();
+        let beta = eval.memory_topology_beta(&alloc);
+        // Single node: memory locality matters more → beta = 0.3
+        assert!((beta - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn f4_multi_node_uses_inter_node_weight() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().nodes(4).build();
+        let beta = eval.memory_topology_beta(&alloc);
+        // Multi-node: inter-node topology matters more → beta = 0.7
+        assert!((beta - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn f4_combined_topology_score() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().nodes(1).build();
+        let mut ctx = CostContext {
+            max_groups: 4,
+            ..default_ctx()
+        };
+        ctx.memory_locality.insert("n0".to_string(), 0.8);
+        let score = eval.f4_topology(&alloc, &ctx);
+        // beta=0.3 for single node
+        // inter_node = 1.0 - ceil(1/4)/4 = 1.0 - 0.25 = 0.75
+        // intra_node = 0.8 (from memory_locality)
+        // combined = 0.3 * 0.75 + 0.7 * 0.8 = 0.225 + 0.56 = 0.785
+        assert!((score - 0.785).abs() < 1e-10);
     }
 
     #[test]

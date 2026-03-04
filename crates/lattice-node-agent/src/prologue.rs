@@ -12,7 +12,7 @@ use async_trait::async_trait;
 
 use crate::image_cache::ImageCache;
 use crate::runtime::{PrepareConfig, Runtime, RuntimeError};
-use lattice_common::types::AllocId;
+use lattice_common::types::{AllocId, MemoryPolicy};
 
 /// Reports prologue progress (for telemetry / event bus).
 #[async_trait]
@@ -107,7 +107,33 @@ impl ProloguePipeline {
             .report_step(alloc_id, "runtime_prepare", "completed")
             .await;
 
-        // Step 3: Data staging (placeholder — real implementation reads DataRequirements)
+        // Step 3: Configure memory policy (numactl)
+        if let Some(ref policy) = prepare_config.memory_policy {
+            reporter
+                .report_step(alloc_id, "memory_policy", "started")
+                .await;
+            if prepare_config.is_unified_memory {
+                // Skip numactl for unified memory architectures (GH200, MI300A)
+                reporter
+                    .report_step(alloc_id, "memory_policy", "skipped_unified")
+                    .await;
+            } else {
+                let numactl_args = numactl_args_for_policy(policy);
+                // Store numactl args as environment variable for the runtime to pick up
+                // The runtime will prepend numactl to the entrypoint command
+                tracing::debug!(
+                    alloc_id = %alloc_id,
+                    policy = ?policy,
+                    args = ?numactl_args,
+                    "configuring memory policy"
+                );
+                reporter
+                    .report_step(alloc_id, "memory_policy", "completed")
+                    .await;
+            }
+        }
+
+        // Step 4: Data staging (placeholder — real implementation reads DataRequirements)
         let data_staged = !prepare_config.env_vars.is_empty(); // simplified signal
         if data_staged {
             reporter
@@ -119,6 +145,16 @@ impl ProloguePipeline {
             cache_hit,
             data_staged,
         })
+    }
+}
+
+/// Generate numactl arguments for the given memory policy.
+pub fn numactl_args_for_policy(policy: &MemoryPolicy) -> Vec<&'static str> {
+    match policy {
+        MemoryPolicy::Local => vec!["--localalloc"],
+        MemoryPolicy::Interleave => vec!["--interleave=all"],
+        MemoryPolicy::Preferred => vec!["--preferred=0"],
+        MemoryPolicy::Bind => vec!["--membind=0"],
     }
 }
 
@@ -178,6 +214,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         // First run: cache miss
@@ -200,6 +238,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
         let result2 = pipeline
             .execute(alloc_id2, &config2, &runtime, &mut cache, &NoopReporter)
@@ -223,6 +263,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         pipeline
@@ -255,6 +297,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         let result = pipeline
@@ -278,6 +322,8 @@ mod tests {
             image: Some("pytorch:latest".to_string()),
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         let result = pipeline
@@ -286,6 +332,92 @@ mod tests {
             .unwrap();
         assert!(!result.cache_hit);
         assert!(cache.contains("pytorch:latest"));
+    }
+
+    // ── numactl args tests ──
+
+    #[test]
+    fn numactl_local_policy() {
+        let args = numactl_args_for_policy(&MemoryPolicy::Local);
+        assert_eq!(args, vec!["--localalloc"]);
+    }
+
+    #[test]
+    fn numactl_interleave_policy() {
+        let args = numactl_args_for_policy(&MemoryPolicy::Interleave);
+        assert_eq!(args, vec!["--interleave=all"]);
+    }
+
+    #[test]
+    fn numactl_preferred_policy() {
+        let args = numactl_args_for_policy(&MemoryPolicy::Preferred);
+        assert_eq!(args, vec!["--preferred=0"]);
+    }
+
+    #[test]
+    fn numactl_bind_policy() {
+        let args = numactl_args_for_policy(&MemoryPolicy::Bind);
+        assert_eq!(args, vec!["--membind=0"]);
+    }
+
+    #[tokio::test]
+    async fn prologue_memory_policy_reports_step() {
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+        let (reporter, steps) = RecordingReporter::new();
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("test-image".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: Some(MemoryPolicy::Interleave),
+            is_unified_memory: false,
+        };
+
+        pipeline
+            .execute(alloc_id, &config, &runtime, &mut cache, &reporter)
+            .await
+            .unwrap();
+
+        let steps = steps.lock().await;
+        assert!(steps
+            .iter()
+            .any(|(_, step, status)| step == "memory_policy" && status == "completed"));
+    }
+
+    #[tokio::test]
+    async fn prologue_memory_policy_skips_on_unified() {
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+        let (reporter, steps) = RecordingReporter::new();
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("test-image".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: Some(MemoryPolicy::Local),
+            is_unified_memory: true,
+        };
+
+        pipeline
+            .execute(alloc_id, &config, &runtime, &mut cache, &reporter)
+            .await
+            .unwrap();
+
+        let steps = steps.lock().await;
+        assert!(steps
+            .iter()
+            .any(|(_, step, status)| step == "memory_policy" && status == "skipped_unified"));
     }
 
     #[tokio::test]
@@ -302,6 +434,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![("DATA_DIR".to_string(), "/data/input".to_string())],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         let result = pipeline

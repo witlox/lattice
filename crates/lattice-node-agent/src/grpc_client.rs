@@ -14,7 +14,10 @@ use lattice_common::error::LatticeError;
 use lattice_common::proto::lattice::v1 as pb;
 use lattice_common::proto::lattice::v1::node_service_client::NodeServiceClient;
 use lattice_common::traits::{NodeFilter, NodeRegistry};
-use lattice_common::types::{Node, NodeCapabilities, NodeId, NodeOwnership, NodeState};
+use lattice_common::types::{
+    MemoryDomain, MemoryDomainType, MemoryInterconnect, MemoryLinkType, MemoryTopology, Node,
+    NodeCapabilities, NodeId, NodeOwnership, NodeState,
+};
 
 use crate::heartbeat::Heartbeat;
 use crate::heartbeat_loop::HeartbeatSink;
@@ -89,6 +92,11 @@ impl GrpcNodeRegistry {
         node_id: &str,
         capabilities: &NodeCapabilities,
     ) -> Result<(), String> {
+        let (memory_domains, memory_interconnects, total_memory_capacity_bytes) =
+            match &capabilities.memory_topology {
+                Some(topo) => memory_topology_to_proto(topo),
+                None => (vec![], vec![], 0),
+            };
         let req = pb::RegisterNodeRequest {
             node_id: node_id.to_string(),
             gpu_type: capabilities.gpu_type.clone().unwrap_or_default(),
@@ -96,6 +104,9 @@ impl GrpcNodeRegistry {
             cpu_cores: capabilities.cpu_cores,
             memory_gb: capabilities.memory_gb,
             features: capabilities.features.clone(),
+            memory_domains,
+            memory_interconnects,
+            total_memory_capacity_bytes,
         };
 
         let mut client = self.client.clone();
@@ -268,6 +279,11 @@ fn node_from_status(status: pb::NodeStatus) -> Node {
             memory_gb: status.memory_gb,
             features: status.features,
             gpu_topology: None,
+            memory_topology: memory_topology_from_proto(
+                &status.memory_domains,
+                &status.memory_interconnects,
+                status.total_memory_capacity_bytes,
+            ),
         },
         group: status.group,
         owner: None,
@@ -280,6 +296,95 @@ fn node_from_status(status: pb::NodeStatus) -> Node {
             chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default()
         }),
     }
+}
+
+// ─── Memory topology proto conversions ──────────────────────────────────────
+
+fn memory_topology_to_proto(
+    topo: &MemoryTopology,
+) -> (
+    Vec<pb::MemoryDomainProto>,
+    Vec<pb::MemoryInterconnectProto>,
+    u64,
+) {
+    let domains = topo
+        .domains
+        .iter()
+        .map(|d| pb::MemoryDomainProto {
+            id: d.id,
+            domain_type: match d.domain_type {
+                MemoryDomainType::Dram => "dram",
+                MemoryDomainType::Hbm => "hbm",
+                MemoryDomainType::CxlAttached => "cxl_attached",
+                MemoryDomainType::Unified => "unified",
+            }
+            .to_string(),
+            capacity_bytes: d.capacity_bytes,
+            numa_node: d.numa_node,
+            attached_cpus: d.attached_cpus.clone(),
+            attached_gpus: d.attached_gpus.clone(),
+        })
+        .collect();
+    let interconnects = topo
+        .interconnects
+        .iter()
+        .map(|i| pb::MemoryInterconnectProto {
+            domain_a: i.domain_a,
+            domain_b: i.domain_b,
+            link_type: match i.link_type {
+                MemoryLinkType::NumaLink => "numa_link",
+                MemoryLinkType::CxlSwitch => "cxl_switch",
+                MemoryLinkType::CoherentFabric => "coherent_fabric",
+            }
+            .to_string(),
+            bandwidth_gbps: i.bandwidth_gbps,
+            latency_ns: i.latency_ns,
+        })
+        .collect();
+    (domains, interconnects, topo.total_capacity_bytes)
+}
+
+fn memory_topology_from_proto(
+    domains: &[pb::MemoryDomainProto],
+    interconnects: &[pb::MemoryInterconnectProto],
+    total_bytes: u64,
+) -> Option<MemoryTopology> {
+    if domains.is_empty() {
+        return None;
+    }
+    Some(MemoryTopology {
+        domains: domains
+            .iter()
+            .map(|d| MemoryDomain {
+                id: d.id,
+                domain_type: match d.domain_type.as_str() {
+                    "hbm" => MemoryDomainType::Hbm,
+                    "cxl_attached" => MemoryDomainType::CxlAttached,
+                    "unified" => MemoryDomainType::Unified,
+                    _ => MemoryDomainType::Dram,
+                },
+                capacity_bytes: d.capacity_bytes,
+                numa_node: d.numa_node,
+                attached_cpus: d.attached_cpus.clone(),
+                attached_gpus: d.attached_gpus.clone(),
+            })
+            .collect(),
+        interconnects: interconnects
+            .iter()
+            .map(|i| MemoryInterconnect {
+                domain_a: i.domain_a,
+                domain_b: i.domain_b,
+                link_type: match i.link_type.as_str() {
+                    "cxl_switch" => MemoryLinkType::CxlSwitch,
+                    "coherent_fabric" => MemoryLinkType::CoherentFabric,
+                    _ => MemoryLinkType::NumaLink,
+                },
+                bandwidth_gbps: i.bandwidth_gbps,
+                latency_ns: i.latency_ns,
+            })
+            .collect(),
+        total_capacity_bytes: total_bytes,
+    })
 }
 
 #[cfg(test)]
@@ -313,6 +418,63 @@ mod tests {
         };
         let node = node_from_status(status);
         assert!(matches!(node.state, NodeState::Degraded { .. }));
+    }
+
+    #[test]
+    fn node_from_status_with_memory_topology() {
+        let status = pb::NodeStatus {
+            node_id: "n4".to_string(),
+            state: "ready".to_string(),
+            memory_domains: vec![
+                pb::MemoryDomainProto {
+                    id: 0,
+                    domain_type: "dram".to_string(),
+                    capacity_bytes: 64 * 1024 * 1024 * 1024,
+                    numa_node: Some(0),
+                    attached_cpus: vec![0, 1, 2, 3],
+                    attached_gpus: vec![],
+                },
+                pb::MemoryDomainProto {
+                    id: 1,
+                    domain_type: "hbm".to_string(),
+                    capacity_bytes: 32 * 1024 * 1024 * 1024,
+                    numa_node: None,
+                    attached_cpus: vec![],
+                    attached_gpus: vec![0, 1],
+                },
+            ],
+            memory_interconnects: vec![pb::MemoryInterconnectProto {
+                domain_a: 0,
+                domain_b: 1,
+                link_type: "coherent_fabric".to_string(),
+                bandwidth_gbps: 900.0,
+                latency_ns: 100,
+            }],
+            total_memory_capacity_bytes: 96 * 1024 * 1024 * 1024,
+            ..Default::default()
+        };
+        let node = node_from_status(status);
+        let topo = node.capabilities.memory_topology.unwrap();
+        assert_eq!(topo.domains.len(), 2);
+        assert_eq!(topo.domains[0].domain_type, MemoryDomainType::Dram);
+        assert_eq!(topo.domains[1].domain_type, MemoryDomainType::Hbm);
+        assert_eq!(topo.interconnects.len(), 1);
+        assert_eq!(
+            topo.interconnects[0].link_type,
+            MemoryLinkType::CoherentFabric
+        );
+        assert_eq!(topo.total_capacity_bytes, 96 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn node_from_status_no_memory_topology() {
+        let status = pb::NodeStatus {
+            node_id: "n5".to_string(),
+            state: "ready".to_string(),
+            ..Default::default()
+        };
+        let node = node_from_status(status);
+        assert!(node.capabilities.memory_topology.is_none());
     }
 
     #[test]

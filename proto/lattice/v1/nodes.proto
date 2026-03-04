@@ -106,6 +106,30 @@ message NodeStatus {
 
   // Active allocations on this node
   repeated string allocation_ids = 40;
+
+  // Memory topology
+  repeated MemoryDomainProto memory_domains = 50;
+  repeated MemoryInterconnectProto memory_interconnects = 51;
+  uint64 total_memory_capacity_bytes = 52;
+}
+
+// ─── Memory Topology Messages ────────────────────────────────
+
+message MemoryDomainProto {
+  uint32 id = 1;
+  string domain_type = 2;     // dram | hbm | cxl_attached | unified
+  uint64 capacity_bytes = 3;
+  optional uint32 numa_node = 4;
+  repeated uint32 attached_cpus = 5;
+  repeated uint32 attached_gpus = 6;
+}
+
+message MemoryInterconnectProto {
+  uint32 domain_a = 1;
+  uint32 domain_b = 2;
+  string link_type = 3;       // numa_link | cxl_switch | coherent_fabric
+  double bandwidth_gbps = 4;
+  uint64 latency_ns = 5;
 }
 
 // ─── RegisterNode ────────────────────────────────────────────
@@ -117,6 +141,9 @@ message RegisterNodeRequest {
   uint32 cpu_cores = 4;
   uint64 memory_gb = 5;
   repeated string features = 6;
+  repeated MemoryDomainProto memory_domains = 7;
+  repeated MemoryInterconnectProto memory_interconnects = 8;
+  uint64 total_memory_capacity_bytes = 9;
 }
 
 message RegisterNodeResponse {

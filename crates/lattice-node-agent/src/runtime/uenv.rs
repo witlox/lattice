@@ -282,6 +282,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         }
     }
 
@@ -340,6 +342,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         let result = rt.prepare(&config).await;

@@ -10,6 +10,8 @@ use lattice_common::proto::lattice::v1 as pb;
 use lattice_common::proto::lattice::v1::node_service_server::NodeService;
 use lattice_common::types::{Node, NodeCapabilities, NodeState};
 
+use crate::convert::memory_topology_from_proto;
+
 use crate::convert;
 use crate::state::ApiState;
 
@@ -132,6 +134,11 @@ impl NodeService for LatticeNodeService {
                 memory_gb: req.memory_gb,
                 features: req.features,
                 gpu_topology: None,
+                memory_topology: memory_topology_from_proto(
+                    &req.memory_domains,
+                    &req.memory_interconnects,
+                    req.total_memory_capacity_bytes,
+                ),
             },
             group: 0,
             owner: None,
@@ -295,6 +302,7 @@ mod tests {
                 cpu_cores: 72,
                 memory_gb: 512,
                 features: vec!["slingshot".to_string()],
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -325,6 +333,7 @@ mod tests {
             cpu_cores: 64,
             memory_gb: 256,
             features: vec![],
+            ..Default::default()
         }))
         .await
         .unwrap();

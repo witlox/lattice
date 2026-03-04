@@ -273,6 +273,7 @@ fn build_cost_context(
         reference_wait_seconds: 3600.0,
         max_groups,
         now,
+        memory_locality: HashMap::new(),
     }
 }
 

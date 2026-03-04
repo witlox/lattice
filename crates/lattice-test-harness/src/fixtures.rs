@@ -199,6 +199,7 @@ pub struct NodeBuilder {
     features: Vec<String>,
     owner: Option<NodeOwnership>,
     conformance_fingerprint: Option<String>,
+    memory_topology: Option<MemoryTopology>,
 }
 
 impl NodeBuilder {
@@ -214,6 +215,7 @@ impl NodeBuilder {
             features: Vec::new(),
             owner: None,
             conformance_fingerprint: None,
+            memory_topology: None,
         }
     }
 
@@ -267,6 +269,11 @@ impl NodeBuilder {
         self
     }
 
+    pub fn memory_topology(mut self, topo: MemoryTopology) -> Self {
+        self.memory_topology = Some(topo);
+        self
+    }
+
     pub fn build(self) -> Node {
         let id = self
             .id
@@ -281,6 +288,7 @@ impl NodeBuilder {
                 memory_gb: self.memory_gb,
                 features: self.features,
                 gpu_topology: None,
+                memory_topology: self.memory_topology,
             },
             state: self.state,
             owner: self.owner,

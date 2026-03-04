@@ -161,6 +161,7 @@ mod tests {
             memory_gb: 512,
             features: vec![],
             gpu_topology: None,
+            memory_topology: None,
         }
     }
 

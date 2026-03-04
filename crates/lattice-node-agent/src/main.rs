@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
         memory_gb: args.memory_gb,
         features: vec![],
         gpu_topology: None,
+        memory_topology: None,
     };
 
     // Connect to the quorum

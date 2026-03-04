@@ -170,6 +170,17 @@ pub struct ResourceConstraints {
     pub topology: Option<TopologyHint>,
     /// Feature count requirements (e.g., at least 4 nodes with "nvme_scratch")
     pub feature_counts: HashMap<String, u32>,
+    /// Require nodes with unified memory (GH200/MI300A)
+    #[serde(default)]
+    pub require_unified_memory: bool,
+    /// Prefer allocating CPUs+GPUs within the same NUMA domain
+    #[serde(default)]
+    pub prefer_same_numa: bool,
+    /// Allow CXL-attached memory to satisfy capacity requirements
+    #[serde(default)]
+    pub allow_cxl_memory: bool,
+    /// Memory binding policy (numactl)
+    pub memory_policy: Option<MemoryPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -520,6 +531,8 @@ pub struct NodeCapabilities {
     pub features: Vec<String>,
     /// Detailed GPU topology (interconnect, NIC affinity)
     pub gpu_topology: Option<GpuTopology>,
+    /// Memory topology (NUMA, CXL, unified memory)
+    pub memory_topology: Option<MemoryTopology>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -670,7 +683,7 @@ pub struct GpuLink {
     pub bandwidth_gbps: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GpuLinkType {
     NVLink,
     NVSwitch,
@@ -682,6 +695,63 @@ pub enum GpuLinkType {
 pub enum GpuVendor {
     Nvidia,
     Amd,
+}
+
+// ─── Memory Topology ────────────────────────────────────────
+
+/// Intra-node memory topology: NUMA domains, CXL tiers, and unified memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryTopology {
+    pub domains: Vec<MemoryDomain>,
+    pub interconnects: Vec<MemoryInterconnect>,
+    pub total_capacity_bytes: u64,
+}
+
+/// A memory domain (NUMA node, HBM bank, CXL-attached pool, or unified).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryDomain {
+    pub id: u32,
+    pub domain_type: MemoryDomainType,
+    pub capacity_bytes: u64,
+    pub numa_node: Option<u32>,
+    pub attached_cpus: Vec<u32>,
+    pub attached_gpus: Vec<u32>,
+}
+
+/// Interconnect link between two memory domains.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryInterconnect {
+    pub domain_a: u32,
+    pub domain_b: u32,
+    pub link_type: MemoryLinkType,
+    pub bandwidth_gbps: f64,
+    pub latency_ns: u64,
+}
+
+/// Type of memory in a domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryDomainType {
+    Dram,
+    Hbm,
+    CxlAttached,
+    Unified,
+}
+
+/// Type of link between memory domains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryLinkType {
+    NumaLink,
+    CxlSwitch,
+    CoherentFabric,
+}
+
+/// Memory binding policy for numactl.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryPolicy {
+    Local,
+    Interleave,
+    Preferred,
+    Bind,
 }
 
 // ─── Topology ───────────────────────────────────────────────
@@ -1201,6 +1271,115 @@ mod tests {
         assert!((deser.topology - w.topology).abs() < f64::EPSILON);
     }
 
+    // ── Memory topology tests ──
+
+    #[test]
+    fn memory_domain_type_serde_roundtrip() {
+        let types = [
+            MemoryDomainType::Dram,
+            MemoryDomainType::Hbm,
+            MemoryDomainType::CxlAttached,
+            MemoryDomainType::Unified,
+        ];
+        for t in &types {
+            let json = serde_json::to_string(t).unwrap();
+            let deser: MemoryDomainType = serde_json::from_str(&json).unwrap();
+            assert_eq!(*t, deser, "roundtrip failed for {t:?}");
+        }
+    }
+
+    #[test]
+    fn memory_link_type_serde_roundtrip() {
+        let types = [
+            MemoryLinkType::NumaLink,
+            MemoryLinkType::CxlSwitch,
+            MemoryLinkType::CoherentFabric,
+        ];
+        for t in &types {
+            let json = serde_json::to_string(t).unwrap();
+            let deser: MemoryLinkType = serde_json::from_str(&json).unwrap();
+            assert_eq!(*t, deser, "roundtrip failed for {t:?}");
+        }
+    }
+
+    #[test]
+    fn memory_policy_serde_roundtrip() {
+        let policies = [
+            MemoryPolicy::Local,
+            MemoryPolicy::Interleave,
+            MemoryPolicy::Preferred,
+            MemoryPolicy::Bind,
+        ];
+        for p in &policies {
+            let json = serde_json::to_string(p).unwrap();
+            let deser: MemoryPolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(*p, deser, "roundtrip failed for {p:?}");
+        }
+    }
+
+    #[test]
+    fn memory_topology_serde_roundtrip() {
+        let topo = MemoryTopology {
+            domains: vec![
+                MemoryDomain {
+                    id: 0,
+                    domain_type: MemoryDomainType::Dram,
+                    capacity_bytes: 128 * 1024 * 1024 * 1024,
+                    numa_node: Some(0),
+                    attached_cpus: vec![0, 1, 2, 3],
+                    attached_gpus: vec![0, 1],
+                },
+                MemoryDomain {
+                    id: 1,
+                    domain_type: MemoryDomainType::CxlAttached,
+                    capacity_bytes: 256 * 1024 * 1024 * 1024,
+                    numa_node: None,
+                    attached_cpus: vec![],
+                    attached_gpus: vec![],
+                },
+            ],
+            interconnects: vec![MemoryInterconnect {
+                domain_a: 0,
+                domain_b: 1,
+                link_type: MemoryLinkType::CxlSwitch,
+                bandwidth_gbps: 64.0,
+                latency_ns: 200,
+            }],
+            total_capacity_bytes: 384 * 1024 * 1024 * 1024,
+        };
+        let json = serde_json::to_string(&topo).unwrap();
+        let deser: MemoryTopology = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser.domains.len(), 2);
+        assert_eq!(deser.interconnects.len(), 1);
+        assert_eq!(deser.total_capacity_bytes, topo.total_capacity_bytes);
+    }
+
+    #[test]
+    fn resource_constraints_default_has_memory_fields() {
+        let rc = ResourceConstraints::default();
+        assert!(!rc.require_unified_memory);
+        assert!(!rc.prefer_same_numa);
+        assert!(!rc.allow_cxl_memory);
+        assert!(rc.memory_policy.is_none());
+    }
+
+    #[test]
+    fn resource_constraints_memory_serde_roundtrip() {
+        let rc = ResourceConstraints {
+            require_unified_memory: true,
+            prefer_same_numa: true,
+            allow_cxl_memory: false,
+            memory_policy: Some(MemoryPolicy::Interleave),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&rc).unwrap();
+        let deser: ResourceConstraints = serde_json::from_str(&json).unwrap();
+        assert!(deser.require_unified_memory);
+        assert!(deser.prefer_same_numa);
+        assert!(!deser.allow_cxl_memory);
+        assert_eq!(deser.memory_policy, Some(MemoryPolicy::Interleave));
+    }
+
     // ── Property-based tests ──
 
     mod proptests {
@@ -1220,7 +1399,39 @@ mod tests {
             ]
         }
 
+        fn arb_memory_domain_type() -> impl Strategy<Value = MemoryDomainType> {
+            prop_oneof![
+                Just(MemoryDomainType::Dram),
+                Just(MemoryDomainType::Hbm),
+                Just(MemoryDomainType::CxlAttached),
+                Just(MemoryDomainType::Unified),
+            ]
+        }
+
+        fn arb_memory_policy() -> impl Strategy<Value = MemoryPolicy> {
+            prop_oneof![
+                Just(MemoryPolicy::Local),
+                Just(MemoryPolicy::Interleave),
+                Just(MemoryPolicy::Preferred),
+                Just(MemoryPolicy::Bind),
+            ]
+        }
+
         proptest! {
+            #[test]
+            fn memory_domain_type_roundtrip(dt in arb_memory_domain_type()) {
+                let json = serde_json::to_string(&dt).unwrap();
+                let back: MemoryDomainType = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(dt, back);
+            }
+
+            #[test]
+            fn memory_policy_roundtrip(p in arb_memory_policy()) {
+                let json = serde_json::to_string(&p).unwrap();
+                let back: MemoryPolicy = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(p, back);
+            }
+
             #[test]
             fn terminal_states_block_all_transitions(target in arb_allocation_state()) {
                 let terminals = [

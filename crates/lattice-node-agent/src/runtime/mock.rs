@@ -322,6 +322,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -347,6 +349,8 @@ mod tests {
             image: Some("test:latest".to_string()),
             workdir: None,
             env_vars: vec![("KEY".to_string(), "VAL".to_string())],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -378,6 +382,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         let result = rt.prepare(&config).await;
@@ -403,6 +409,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -426,6 +434,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -449,6 +459,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -470,6 +482,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
         let config_b = PrepareConfig {
             alloc_id: alloc_b,
@@ -478,6 +492,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         rt.prepare(&config_a).await.unwrap();
@@ -502,6 +518,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -531,6 +549,8 @@ mod tests {
             image: None,
             workdir: None,
             env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -552,6 +572,8 @@ mod tests {
                 image: None,
                 workdir: None,
                 env_vars: vec![],
+                memory_policy: None,
+                is_unified_memory: false,
             };
             rt.prepare(&config).await.unwrap();
             let handle = rt.spawn(alloc_id, "python", &[]).await.unwrap();

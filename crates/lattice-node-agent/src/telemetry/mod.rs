@@ -11,10 +11,15 @@
 //! - [`ebpf_stubs`]: Stub interfaces for eBPF-based telemetry collectors.
 
 pub mod ebpf_stubs;
+pub mod gpu_discovery;
 pub mod log_buffer;
+pub mod memory_discovery;
 
 pub use ebpf_stubs::{EbpfCollector, EbpfEvent, StubEbpfCollector};
 pub use log_buffer::{LogRingBuffer, S3Sink};
+pub use memory_discovery::{
+    MemoryDiscoveryProvider, StubMemoryDiscovery, SysfsMemoryDiscovery, UnifiedMemoryDiscovery,
+};
 
 use std::collections::VecDeque;
 

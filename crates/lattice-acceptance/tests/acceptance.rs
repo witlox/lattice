@@ -959,6 +959,8 @@ async fn run_prologue(world: &mut LatticeWorld) {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
 
     let result = pipeline
@@ -982,6 +984,8 @@ async fn run_medical_epilogue(world: &mut LatticeWorld) {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     runtime.prepare(&prep).await.unwrap();
 
@@ -1018,6 +1022,8 @@ async fn run_standard_epilogue(world: &mut LatticeWorld) {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     runtime.prepare(&prep).await.unwrap();
 

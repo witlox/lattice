@@ -44,6 +44,7 @@ fn test_capabilities() -> NodeCapabilities {
         memory_gb: 512,
         features: vec![],
         gpu_topology: None,
+        memory_topology: None,
     }
 }
 
@@ -235,6 +236,8 @@ async fn prologue_runtime_cache_miss_then_hit() {
         image: None,
         workdir: Some("/workspace".to_string()),
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
 
     // First prologue run: cache miss, runtime.prepare called, cache updated.
@@ -262,6 +265,8 @@ async fn prologue_runtime_cache_miss_then_hit() {
         image: None,
         workdir: Some("/workspace".to_string()),
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
 
     let result_2 = pipeline
@@ -300,6 +305,8 @@ async fn epilogue_runtime_medical_wipe() {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     runtime.prepare(&prep_config).await.unwrap();
 
@@ -358,6 +365,8 @@ async fn runtime_full_lifecycle() {
             ("CUDA_VISIBLE_DEVICES".to_string(), "0,1,2,3".to_string()),
             ("MASTER_PORT".to_string(), "29500".to_string()),
         ],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     runtime.prepare(&config).await.unwrap();
 
@@ -469,6 +478,8 @@ async fn signal_delivery_all_modes() {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     rt_signal.prepare(&prep).await.unwrap();
     let handle_signal = rt_signal.spawn(alloc_signal, "python", &[]).await.unwrap();
@@ -498,6 +509,8 @@ async fn signal_delivery_all_modes() {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     rt_shmem.prepare(&prep2).await.unwrap();
     let handle_shmem = rt_shmem.spawn(alloc_shmem, "app", &[]).await.unwrap();
@@ -530,6 +543,8 @@ async fn signal_delivery_all_modes() {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     rt_grpc.prepare(&prep3).await.unwrap();
     let handle_grpc = rt_grpc.spawn(alloc_grpc, "server", &[]).await.unwrap();
@@ -616,6 +631,8 @@ async fn epilogue_log_flush_and_cleanup_no_medical() {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     runtime.prepare(&prep_config).await.unwrap();
 
@@ -752,6 +769,8 @@ async fn prologue_then_epilogue_end_to_end() {
         image: None,
         workdir: Some("/home/user".to_string()),
         env_vars: vec![("DATA_DIR".to_string(), "/data".to_string())],
+        memory_policy: None,
+        is_unified_memory: false,
     };
 
     let prologue = ProloguePipeline::default();
@@ -852,6 +871,8 @@ async fn agent_checkpoint_to_signal_delivery() {
         image: None,
         workdir: None,
         env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
     };
     runtime.prepare(&prep).await.unwrap();
     let handle = runtime.spawn(alloc_id, "server", &[]).await.unwrap();

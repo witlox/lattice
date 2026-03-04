@@ -55,6 +55,10 @@ pub struct PrepareConfig {
     pub workdir: Option<String>,
     /// Environment variables to set.
     pub env_vars: Vec<(String, String)>,
+    /// Memory binding policy (numactl).
+    pub memory_policy: Option<lattice_common::types::MemoryPolicy>,
+    /// Whether the node has unified memory (skips numactl).
+    pub is_unified_memory: bool,
 }
 
 /// Handle to a running process managed by a runtime.
@@ -145,6 +149,8 @@ mod tests {
             image: None,
             workdir: Some("/workspace".to_string()),
             env_vars: vec![("CUDA_VISIBLE_DEVICES".to_string(), "0,1".to_string())],
+            memory_policy: None,
+            is_unified_memory: false,
         };
         assert!(config.uenv.is_some());
         assert!(config.image.is_none());

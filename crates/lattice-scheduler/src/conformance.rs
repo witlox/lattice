@@ -92,10 +92,74 @@ pub fn filter_by_constraints<'a>(
                 }
             }
 
+            // Unified memory constraint
+            if constraints.require_unified_memory {
+                let has_unified = node
+                    .capabilities
+                    .memory_topology
+                    .as_ref()
+                    .is_some_and(|topo| {
+                        topo.domains
+                            .iter()
+                            .any(|d| d.domain_type == MemoryDomainType::Unified)
+                    });
+                if !has_unified {
+                    return false;
+                }
+            }
+
+            // CXL memory constraint: when disallowed, skip nodes that only have CXL memory
+            // (nodes without memory topology are always allowed)
+            if !constraints.allow_cxl_memory {
+                if let Some(ref topo) = node.capabilities.memory_topology {
+                    let non_cxl_capacity: u64 = topo
+                        .domains
+                        .iter()
+                        .filter(|d| d.domain_type != MemoryDomainType::CxlAttached)
+                        .map(|d| d.capacity_bytes)
+                        .sum();
+                    if non_cxl_capacity == 0 && topo.total_capacity_bytes > 0 {
+                        return false;
+                    }
+                }
+            }
+
             true
         })
         .copied()
         .collect()
+}
+
+/// Compute memory locality score for a node: fraction of resources sharing a memory domain.
+///
+/// Returns 1.0 if all requested resources fit in one domain, 0.5 if no topology info.
+pub fn memory_locality_score(node: &Node) -> f64 {
+    let topo = match &node.capabilities.memory_topology {
+        Some(t) => t,
+        None => return 0.5, // neutral when unknown
+    };
+
+    if topo.domains.len() <= 1 {
+        return 1.0; // single domain = perfect locality
+    }
+
+    // For each domain, count how many of the node's resources it covers
+    let total_cpus = node.capabilities.cpu_cores;
+    let total_gpus = node.capabilities.gpu_count;
+    if total_cpus == 0 && total_gpus == 0 {
+        return 1.0;
+    }
+
+    let total_resources = total_cpus as f64 + total_gpus as f64;
+
+    // Find the domain with the most attached resources
+    let best_domain_resources = topo
+        .domains
+        .iter()
+        .map(|d| d.attached_cpus.len() as f64 + d.attached_gpus.len() as f64)
+        .fold(0.0_f64, f64::max);
+
+    (best_domain_resources / total_resources).min(1.0)
 }
 
 #[cfg(test)]
@@ -218,5 +282,170 @@ mod tests {
         let constraints = ResourceConstraints::default();
         let filtered = filter_by_constraints(&nodes, &constraints);
         assert_eq!(filtered.len(), 2);
+    }
+
+    // ── Memory constraint tests ──
+
+    fn unified_memory_topology() -> MemoryTopology {
+        MemoryTopology {
+            domains: vec![MemoryDomain {
+                id: 0,
+                domain_type: MemoryDomainType::Unified,
+                capacity_bytes: 512 * 1024 * 1024 * 1024,
+                numa_node: Some(0),
+                attached_cpus: vec![0, 1, 2, 3],
+                attached_gpus: vec![0],
+            }],
+            interconnects: Vec::new(),
+            total_capacity_bytes: 512 * 1024 * 1024 * 1024,
+        }
+    }
+
+    fn dual_numa_topology() -> MemoryTopology {
+        MemoryTopology {
+            domains: vec![
+                MemoryDomain {
+                    id: 0,
+                    domain_type: MemoryDomainType::Dram,
+                    capacity_bytes: 256 * 1024 * 1024 * 1024,
+                    numa_node: Some(0),
+                    attached_cpus: vec![0, 1],
+                    attached_gpus: vec![0],
+                },
+                MemoryDomain {
+                    id: 1,
+                    domain_type: MemoryDomainType::Dram,
+                    capacity_bytes: 256 * 1024 * 1024 * 1024,
+                    numa_node: Some(1),
+                    attached_cpus: vec![2, 3],
+                    attached_gpus: vec![1],
+                },
+            ],
+            interconnects: vec![MemoryInterconnect {
+                domain_a: 0,
+                domain_b: 1,
+                link_type: MemoryLinkType::NumaLink,
+                bandwidth_gbps: 50.0,
+                latency_ns: 100,
+            }],
+            total_capacity_bytes: 512 * 1024 * 1024 * 1024,
+        }
+    }
+
+    fn cxl_only_topology() -> MemoryTopology {
+        MemoryTopology {
+            domains: vec![MemoryDomain {
+                id: 100,
+                domain_type: MemoryDomainType::CxlAttached,
+                capacity_bytes: 1024 * 1024 * 1024 * 1024,
+                numa_node: None,
+                attached_cpus: vec![],
+                attached_gpus: vec![],
+            }],
+            interconnects: Vec::new(),
+            total_capacity_bytes: 1024 * 1024 * 1024 * 1024,
+        }
+    }
+
+    #[test]
+    fn filter_require_unified_memory_passes() {
+        let n1 = NodeBuilder::new()
+            .id("n1")
+            .memory_topology(unified_memory_topology())
+            .build();
+        let n2 = NodeBuilder::new()
+            .id("n2")
+            .memory_topology(dual_numa_topology())
+            .build();
+        let nodes: Vec<&Node> = vec![&n1, &n2];
+
+        let constraints = ResourceConstraints {
+            require_unified_memory: true,
+            ..Default::default()
+        };
+        let filtered = filter_by_constraints(&nodes, &constraints);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "n1");
+    }
+
+    #[test]
+    fn filter_require_unified_memory_rejects_none() {
+        let n1 = NodeBuilder::new().id("n1").build(); // no memory topology
+        let nodes: Vec<&Node> = vec![&n1];
+
+        let constraints = ResourceConstraints {
+            require_unified_memory: true,
+            ..Default::default()
+        };
+        let filtered = filter_by_constraints(&nodes, &constraints);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn filter_disallow_cxl_rejects_cxl_only() {
+        let n1 = NodeBuilder::new()
+            .id("n1")
+            .memory_topology(cxl_only_topology())
+            .build();
+        let n2 = NodeBuilder::new()
+            .id("n2")
+            .memory_topology(dual_numa_topology())
+            .build();
+        let nodes: Vec<&Node> = vec![&n1, &n2];
+
+        let constraints = ResourceConstraints {
+            allow_cxl_memory: false,
+            ..Default::default()
+        };
+        let filtered = filter_by_constraints(&nodes, &constraints);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "n2");
+    }
+
+    #[test]
+    fn filter_allow_cxl_keeps_all() {
+        let n1 = NodeBuilder::new()
+            .id("n1")
+            .memory_topology(cxl_only_topology())
+            .build();
+        let nodes: Vec<&Node> = vec![&n1];
+
+        let constraints = ResourceConstraints {
+            allow_cxl_memory: true,
+            ..Default::default()
+        };
+        let filtered = filter_by_constraints(&nodes, &constraints);
+        assert_eq!(filtered.len(), 1);
+    }
+
+    // ── Memory locality score tests ──
+
+    #[test]
+    fn locality_score_no_topology_returns_neutral() {
+        let n = NodeBuilder::new().id("n1").build();
+        assert!((memory_locality_score(&n) - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn locality_score_single_domain_returns_one() {
+        let n = NodeBuilder::new()
+            .id("n1")
+            .memory_topology(unified_memory_topology())
+            .build();
+        assert!((memory_locality_score(&n) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn locality_score_dual_numa_below_one() {
+        let n = NodeBuilder::new()
+            .id("n1")
+            .cpu_cores(4)
+            .gpu_count(2)
+            .memory_topology(dual_numa_topology())
+            .build();
+        let score = memory_locality_score(&n);
+        // Best domain has 2 CPUs + 1 GPU = 3 resources out of 6 total = 0.5
+        assert!(score > 0.0 && score <= 1.0);
+        assert!((score - 0.5).abs() < f64::EPSILON);
     }
 }

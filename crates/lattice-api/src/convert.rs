@@ -175,6 +175,29 @@ pub fn node_to_status(node: &Node) -> pb::NodeStatus {
         conformance_fingerprint: node.conformance_fingerprint.clone().unwrap_or_default(),
         last_heartbeat: node.last_heartbeat.map(datetime_to_prost_timestamp),
         allocation_ids: Vec::new(), // populated separately
+        memory_domains: node
+            .capabilities
+            .memory_topology
+            .as_ref()
+            .map(|t| t.domains.iter().map(memory_domain_to_proto).collect())
+            .unwrap_or_default(),
+        memory_interconnects: node
+            .capabilities
+            .memory_topology
+            .as_ref()
+            .map(|t| {
+                t.interconnects
+                    .iter()
+                    .map(memory_interconnect_to_proto)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        total_memory_capacity_bytes: node
+            .capabilities
+            .memory_topology
+            .as_ref()
+            .map(|t| t.total_capacity_bytes)
+            .unwrap_or(0),
     }
 }
 
@@ -290,6 +313,7 @@ fn resources_from_proto(r: &pb::ResourceSpec) -> ResourceRequest {
             features: r.features.clone(),
             topology: topology_hint_from_str(&r.topology_hint),
             feature_counts: r.feature_counts.clone(),
+            ..Default::default()
         },
     }
 }
@@ -736,6 +760,120 @@ fn scheduler_type_to_str(t: &SchedulerType) -> &'static str {
         SchedulerType::ServiceBinPack => "service_bin_pack",
         SchedulerType::MedicalReservation => "medical_reservation",
         SchedulerType::InteractiveFifo => "interactive_fifo",
+    }
+}
+
+// ─── Memory Topology conversions ────────────────────────────
+
+/// Convert a domain MemoryTopology into proto messages.
+pub fn memory_topology_to_proto(
+    topo: &MemoryTopology,
+) -> (
+    Vec<pb::MemoryDomainProto>,
+    Vec<pb::MemoryInterconnectProto>,
+    u64,
+) {
+    let domains = topo.domains.iter().map(memory_domain_to_proto).collect();
+    let interconnects = topo
+        .interconnects
+        .iter()
+        .map(memory_interconnect_to_proto)
+        .collect();
+    (domains, interconnects, topo.total_capacity_bytes)
+}
+
+/// Convert proto messages back to a domain MemoryTopology.
+pub fn memory_topology_from_proto(
+    domains: &[pb::MemoryDomainProto],
+    interconnects: &[pb::MemoryInterconnectProto],
+    total_bytes: u64,
+) -> Option<MemoryTopology> {
+    if domains.is_empty() {
+        return None;
+    }
+    Some(MemoryTopology {
+        domains: domains.iter().map(memory_domain_from_proto).collect(),
+        interconnects: interconnects
+            .iter()
+            .map(memory_interconnect_from_proto)
+            .collect(),
+        total_capacity_bytes: total_bytes,
+    })
+}
+
+fn memory_domain_to_proto(d: &MemoryDomain) -> pb::MemoryDomainProto {
+    pb::MemoryDomainProto {
+        id: d.id,
+        domain_type: memory_domain_type_to_str(&d.domain_type).to_string(),
+        capacity_bytes: d.capacity_bytes,
+        numa_node: d.numa_node,
+        attached_cpus: d.attached_cpus.clone(),
+        attached_gpus: d.attached_gpus.clone(),
+    }
+}
+
+fn memory_domain_from_proto(d: &pb::MemoryDomainProto) -> MemoryDomain {
+    MemoryDomain {
+        id: d.id,
+        domain_type: memory_domain_type_from_str(&d.domain_type),
+        capacity_bytes: d.capacity_bytes,
+        numa_node: d.numa_node,
+        attached_cpus: d.attached_cpus.clone(),
+        attached_gpus: d.attached_gpus.clone(),
+    }
+}
+
+fn memory_interconnect_to_proto(i: &MemoryInterconnect) -> pb::MemoryInterconnectProto {
+    pb::MemoryInterconnectProto {
+        domain_a: i.domain_a,
+        domain_b: i.domain_b,
+        link_type: memory_link_type_to_str(&i.link_type).to_string(),
+        bandwidth_gbps: i.bandwidth_gbps,
+        latency_ns: i.latency_ns,
+    }
+}
+
+fn memory_interconnect_from_proto(i: &pb::MemoryInterconnectProto) -> MemoryInterconnect {
+    MemoryInterconnect {
+        domain_a: i.domain_a,
+        domain_b: i.domain_b,
+        link_type: memory_link_type_from_str(&i.link_type),
+        bandwidth_gbps: i.bandwidth_gbps,
+        latency_ns: i.latency_ns,
+    }
+}
+
+fn memory_domain_type_to_str(t: &MemoryDomainType) -> &'static str {
+    match t {
+        MemoryDomainType::Dram => "dram",
+        MemoryDomainType::Hbm => "hbm",
+        MemoryDomainType::CxlAttached => "cxl_attached",
+        MemoryDomainType::Unified => "unified",
+    }
+}
+
+fn memory_domain_type_from_str(s: &str) -> MemoryDomainType {
+    match s {
+        "hbm" => MemoryDomainType::Hbm,
+        "cxl_attached" => MemoryDomainType::CxlAttached,
+        "unified" => MemoryDomainType::Unified,
+        _ => MemoryDomainType::Dram,
+    }
+}
+
+fn memory_link_type_to_str(t: &MemoryLinkType) -> &'static str {
+    match t {
+        MemoryLinkType::NumaLink => "numa_link",
+        MemoryLinkType::CxlSwitch => "cxl_switch",
+        MemoryLinkType::CoherentFabric => "coherent_fabric",
+    }
+}
+
+fn memory_link_type_from_str(s: &str) -> MemoryLinkType {
+    match s {
+        "cxl_switch" => MemoryLinkType::CxlSwitch,
+        "coherent_fabric" => MemoryLinkType::CoherentFabric,
+        _ => MemoryLinkType::NumaLink,
     }
 }
 

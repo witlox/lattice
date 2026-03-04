@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use lattice_common::types::*;
 
+use crate::conformance::memory_locality_score;
 use crate::cost::{BacklogMetrics, CostContext};
 use crate::knapsack::KnapsackSolver;
 use crate::placement::SchedulingResult;
@@ -62,11 +63,20 @@ pub fn run_cycle(input: &CycleInput, weights: &CostWeights) -> SchedulingResult 
         reference_wait_seconds: 3600.0,
         max_groups: input.topology.groups.len().max(1) as u32,
         now: chrono::Utc::now(),
+        memory_locality: compute_memory_locality(&input.nodes),
     };
 
     // Run the knapsack solver
     let solver = KnapsackSolver::new(weights.clone());
     solver.solve(&input.pending, &input.nodes, &input.topology, &ctx)
+}
+
+/// Compute per-node memory locality scores.
+fn compute_memory_locality(nodes: &[Node]) -> HashMap<NodeId, f64> {
+    nodes
+        .iter()
+        .map(|n| (n.id.clone(), memory_locality_score(n)))
+        .collect()
 }
 
 /// Estimate GPU-hours for a set of allocations.
