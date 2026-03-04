@@ -1,4 +1,4 @@
-# Sensitive, Sensitive & Regulated Workload Design
+# Sensitive, Medical & Regulated Workload Design
 
 ## Threat Model
 
