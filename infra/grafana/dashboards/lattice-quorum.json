@@ -369,13 +369,13 @@
     },
     {
       "id": 10,
-      "title": "Medical Audit Log Entries",
+      "title": "Sensitive Audit Log Entries",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
       "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
       "targets": [
         {
-          "expr": "rate(lattice_raft_medical_audit_entries_total[5m])",
+          "expr": "rate(lattice_raft_sensitive_audit_entries_total[5m])",
           "legendFormat": "Audit entries/s",
           "refId": "A"
         }

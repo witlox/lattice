@@ -23,7 +23,7 @@ pub trait StorageService: Send + Sync {
     /// Set QoS floor bandwidth for a storage path.
     async fn set_qos(&self, path: &str, floor_gbps: f64) -> Result<(), LatticeError>;
 
-    /// Securely wipe data at path (for medical workload teardown).
+    /// Securely wipe data at path (for sensitive workload teardown).
     async fn wipe_data(&self, path: &str) -> Result<(), LatticeError>;
 }
 
@@ -33,7 +33,7 @@ pub trait InfrastructureService: Send + Sync {
     /// Boot or reimage a node with the specified OS image.
     async fn boot_node(&self, node_id: &NodeId, image: &str) -> Result<(), LatticeError>;
 
-    /// Wipe a node (for medical workload teardown).
+    /// Wipe a node (for sensitive workload teardown).
     async fn wipe_node(&self, node_id: &NodeId) -> Result<(), LatticeError>;
 
     /// Query current health status from BMC/agent.
@@ -93,7 +93,7 @@ pub trait AllocationStore: Send + Sync {
     async fn count_running(&self, tenant: &TenantId) -> Result<u32, LatticeError>;
 }
 
-/// Audit log for compliance (medical workloads, security events).
+/// Audit log for compliance (sensitive workloads, security events).
 #[async_trait]
 pub trait AuditLog: Send + Sync {
     /// Record an audit entry.

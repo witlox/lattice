@@ -44,7 +44,7 @@ The node agent reads ring buffers and aggregates based on the current mode.
 - Additional overhead: ~2-5% (acceptable for debugging)
 - Auto-reverts to prod after configured duration (default: 30 minutes)
 
-**Mode: audit (medical vCluster)**
+**Mode: audit (sensitive vCluster)**
 - All file access events (open, read, write, close) with user identity
 - All API calls logged with request/response metadata
 - Network flow summaries (source, destination, bytes, duration)

@@ -1,8 +1,8 @@
-//! Medical reservation scheduler.
+//! Sensitive reservation scheduler.
 //!
 //! User-claim reservation model: nodes are claimed by specific users,
 //! no sharing, strict conformance, and audit logging.
-//! Medical allocations are never preempted (class 10).
+//! Sensitive allocations are never preempted (class 10).
 
 use async_trait::async_trait;
 
@@ -12,23 +12,23 @@ use lattice_common::types::*;
 
 use crate::conformance::{filter_by_constraints, select_conformant_nodes};
 
-/// Medical reservation scheduler: user-claim, no sharing, strict conformance.
-pub struct MedicalReservationScheduler;
+/// Sensitive reservation scheduler: user-claim, no sharing, strict conformance.
+pub struct SensitiveReservationScheduler;
 
-impl MedicalReservationScheduler {
+impl SensitiveReservationScheduler {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for MedicalReservationScheduler {
+impl Default for SensitiveReservationScheduler {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl VClusterScheduler for MedicalReservationScheduler {
+impl VClusterScheduler for SensitiveReservationScheduler {
     async fn schedule(
         &self,
         pending: &[Allocation],
@@ -37,8 +37,8 @@ impl VClusterScheduler for MedicalReservationScheduler {
         let mut used: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut placements = Vec::new();
 
-        // Medical scheduling: priority-only ordering (no cost function complexity)
-        // All medical allocations are class 10, so ordering is by submission time
+        // Sensitive scheduling: priority-only ordering (no cost function complexity)
+        // All sensitive allocations are class 10, so ordering is by submission time
         let mut sorted: Vec<&Allocation> = pending.iter().collect();
         sorted.sort_by_key(|a| a.created_at);
 
@@ -48,7 +48,7 @@ impl VClusterScheduler for MedicalReservationScheduler {
                 NodeCount::Range { min, .. } => min,
             };
 
-            // Medical: only operational, unowned, conformant nodes
+            // Sensitive: only operational, unowned, conformant nodes
             let candidates: Vec<&Node> = nodes
                 .iter()
                 .filter(|n| {
@@ -61,7 +61,7 @@ impl VClusterScheduler for MedicalReservationScheduler {
 
             let constrained = filter_by_constraints(&candidates, &alloc.resources.constraints);
 
-            // Medical: strict conformance — all nodes must be from same conformance group
+            // Sensitive: strict conformance — all nodes must be from same conformance group
             if let Some(selected) = select_conformant_nodes(requested, &constrained) {
                 for n in &selected {
                     used.insert(n.clone());
@@ -78,7 +78,7 @@ impl VClusterScheduler for MedicalReservationScheduler {
     }
 
     fn scheduler_type(&self) -> SchedulerType {
-        SchedulerType::MedicalReservation
+        SchedulerType::SensitiveReservation
     }
 }
 
@@ -88,10 +88,10 @@ mod tests {
     use lattice_test_harness::fixtures::{AllocationBuilder, NodeBuilder};
 
     #[tokio::test]
-    async fn medical_requires_conformant_nodes() {
-        let scheduler = MedicalReservationScheduler::new();
+    async fn sensitive_requires_conformant_nodes() {
+        let scheduler = SensitiveReservationScheduler::new();
         let alloc = AllocationBuilder::new()
-            .medical()
+            .sensitive()
             .preemption_class(10)
             .nodes(2)
             .build();
@@ -106,10 +106,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn medical_places_on_conformant_nodes() {
-        let scheduler = MedicalReservationScheduler::new();
+    async fn sensitive_places_on_conformant_nodes() {
+        let scheduler = SensitiveReservationScheduler::new();
         let alloc = AllocationBuilder::new()
-            .medical()
+            .sensitive()
             .preemption_class(10)
             .nodes(2)
             .build();
@@ -127,10 +127,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn medical_rejects_mixed_conformance() {
-        let scheduler = MedicalReservationScheduler::new();
+    async fn sensitive_rejects_mixed_conformance() {
+        let scheduler = SensitiveReservationScheduler::new();
         let alloc = AllocationBuilder::new()
-            .medical()
+            .sensitive()
             .preemption_class(10)
             .nodes(2)
             .build();
@@ -145,10 +145,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn medical_fifo_ordering() {
-        let scheduler = MedicalReservationScheduler::new();
+    async fn sensitive_fifo_ordering() {
+        let scheduler = SensitiveReservationScheduler::new();
         let first = AllocationBuilder::new()
-            .medical()
+            .sensitive()
             .preemption_class(10)
             .nodes(2)
             .build();
@@ -157,7 +157,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let second = AllocationBuilder::new()
-            .medical()
+            .sensitive()
             .preemption_class(10)
             .nodes(2)
             .build();

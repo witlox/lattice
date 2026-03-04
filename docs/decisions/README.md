@@ -14,9 +14,9 @@ Each ADR follows this format:
 
 **Status:** Accepted
 
-**Context:** The scheduler needs a distributed control plane that avoids single-point-of-failure (Slurm's slurmctld problem). We need strong consistency for node ownership and medical audit, but the system schedules tens-to-hundreds of large allocations, not millions of microservices.
+**Context:** The scheduler needs a distributed control plane that avoids single-point-of-failure (Slurm's slurmctld problem). We need strong consistency for node ownership and sensitive audit, but the system schedules tens-to-hundreds of large allocations, not millions of microservices.
 
-**Decision:** Use Raft consensus (via `openraft` crate) for the quorum. 3-5 replicas. Only node ownership changes and medical audit events go through Raft. Everything else is eventually consistent.
+**Decision:** Use Raft consensus (via `openraft` crate) for the quorum. 3-5 replicas. Only node ownership changes and sensitive audit events go through Raft. Everything else is eventually consistent.
 
 **Consequences:**
 - (+) No SPOF. Quorum tolerates minority failures.
@@ -50,7 +50,7 @@ Each ADR follows this format:
 
 **Context:** Users need reproducible software environments. Options: full containers (Docker/Sarus), uenv (SquashFS mount namespaces), or module systems.
 
-**Decision:** uenv is the default software delivery mechanism. Sarus for OCI containers when isolation is needed (multi-tenant node sharing, third-party images, medical with enhanced isolation). No module system.
+**Decision:** uenv is the default software delivery mechanism. Sarus for OCI containers when isolation is needed (multi-tenant node sharing, third-party images, sensitive with enhanced isolation). No module system.
 
 **Consequences:**
 - (+) Near-zero runtime overhead (mount namespace, no container isolation overhead).
@@ -70,13 +70,13 @@ Each ADR follows this format:
 
 **Decision:** Exactly two categories of state require strong consistency:
 1. **Node ownership** — which tenant/vCluster/allocation owns which nodes
-2. **Medical audit log** — all events related to medical node claims, data access, and isolation boundaries
+2. **Sensitive audit log** — all events related to sensitive node claims, data access, and isolation boundaries
 
 Everything else (job queues, telemetry, quota accounting, session state) is eventually consistent.
 
 **Consequences:**
 - (+) Minimal Raft throughput requirements (node ownership changes are infrequent).
-- (+) Medical compliance: audit trail is provably consistent and tamper-evident.
+- (+) Sensitive compliance: audit trail is provably consistent and tamper-evident.
 - (+) Job queue staleness is bounded and self-correcting (rejected proposals retry next cycle).
 - (-) Eventual consistency means two vCluster schedulers might propose conflicting allocations. One gets rejected. This is a retry, not a bug.
 - (-) Quota accounting can lag. Hard limits enforced at quorum (node ownership), soft limits eventually.
@@ -162,7 +162,7 @@ Everything else (job queues, telemetry, quota accounting, session state) is even
 **Context:** Quota enforcement must balance strictness (prevent over-allocation) with performance (don't bottleneck scheduling on consensus). Some quotas are safety-critical (node counts), others are advisory (GPU-hours budgets).
 
 **Decision:** Two-tier quota enforcement matching the two consistency domains (ADR-004):
-1. **Hard quotas** (quorum-enforced, strong consistency): `max_nodes`, `max_concurrent_allocations`, `medical_pool_size`. Checked during Raft proposal validation. Cannot be violated even momentarily.
+1. **Hard quotas** (quorum-enforced, strong consistency): `max_nodes`, `max_concurrent_allocations`, `sensitive_pool_size`. Checked during Raft proposal validation. Cannot be violated even momentarily.
 2. **Soft quotas** (scheduler-enforced, eventual consistency): `gpu_hours_budget`, `fair_share_target`, `burst_allowance`. Influence scheduling score but don't hard-block. May temporarily overshoot during consistency window (~30s), self-correcting via fair-share scoring.
 
 **Consequences:**

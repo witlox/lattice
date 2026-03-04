@@ -1,8 +1,8 @@
-# Sensitive, Medical & Regulated Workload Design
+# Sensitive, Sensitive & Regulated Workload Design
 
 ## Threat Model
 
-Sensitive & Medical workloads on shared HPC infrastructure face regulatory requirements (Swiss FADP, EU GDPR, potentially HIPAA for international collaboration). The design must be defensible to an auditor.
+Sensitive & Sensitive workloads on shared HPC infrastructure face regulatory requirements (Swiss FADP, EU GDPR, potentially HIPAA for international collaboration). The design must be defensible to an auditor.
 
 **What we must prove:**
 1. Patient data was only accessible to authorized users during processing
@@ -14,14 +14,14 @@ Sensitive & Medical workloads on shared HPC infrastructure face regulatory requi
 
 ## Isolation Model: User Claims Node
 
-Unlike other vClusters where the scheduler assigns nodes, **medical nodes are claimed by a specific user**:
+Unlike other vClusters where the scheduler assigns nodes, **sensitive nodes are claimed by a specific user**:
 
 ```
 Dr. X authenticates via OIDC (institutional IdP)
-  → Requests 4 nodes via FirecREST: POST /v1/allocations (medical vCluster)
+  → Requests 4 nodes via FirecREST: POST /v1/allocations (sensitive vCluster)
   → Quorum records: nodes N1-N4 owned by user:dr-x, tenant:hospital-a
   → Strong consistency: Raft commit before any workload starts
-  → OpenCHAMI boots N1-N4 with hardened medical image (if not already)
+  → OpenCHAMI boots N1-N4 with hardened sensitive image (if not already)
   → All activity on N1-N4 audited under dr-x's identity
   → When released:
     → Quorum releases node ownership (Raft commit)
@@ -29,20 +29,20 @@ Dr. X authenticates via OIDC (institutional IdP)
     → Node returns to general pool only after wipe confirmation
 ```
 
-**No clever optimization on medical nodes.** If Dr. X claims 4 nodes at 9am and runs nothing until 2pm, those nodes sit idle. The cost is real and should be visible to the tenant's accounting. But there is no co-scheduling, no borrowing, no time-sharing.
+**No clever optimization on sensitive nodes.** If Dr. X claims 4 nodes at 9am and runs nothing until 2pm, those nodes sit idle. The cost is real and should be visible to the tenant's accounting. But there is no co-scheduling, no borrowing, no time-sharing.
 
-### Concurrent Medical Claims
+### Concurrent Sensitive Claims
 
 If two users simultaneously attempt to claim overlapping nodes:
 
 - **First Raft commit wins.** Node ownership is a strong consistency domain. The quorum serializes all claim requests via Raft.
 - The second claim request receives an `OwnershipConflict` error with a message identifying which nodes are already claimed and by which user.
 - The second user must select different nodes or wait for the first user to release.
-- There is no queueing or waitlist for medical node claims — they are immediate or rejected.
+- There is no queueing or waitlist for sensitive node claims — they are immediate or rejected.
 
 ## OS Image
 
-Medical nodes boot a hardened image via OpenCHAMI BSS:
+Sensitive nodes boot a hardened image via OpenCHAMI BSS:
 - Minimal kernel, no unnecessary services
 - Mandatory access control (SELinux/AppArmor enforcing)
 - No SSH daemon (all access via API gateway)
@@ -52,11 +52,11 @@ Medical nodes boot a hardened image via OpenCHAMI BSS:
 
 ## Software Delivery
 
-Medical allocations use **signed uenv images only**:
+Sensitive allocations use **signed uenv images only**:
 
 ```yaml
 environment:
-  uenv: "medical/validated-2024.1"  # curated, audited base stack
+  uenv: "sensitive/validated-2024.1"  # curated, audited base stack
   sign_required: true                # image signature verified before mount
   scan_required: true                # CVE scan passed
   approved_bases_only: true          # can only use admin-approved base images
@@ -70,11 +70,11 @@ The uenv registry enforces:
 
 ## Storage
 
-Medical data lives in a dedicated storage pool:
+Sensitive data lives in a dedicated storage pool:
 
 ```yaml
 storage_policy:
-  pool: "medical-encrypted"          # dedicated VAST view/tenant
+  pool: "sensitive-encrypted"          # dedicated VAST view/tenant
   encryption: "aes-256-at-rest"      # VAST native encryption
   access_logging: "full"             # every read/write logged via VAST audit
   wipe_on_release: true              # VAST secure delete on allocation end
@@ -87,11 +87,11 @@ storage_policy:
 
 ## Network Isolation
 
-Medical allocations get a dedicated Slingshot VNI:
+Sensitive allocations get a dedicated Slingshot VNI:
 
 ```yaml
 connectivity:
-  network_domain: "medical-{user}-{alloc_id}"  # unique per allocation
+  network_domain: "sensitive-{user}-{alloc_id}"  # unique per allocation
   policy:
     ingress: deny-all-except:
       - same_domain                  # only processes in this allocation
@@ -109,7 +109,7 @@ With Ultra Ethernet: network-level encryption (UET built-in) provides an additio
 - Node release: user identity, timestamp, wipe confirmation
 - Allocation start/stop: what ran, which uenv image (with hash), which data paths
 - Data access: every file open/read/write (from eBPF audit telemetry)
-- API calls: every FirecREST/lattice-api call related to medical allocations
+- API calls: every FirecREST/lattice-api call related to sensitive allocations
 - Checkpoint events: when, where, what was written
 - Attach sessions: user identity, start/end timestamps, target node, session recording reference
 - Log access events: who accessed logs, when, which allocation
@@ -130,7 +130,7 @@ The audit log is queryable via a dedicated API endpoint and CLI:
 GET /v1/audit/logs?user=dr-x&since=2026-03-01&until=2026-03-15
 GET /v1/audit/logs?allocation=12345
 GET /v1/audit/logs?node=x1000c0s0b0n0&since=2026-03-01
-GET /v1/audit/logs?data_path=s3://medical-data/patient-001/
+GET /v1/audit/logs?data_path=s3://sensitive-data/patient-001/
 ```
 
 **CLI:**
@@ -172,64 +172,64 @@ The export includes cryptographic signatures for tamper evidence.
 
 ## Observability Constraints
 
-Every user-facing observability feature has medical-specific restrictions. The principle: observability must not weaken the isolation model.
+Every user-facing observability feature has sensitive-specific restrictions. The principle: observability must not weaken the isolation model.
 
 ### Attach
 
 - **Claiming user only.** The user who claimed the nodes (identity verified against Raft audit log) is the only user permitted to attach. No delegation, no shared access.
-- **Session recording.** All attach sessions are recorded (input + output bytes) and stored at `s3://medical-audit/{tenant}/{alloc_id}/sessions/{session_id}.recording` (zstd-compressed, encrypted at rest, 7-year retention). The session recording reference is a Raft-committed audit entry.
+- **Session recording.** All attach sessions are recorded (input + output bytes) and stored at `s3://sensitive-audit/{tenant}/{alloc_id}/sessions/{session_id}.recording` (zstd-compressed, encrypted at rest, 7-year retention). The session recording reference is a Raft-committed audit entry.
 - **Signed uenv only.** Attach is only permitted when the allocation runs a signed, vulnerability-scanned uenv image. This prevents attaching to environments with unvetted tools.
 - **No concurrent attach from different sessions.** One active attach session per allocation at a time (prevents accidental data exposure via shared terminal).
 
 ### Logs
 
-- **Encrypted at rest.** Logs from medical allocations are stored in the dedicated encrypted S3 pool (same as medical data).
+- **Encrypted at rest.** Logs from sensitive allocations are stored in the dedicated encrypted S3 pool (same as sensitive data).
 - **Access-logged.** Every log access (live tail or historical) generates an audit entry with user identity and timestamp.
 - **Restricted access.** Only the claiming user and designated compliance reviewers (via tenant admin role) can access logs.
-- **Retention follows data policy.** Log retention matches the allocation's medical data retention policy, not the default log retention.
+- **Retention follows data policy.** Log retention matches the allocation's sensitive data retention policy, not the default log retention.
 
 ### Metrics
 
 - **Low sensitivity, still scoped.** Metrics (GPU%, CPU%, I/O rates) do not contain patient data, but are still scoped to the claiming user. Tenant admins can view aggregated usage.
-- **No cross-tenant visibility.** Even system admins see medical allocation metrics only in aggregate (holistic view), not per-allocation detail.
+- **No cross-tenant visibility.** Even system admins see sensitive allocation metrics only in aggregate (holistic view), not per-allocation detail.
 
 ### Diagnostics
 
-- **No cross-allocation comparison for medical.** The `CompareMetrics` RPC rejects requests that include medical allocation IDs alongside non-medical ones. Comparison within a single medical tenant is permitted (same claiming user).
-- **Network diagnostics scoped.** Network diagnostics for medical allocations only show the allocation's own VNI traffic, not fabric-wide metrics.
+- **No cross-allocation comparison for sensitive.** The `CompareMetrics` RPC rejects requests that include sensitive allocation IDs alongside non-sensitive ones. Comparison within a single sensitive tenant is permitted (same claiming user).
+- **Network diagnostics scoped.** Network diagnostics for sensitive allocations only show the allocation's own VNI traffic, not fabric-wide metrics.
 
 ### Profiling
 
 - **Signed tools_uenv only.** Profiling tools must be delivered via a signed, approved `tools_uenv` image. Users cannot load arbitrary profiler binaries.
-- **Profile output stays in medical pool.** All profiling output is written to the encrypted medical storage pool and is subject to the same access logging and retention policies.
+- **Profile output stays in sensitive pool.** All profiling output is written to the encrypted sensitive storage pool and is subject to the same access logging and retention policies.
 
 ## Federation Constraints
 
-Medical data **does not federate** by default:
+Sensitive data **does not federate** by default:
 - Data stays at the designated site (data sovereignty)
 - Compute can theoretically federate (run at remote site), but only if:
   - Remote site meets the same compliance requirements
   - Data does not transit (remote compute accesses data via encrypted API, not bulk transfer)
-  - Both sites' Sovra instances have a medical workspace with hospital CRK
-- In practice: medical jobs run where the data is. Period.
+  - Both sites' Sovra instances have a sensitive workspace with hospital CRK
+- In practice: sensitive jobs run where the data is. Period.
 
 ## Conformance Requirements
 
-Medical nodes have **strict conformance enforcement**. Unlike general workloads where conformance is a soft preference, medical workloads treat configuration drift as a hard constraint:
+Sensitive nodes have **strict conformance enforcement**. Unlike general workloads where conformance is a soft preference, sensitive workloads treat configuration drift as a hard constraint:
 
-- **Pre-claim validation.** Before a node can be claimed for medical use, the scheduler verifies its conformance fingerprint matches the expected baseline for the medical vCluster. Drifted nodes are rejected.
-- **Drift triggers drain.** If a medical node's conformance fingerprint changes during operation (e.g., a firmware update was missed), the node agent flags the drift. The scheduler will not assign new medical claims to the node until OpenCHAMI remediates it.
-- **Audit trail.** Conformance state changes on medical nodes are recorded in the Raft-committed audit log (which firmware/driver versions were active during the allocation).
+- **Pre-claim validation.** Before a node can be claimed for sensitive use, the scheduler verifies its conformance fingerprint matches the expected baseline for the sensitive vCluster. Drifted nodes are rejected.
+- **Drift triggers drain.** If a sensitive node's conformance fingerprint changes during operation (e.g., a firmware update was missed), the node agent flags the drift. The scheduler will not assign new sensitive claims to the node until OpenCHAMI remediates it.
+- **Audit trail.** Conformance state changes on sensitive nodes are recorded in the Raft-committed audit log (which firmware/driver versions were active during the allocation).
 
-This is deliberately conservative: medical workloads do not tolerate the subtle failures that configuration drift can cause, and regulatory compliance requires provable consistency of the execution environment.
+This is deliberately conservative: sensitive workloads do not tolerate the subtle failures that configuration drift can cause, and regulatory compliance requires provable consistency of the execution environment.
 
 ## Scheduler Behavior
 
-The medical vCluster scheduler is intentionally simple:
+The sensitive vCluster scheduler is intentionally simple:
 - **Algorithm:** Reservation-based (not knapsack). User claims nodes, scheduler validates and commits.
-- **No backfill.** Medical nodes are not shared.
-- **No preemption.** Medical allocations are never preempted.
-- **No elastic borrowing.** Medical nodes cannot be borrowed by other vClusters.
+- **No backfill.** Sensitive nodes are not shared.
+- **No preemption.** Sensitive allocations are never preempted.
+- **No elastic borrowing.** Sensitive nodes cannot be borrowed by other vClusters.
 - **Fair-share:** Not applicable (nodes are user-claimed, not queue-scheduled).
 - **Conformance:** Hard constraint — only nodes matching the expected conformance baseline are eligible.
 - **Cost function weights:** priority=0.90, conformance=0.10 (tiebreaker among conformant nodes; non-conformant nodes are excluded as a hard constraint at the solver level, not via the weight system), everything else near-zero.

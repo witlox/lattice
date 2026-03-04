@@ -5,7 +5,7 @@
 //! Implements the scheduling algorithm from `docs/architecture/scheduling-algorithm.md`:
 //! - 9-factor composite cost function (`Score(j) = Σ wᵢ · fᵢ(j)`)
 //! - Greedy topology-aware backfill solver
-//! - 4 vCluster scheduler types (HPC backfill, service bin-pack, medical, interactive)
+//! - 4 vCluster scheduler types (HPC backfill, service bin-pack, sensitive, interactive)
 //! - Preemption candidate selection
 //! - DAG validation and dependency resolution
 //! - Soft quota signaling for fair-share

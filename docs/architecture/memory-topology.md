@@ -193,7 +193,7 @@ The node agent configures memory allocation policy at allocation start via `numa
 | Local | `--localalloc` | Default: allocate on the NUMA node where the thread runs |
 | Interleave | `--interleave=all` | Large shared datasets that all threads access equally |
 | Preferred | `--preferred=<node>` | Pin to a specific NUMA node (for known data locality) |
-| Bind | `--membind=<nodes>` | Strict: only allocate from specified nodes (medical isolation) |
+| Bind | `--membind=<nodes>` | Strict: only allocate from specified nodes (sensitive isolation) |
 
 On unified memory architectures (GH200, MI300A), NUMA policy has reduced impact since CPU and GPU share the same memory pool. The node agent skips `numactl` configuration for allocations on unified nodes unless the user explicitly requests a policy.
 

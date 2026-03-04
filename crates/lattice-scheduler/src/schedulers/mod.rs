@@ -5,12 +5,12 @@
 
 pub mod hpc_backfill;
 pub mod interactive;
-pub mod medical;
+pub mod sensitive;
 pub mod service_binpack;
 
 pub use hpc_backfill::HpcBackfillScheduler;
 pub use interactive::InteractiveFifoScheduler;
-pub use medical::MedicalReservationScheduler;
+pub use sensitive::SensitiveReservationScheduler;
 pub use service_binpack::ServiceBinPackScheduler;
 
 use lattice_common::types::*;
@@ -22,7 +22,7 @@ pub fn create_scheduler(vc: &VCluster) -> Box<dyn lattice_common::traits::VClust
         SchedulerType::ServiceBinPack => {
             Box::new(ServiceBinPackScheduler::new(vc.cost_weights.clone()))
         }
-        SchedulerType::MedicalReservation => Box::new(MedicalReservationScheduler::new()),
+        SchedulerType::SensitiveReservation => Box::new(SensitiveReservationScheduler::new()),
         SchedulerType::InteractiveFifo => {
             Box::new(InteractiveFifoScheduler::new(vc.cost_weights.clone()))
         }

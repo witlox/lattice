@@ -66,8 +66,8 @@ impl AyaEbpfCollector {
         let data =
             std::fs::read(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
 
-        let mut bpf =
-            aya::Ebpf::load(&data).map_err(|e| format!("failed to load BPF program {name}: {e}"))?;
+        let mut bpf = aya::Ebpf::load(&data)
+            .map_err(|e| format!("failed to load BPF program {name}: {e}"))?;
 
         // Attach all programs in the object file.
         for (prog_name, prog) in bpf.programs_mut() {

@@ -12,7 +12,7 @@ Hard quotas are checked during Raft proposal validation, before commit. A propos
 |-------|-------|-------------|
 | `max_nodes` | Per tenant | Quorum rejects allocation proposals that would exceed the tenant's maximum concurrent node count |
 | `max_concurrent_allocations` | Per tenant | Quorum rejects proposals that would exceed the tenant's maximum number of running allocations |
-| `medical_pool_size` | System-wide | Hard limit on the number of nodes that can be claimed for medical use |
+| `sensitive_pool_size` | System-wide | Hard limit on the number of nodes that can be claimed for sensitive use |
 
 **Guarantees:** These quotas cannot be violated, even momentarily. Two vCluster schedulers proposing conflicting allocations that together would exceed a hard quota: the first committed wins, the second is rejected and retried next cycle.
 
@@ -127,20 +127,20 @@ Allocations that are `Pending` (in the scheduler queue but not yet committed) wh
 - The scheduler will not re-propose them until quota headroom exists.
 - User sees allocation stuck in `Pending` state. `lattice status` shows the reason: `"waiting for quota headroom"`.
 
-## Medical Quota Considerations
+## Sensitive Quota Considerations
 
-Medical quotas are always hard quotas:
+Sensitive quotas are always hard quotas:
 
-- `medical_pool_size` — System-wide hard limit, quorum-enforced
-- Medical node claims always go through quorum (strong consistency)
-- No soft/eventual quota mechanisms for medical resources
-- Idle medical nodes (claimed but unused) are not reclaimable — they remain allocated to the claiming user
+- `sensitive_pool_size` — System-wide hard limit, quorum-enforced
+- Sensitive node claims always go through quorum (strong consistency)
+- No soft/eventual quota mechanisms for sensitive resources
+- Idle sensitive nodes (claimed but unused) are not reclaimable — they remain allocated to the claiming user
 
-Cross-ref: [sensitive-workloads.md](sensitive-workloads.md) for the full medical workload model.
+Cross-ref: [sensitive-workloads.md](sensitive-workloads.md) for the full sensitive workload model.
 
 ## Cross-References
 
 - [scheduling-algorithm.md](scheduling-algorithm.md) — f₃ fair_share_deficit uses soft quota targets
 - [accounting.md](accounting.md) — Waldur quota feedback loop
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical quotas are always hard
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive quotas are always hard
 - [autoscaling.md](autoscaling.md) — Scale-up respects hard quota limits

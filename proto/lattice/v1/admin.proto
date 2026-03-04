@@ -61,7 +61,7 @@ message TenantResponse {
 message CreateVClusterRequest {
   string tenant_id = 1;
   string name = 2;
-  string scheduler_type = 3;    // "hpc_backfill", "service_bin_pack", "medical_reservation", "interactive_fifo"
+  string scheduler_type = 3;    // "hpc_backfill", "service_bin_pack", "sensitive_reservation", "interactive_fifo"
   CostWeightsSpec cost_weights = 4;
   repeated string dedicated_nodes = 5;
   bool allow_borrowing = 6;

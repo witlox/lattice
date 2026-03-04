@@ -33,6 +33,13 @@ pub enum DiscoveryError {
 pub struct NvidiaDiscovery;
 
 #[cfg(feature = "nvidia")]
+impl Default for NvidiaDiscovery {
+    fn default() -> Self {
+        Self
+    }
+}
+
+#[cfg(feature = "nvidia")]
 impl NvidiaDiscovery {
     pub fn new() -> Self {
         Self

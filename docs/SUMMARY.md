@@ -40,7 +40,7 @@
 # Workloads
 
 - [Interactive Sessions](architecture/sessions.md)
-- [Sensitive & Medical Workloads](architecture/sensitive-workloads.md)
+- [Sensitive & Sensitive Workloads](architecture/sensitive-workloads.md)
 - [Accounting](architecture/accounting.md)
 
 # Operations

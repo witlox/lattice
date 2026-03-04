@@ -45,18 +45,18 @@ Federation (optional):
 
 | Boundary | Attack | Mitigation |
 |----------|--------|------------|
-| Medical actions | User denies accessing patient data | Raft-committed audit log with user identity (from OIDC). Cryptographically signed entries (Sovra keys if available, otherwise site PKI). 7-year retention. Tamper-evident chain. |
+| Sensitive actions | User denies accessing patient data | Raft-committed audit log with user identity (from OIDC). Cryptographically signed entries (Sovra keys if available, otherwise site PKI). 7-year retention. Tamper-evident chain. |
 | Allocation submission | User denies submitting allocation | All API requests logged with authenticated user identity. Audit trail in lattice-api access logs. |
-| Node claims | Deny claiming medical nodes | Node claim is a Raft-committed operation with user identity. Cannot be repudiated. |
+| Node claims | Deny claiming sensitive nodes | Node claim is a Raft-committed operation with user identity. Cannot be repudiated. |
 
 ### Information Disclosure
 
 | Boundary | Attack | Mitigation |
 |----------|--------|------------|
-| Node ↔ storage | Data exfiltration via network sniffing | Encrypted transport: NFS-over-TLS (VAST supports), S3 over HTTPS. Medical: encrypted at rest (VAST encrypted pool). |
+| Node ↔ storage | Data exfiltration via network sniffing | Encrypted transport: NFS-over-TLS (VAST supports), S3 over HTTPS. Sensitive: encrypted at rest (VAST encrypted pool). |
 | Cross-tenant | Side-channel via co-location | Full-node scheduling (ADR-007): no co-location of different tenants by default. Interactive vCluster uses Sarus containers with seccomp for intra-node isolation. |
 | Telemetry | Metric leakage between tenants | Label-based access control on TSDB queries. lattice-api injects tenant/user scope filters. |
-| Memory | Data remnants after allocation | Node agent zeroes GPU memory and clears scratch storage (NVMe or tmpfs) on allocation release. Medical: full node wipe via OpenCHAMI. |
+| Memory | Data remnants after allocation | Node agent zeroes GPU memory and clears scratch storage (NVMe or tmpfs) on allocation release. Sensitive: full node wipe via OpenCHAMI. |
 | API responses | Enumeration of other tenants' data | RBAC filtering on all list/query endpoints. Users see only their own allocations; tenant admins see their tenant. |
 
 ### Denial of Service
@@ -115,20 +115,20 @@ vast:
 
 ## RBAC Model
 
-Three base roles, plus a medical-specific role:
+Three base roles, plus a sensitive-specific role:
 
 | Role | Scope | Permissions |
 |------|-------|-------------|
 | **user** | Own allocations | Submit, cancel, query own allocations. View own metrics. Attach to own sessions. |
 | **tenant-admin** | Tenant's allocations | All user permissions for any allocation in tenant. Manage tenant quotas (within limits). View tenant-level metrics. |
 | **system-admin** | All | All operations. Manage vClusters, nodes, tenants. View holistic metrics. |
-| **claiming-user** | Claimed medical nodes | User role + claim/release medical nodes. Access medical storage pool. All actions audit-logged. |
+| **claiming-user** | Claimed sensitive nodes | User role + claim/release sensitive nodes. Access sensitive storage pool. All actions audit-logged. |
 
 Role assignment:
 - `user` role derived from OIDC token (any authenticated user)
 - `tenant-admin` assigned per-tenant in quorum state
 - `system-admin` assigned via quorum configuration
-- `claiming-user` assigned per-tenant by tenant-admin (medical tenants only)
+- `claiming-user` assigned per-tenant by tenant-admin (sensitive tenants only)
 
 ## Network Security
 
@@ -206,7 +206,7 @@ Node management operations (drain, undrain, disable) require the `system-admin` 
 | `ListNodes`, `GetNode` | `user` | Read-only, filtered by tenant scope |
 | `DrainNode`, `UndrainNode` | `system-admin` | Affects scheduling across all tenants |
 | `DisableNode` | `system-admin` | Removes node from scheduling entirely |
-| Medical node claim | `claiming-user` | Medical-specific role within tenant |
+| Sensitive node claim | `claiming-user` | Sensitive-specific role within tenant |
 
 ### Certificate CN vs NodeId Mapping
 
@@ -216,19 +216,19 @@ Node agent certificates use a deterministic CN format that maps to the node's xn
 - **Validation:** On each heartbeat, the quorum verifies that the certificate CN matches the node ID reported in the heartbeat payload. A mismatch triggers an `UNAUTHENTICATED` error and an alert.
 - **Prevents:** A compromised node agent from impersonating a different node.
 
-### Medical Session Recording Storage
+### Sensitive Session Recording Storage
 
-Attach session recordings for medical allocations are stored alongside the audit log:
+Attach session recordings for sensitive allocations are stored alongside the audit log:
 
-- **Path:** `s3://medical-audit/{tenant}/{alloc_id}/sessions/{session_id}.recording`
+- **Path:** `s3://sensitive-audit/{tenant}/{alloc_id}/sessions/{session_id}.recording`
 - **Format:** Raw byte stream (input + output interleaved with timestamps), compressed with zstd
-- **Encryption:** Encrypted at rest using the medical storage pool's encryption keys
-- **Retention:** 7 years (matching medical audit log retention)
+- **Encryption:** Encrypted at rest using the sensitive storage pool's encryption keys
+- **Retention:** 7 years (matching sensitive audit log retention)
 - **Access:** Only the claiming user and tenant-admin (compliance reviewer) can access recordings via the audit query API
 
 ## Cross-References
 
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical-specific security requirements
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive-specific security requirements
 - [failure-modes.md](failure-modes.md) — Security implications of failure scenarios
 - [upgrades.md](upgrades.md) — Certificate rotation during upgrades
 - [accounting.md](accounting.md) — Waldur API token management

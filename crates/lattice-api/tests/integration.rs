@@ -680,15 +680,15 @@ async fn admin_and_allocation_services_share_api_state() {
     assert_eq!(
         tenant_resp.get_ref().isolation_level,
         "strict",
-        "medical tenant should have strict isolation"
+        "sensitive tenant should have strict isolation"
     );
 
     // Create a vCluster for this tenant
     let vc_resp = admin_svc
         .create_v_cluster(Request::new(pb::CreateVClusterRequest {
             tenant_id: "oncology".to_string(),
-            name: "medical-reserved".to_string(),
-            scheduler_type: "medical_reservation".to_string(),
+            name: "sensitive-reserved".to_string(),
+            scheduler_type: "sensitive_reservation".to_string(),
             cost_weights: None,
             dedicated_nodes: vec![],
             allow_borrowing: false,
@@ -696,8 +696,8 @@ async fn admin_and_allocation_services_share_api_state() {
         }))
         .await
         .unwrap();
-    assert_eq!(vc_resp.get_ref().name, "medical-reserved");
-    assert_eq!(vc_resp.get_ref().scheduler_type, "medical_reservation");
+    assert_eq!(vc_resp.get_ref().name, "sensitive-reserved");
+    assert_eq!(vc_resp.get_ref().scheduler_type, "sensitive_reservation");
 
     // Submit allocations for this tenant through the allocation service
     let submit_resp = alloc_svc

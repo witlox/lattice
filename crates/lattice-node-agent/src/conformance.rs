@@ -5,7 +5,7 @@
 //! kernel parameters. Nodes with identical fingerprints are guaranteed
 //! to behave identically for a given workload.
 //!
-//! Medical workloads require all nodes in an allocation to have the
+//! Sensitive workloads require all nodes in an allocation to have the
 //! same fingerprint. Conformance drift triggers immediate Draining.
 
 use sha2::{Digest, Sha256};

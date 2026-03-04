@@ -105,11 +105,12 @@ impl AllocationBuilder {
         self
     }
 
-    pub fn medical(mut self) -> Self {
+    pub fn sensitive(mut self) -> Self {
         self.sign_required = true;
         self.scan_required = true;
         self.isolation_level = Some(IsolationLevel::Strict);
-        self.tags.insert("workload_class".into(), "medical".into());
+        self.tags
+            .insert("workload_class".into(), "sensitive".into());
         self
     }
 
@@ -494,12 +495,12 @@ mod tests {
     }
 
     #[test]
-    fn allocation_builder_medical() {
-        let alloc = AllocationBuilder::new().medical().build();
+    fn allocation_builder_sensitive() {
+        let alloc = AllocationBuilder::new().sensitive().build();
         assert!(alloc.environment.sign_required);
         assert!(alloc.environment.scan_required);
         assert!(alloc.environment.approved_bases_only);
-        assert_eq!(alloc.tags.get("workload_class").unwrap(), "medical");
+        assert_eq!(alloc.tags.get("workload_class").unwrap(), "sensitive");
     }
 
     #[test]

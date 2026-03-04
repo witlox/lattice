@@ -26,7 +26,7 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 
 **Detection:** All quorum members unreachable. API server returns unavailable.
 
-**Recovery:** Restore from most recent Raft snapshot + WAL replay (analogous to `slurmctld --recover`). The latest snapshot is stored on persistent storage (local SSD + replicated to S3). Recovery restores node ownership and medical audit state to the last committed entry.
+**Recovery:** Restore from most recent Raft snapshot + WAL replay (analogous to `slurmctld --recover`). The latest snapshot is stored on persistent storage (local SSD + replicated to S3). Recovery restores node ownership and sensitive audit state to the last committed entry.
 
 **Impact during outage:** No new allocations can be scheduled (proposals cannot be committed). Running allocations continue — node agents operate autonomously. Node agents buffer heartbeats and replay on quorum recovery.
 
@@ -40,7 +40,7 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 3. Allocations on the node are requeued (if `requeue` policy allows) or marked `Failed`
 4. Node agent restarts → re-registers with quorum → health check → re-enters scheduling pool
 
-**Medical nodes:** Longer grace period (default: 5 minutes) to avoid false positives from transient issues. Medical allocations are never automatically requeued — operator intervention required.
+**Sensitive nodes:** Longer grace period (default: 5 minutes) to avoid false positives from transient issues. Sensitive allocations are never automatically requeued — operator intervention required.
 
 ### Node Hardware Failure
 
@@ -81,7 +81,7 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 - Node side: node agent continues running allocations autonomously. Buffers heartbeats and state updates. When connectivity restores, replays buffered state to quorum.
 - If partition heals before grace period: node returns to `Ready`, no allocation disruption.
 
-**Medical:** Extended grace period (5 minutes). Network partitions are logged as audit events.
+**Sensitive:** Extended grace period (5 minutes). Network partitions are logged as audit events.
 
 ### Network Partition: Quorum Split-Brain
 
@@ -107,7 +107,7 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 
 **Impact:**
 - Node boot/reimaging blocked (cannot provision new nodes)
-- Node wipe-on-release blocked (medical nodes held in quarantine state)
+- Node wipe-on-release blocked (sensitive nodes held in quarantine state)
 - Running allocations unaffected
 - Scheduling of new allocations to already-booted nodes continues normally
 
@@ -195,7 +195,7 @@ Configurable per allocation at submission time:
 
 - [scheduling-algorithm.md](scheduling-algorithm.md) — f₈ checkpoint_efficiency affects preemption cost
 - [dag-scheduling.md](dag-scheduling.md) — Failure propagation in DAG workflows
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical-specific failure handling (longer grace periods, no auto-requeue)
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive-specific failure handling (longer grace periods, no auto-requeue)
 - [accounting.md](accounting.md) — Accounting service failure buffering
 - [upgrades.md](upgrades.md) — Failure detection during canary rollouts
 - [sessions.md](sessions.md) — Interactive session disconnect/reconnect during node failures

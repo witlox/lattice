@@ -1,7 +1,7 @@
 //! Global state managed by the Raft state machine.
 //!
 //! This is the authoritative state of the cluster, replicated across all quorum members.
-//! Strong consistency for: node ownership, medical audit log.
+//! Strong consistency for: node ownership, sensitive audit log.
 //! Eventually consistent data (telemetry, metrics) is NOT stored here per ADR-004.
 
 use std::collections::HashMap;

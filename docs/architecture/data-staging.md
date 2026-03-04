@@ -149,7 +149,7 @@ On nodes without NVMe, there is no persistent cache to recover — images are pu
 4. Unmount NFS volumes
 5. Clean scratch: rm -rf /scratch/local/{alloc_id}/
 6. Release VAST QoS policy
-7. Medical: trigger secure wipe sequence (cross-ref: node-lifecycle.md)
+7. Sensitive: trigger secure wipe sequence (cross-ref: node-lifecycle.md)
 ```
 
 ### Data Retention
@@ -162,7 +162,7 @@ On nodes without NVMe, there is no persistent cache to recover — images are pu
 | Output | S3 | User-managed (not auto-deleted) |
 | Scratch | NVMe or tmpfs | Deleted at allocation end |
 | Debug traces | S3 | Short (default: 7 days) |
-| Medical audit logs | Cold tier (S3) | 7 years |
+| Sensitive audit logs | Cold tier (S3) | 7 years |
 
 ## Storage Tier Migration
 
@@ -180,12 +180,12 @@ Hot (VAST NFS+S3) → Warm (capacity S3) → Cold (archive S3)
 | Data untouched for 90 days | Warm → Cold | Storage policy (automatic) |
 | User request or allocation references cold data | Cold → Warm/Hot | Explicit retrieval (may take hours) |
 
-**Medical exception:** Medical data on hot tier stays on hot tier (no automatic migration). `tier_restriction: hot_only` prevents copies on shared warm/cold tiers.
+**Sensitive exception:** Sensitive data on hot tier stays on hot tier (no automatic migration). `tier_restriction: hot_only` prevents copies on shared warm/cold tiers.
 
 ## Cross-References
 
 - [data-plane.md](data-plane.md) — Storage architecture, VAST API integration, protocol standardization
 - [scheduling-algorithm.md](scheduling-algorithm.md) — f₅ data_readiness in cost function
-- [node-lifecycle.md](node-lifecycle.md) — Medical node wipe sequence
+- [node-lifecycle.md](node-lifecycle.md) — Sensitive node wipe sequence
 - [failure-modes.md](failure-modes.md) — VAST unavailability handling
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical storage policy
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive storage policy

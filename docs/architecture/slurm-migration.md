@@ -79,7 +79,7 @@ These Slurm features have no Lattice equivalent and are not planned:
 | Burst buffer (`#DW`) | DataWarp-specific | Use `data.mounts` with `tier_hint: hot` |
 | GRES beyond GPU | Not needed (full-node scheduling) | Use `constraints.features` for non-GPU resources |
 | Accounting (`sacctmgr`) | Waldur handles accounting | `lattice history` or Waldur portal |
-| Reservations (`scontrol create reservation`) | Use medical claims for dedicated nodes | `lattice admin reserve` (future) |
+| Reservations (`scontrol create reservation`) | Use sensitive claims for dedicated nodes | `lattice admin reserve` (future) |
 | Licenses/resources (`--licenses=`) | Not applicable | Use `constraints.features` |
 | Multi-cluster (`--cluster=`) | Use federation | `lattice submit --site=X` (if federation enabled) |
 
@@ -133,7 +133,7 @@ partition_mapping:
   debug: "interactive"
   gpu: "ml-training"
   long: "hpc-batch"        # multiple partitions can map to one vCluster
-  medical: "medical-secure"
+  sensitive: "sensitive-secure"
 qos_mapping:
   low: 1
   normal: 4

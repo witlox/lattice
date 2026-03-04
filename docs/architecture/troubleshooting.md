@@ -172,18 +172,18 @@ lattice status 12345 --verbose
 | Tenant quota exhausted | `max_nodes` reached; scale-up is a no-op |
 | Metric name wrong | Verify metric exists in TSDB: `lattice top 12345 --metric=<name>` |
 
-## Medical Node Won't Accept Claims
+## Sensitive Node Won't Accept Claims
 
-**Symptom:** Medical node claim rejected.
+**Symptom:** Sensitive node claim rejected.
 
 **Diagnosis:**
 
 | Check | What to Look For |
 |-------|-----------------|
 | `lattice nodes <id>` | Is node in `Ready` state? (Not `Degraded`, `Down`, `Draining`) |
-| Conformance | Is node's conformance fingerprint matching the medical baseline? |
-| Pool size | Is `medical_pool_size` quota exhausted? |
-| Previous wipe | Was the node properly wiped after last medical use? |
+| Conformance | Is node's conformance fingerprint matching the sensitive baseline? |
+| Pool size | Is `sensitive_pool_size` quota exhausted? |
+| Previous wipe | Was the node properly wiped after last sensitive use? |
 
 **Fix:**
 
@@ -192,9 +192,9 @@ lattice status 12345 --verbose
 lattice nodes x1000c0s0b0n0 -o wide
 # If drifted: coordinate with OpenCHAMI for remediation
 
-# Check medical pool
+# Check sensitive pool
 lattice admin tenant show hospital-a --quotas
-# If exhausted: release unused medical nodes or increase pool
+# If exhausted: release unused sensitive nodes or increase pool
 ```
 
 ## Log Collection

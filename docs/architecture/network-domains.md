@@ -78,7 +78,7 @@ DAG workflows often have sequential stages that share a network domain but have 
 |------|-------------|
 | Domain names are scoped to a tenant | Two tenants can use the same domain name without conflict |
 | Only allocations from the same tenant can share a domain | Cross-tenant domains are not allowed (isolation requirement) |
-| Medical domains are per-allocation | Each medical allocation gets a unique domain (no sharing, even within tenant) |
+| Sensitive domains are per-allocation | Each sensitive allocation gets a unique domain (no sharing, even within tenant) |
 | Domain names are user-chosen strings | No system-generated names; users pick meaningful names |
 
 ## Capacity
@@ -138,13 +138,13 @@ Exposed ports are reachable from:
 2. The FirecREST API gateway (for external access, if configured)
 3. Not directly reachable from outside the fabric (Slingshot is not routable from Ethernet)
 
-## Medical Network Domains
+## Sensitive Network Domains
 
-Medical allocations get strict network isolation:
+Sensitive allocations get strict network isolation:
 
 ```yaml
 connectivity:
-  network_domain: "medical-{user}-{alloc_id}"  # auto-generated, unique
+  network_domain: "sensitive-{user}-{alloc_id}"  # auto-generated, unique
   policy:
     ingress: deny-all-except:
       - same_domain          # only processes in this allocation
@@ -153,7 +153,7 @@ connectivity:
       - data_gateway         # controlled data egress
 ```
 
-- Each medical allocation gets its own domain (no sharing)
+- Each sensitive allocation gets its own domain (no sharing)
 - Ingress/egress restricted to a data gateway endpoint
 - With Ultra Ethernet: network-level encryption enabled for the VNI
 - VNI released immediately on allocation completion (no grace period)
@@ -178,6 +178,6 @@ To expand the VNI pool when approaching exhaustion:
 ## Cross-References
 
 - [system-architecture.md](system-architecture.md) — Network fabric layer, VNI-based isolation
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical network isolation policy
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive network isolation policy
 - [security.md](security.md) — Network security, traffic classes
 - [api-design.md](api-design.md) — Connectivity field in allocation request

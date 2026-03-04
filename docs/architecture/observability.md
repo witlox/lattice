@@ -69,12 +69,12 @@ The stream begins with an `AttachStart` message specifying the target node (for 
 | HPC (backfill) | Allocation owner | — |
 | Service (bin-pack) | Allocation owner | — |
 | Interactive (FIFO) | Allocation owner | Already has session; attach is secondary terminal |
-| Medical (reservation) | Claiming user only | Session recorded, audit trail, signed uenv only |
+| Sensitive (reservation) | Claiming user only | Session recorded, audit trail, signed uenv only |
 
-### Medical Constraints
+### Sensitive Constraints
 
 - Only the user who claimed the nodes (identity from Raft audit log) can attach
-- All attach sessions are recorded (input + output) to the medical audit log
+- All attach sessions are recorded (input + output) to the sensitive audit log
 - Attach is only permitted when the allocation runs a signed uenv
 - Session start/end events are Raft-committed audit entries
 
@@ -84,7 +84,7 @@ If the node hosting an attach session crashes or becomes unreachable:
 
 - The gRPC bidirectional stream is dropped (connection reset).
 - The API server detects the stream drop and sets `ended_at` on the `AttachSession` record.
-- For medical allocations, the session end event is recorded in the audit log with reason `node_unreachable`.
+- For sensitive allocations, the session end event is recorded in the audit log with reason `node_unreachable`.
 - The client receives a stream error and can display: `"connection to node lost — attach session ended"`.
 
 ### Attach During Preemption
@@ -159,11 +159,11 @@ Via REST `GET /v1/allocations/{id}/logs`:
 - Returns paginated log entries from S3
 - Available after allocation completion (subject to retention policy)
 
-### Medical Constraints
+### Sensitive Constraints
 
-- Logs from medical allocations are encrypted at rest in the dedicated medical S3 pool
-- All log access events are recorded in the medical audit log
-- Log retention follows medical data retention policy (user-specified, minimum per regulation)
+- Logs from sensitive allocations are encrypted at rest in the dedicated sensitive S3 pool
+- All log access events are recorded in the sensitive audit log
+- Log retention follows sensitive data retention policy (user-specified, minimum per regulation)
 - Logs are only accessible to the claiming user and designated compliance reviewers
 
 ### CLI Usage
@@ -435,7 +435,7 @@ lattice attach 12345 --command="nsys profile --delay=60 -o /scratch/profile ./tr
 All observability endpoints are scoped by OIDC token claims:
 - Users can only query their own allocations (or allocations in their tenant, if tenant-admin)
 - Token scopes: `allocations:read` (metrics, logs, diagnostics), `allocations:attach` (interactive attach)
-- Medical allocations: only the claiming user (verified against Raft audit log)
+- Sensitive allocations: only the claiming user (verified against Raft audit log)
 
 ### Rate Limiting
 
@@ -467,7 +467,7 @@ rate_limits:
 | Data Type | Sensitivity | Handling |
 |---|---|---|
 | Metrics (GPU%, CPU%, I/O) | Low | Standard OIDC scoping |
-| Logs (stdout/stderr) | Medium | May contain application data; encrypted at rest for medical |
-| Attach (interactive terminal) | High | Session recorded for medical; PTY access = code execution |
+| Logs (stdout/stderr) | Medium | May contain application data; encrypted at rest for sensitive |
+| Attach (interactive terminal) | High | Session recorded for sensitive; PTY access = code execution |
 | Diagnostics (network/storage) | Low | Infrastructure metrics, no application data |
 | Profiling output | Medium | Written to user's storage, no Lattice-managed persistence |

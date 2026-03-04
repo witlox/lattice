@@ -2,7 +2,7 @@
 
 ## Design Principle
 
-Preemption is a last resort for resource rebalancing. The scheduler prefers waiting, backfill, and elastic borrowing over preemption. When preemption is necessary, it targets allocations with the lowest preemption cost (fast checkpoint, low priority, short remaining runtime). Medical allocations are never preempted.
+Preemption is a last resort for resource rebalancing. The scheduler prefers waiting, backfill, and elastic borrowing over preemption. When preemption is necessary, it targets allocations with the lowest preemption cost (fast checkpoint, low priority, short remaining runtime). Sensitive allocations are never preempted.
 
 ## Preemption Classes
 
@@ -14,7 +14,7 @@ Each allocation has a `preemption_class` (0-10):
 | 1-3 | Low priority | Batch exploration, sweeps | Class 4+ |
 | 4-6 | Normal | Production training, simulation | Class 7+ |
 | 7-9 | High priority | Time-sensitive production | Class 10 only |
-| 10 | Critical / Medical | Medical claims, emergency | Never preempted |
+| 10 | Critical / Sensitive | Sensitive claims, emergency | Never preempted |
 
 **Rule:** Preemption only moves down — a class-5 allocation can preempt class 0-4 allocations but never class 5+.
 
@@ -32,9 +32,9 @@ A pending allocation with class N cannot be scheduled because all suitable nodes
 
 A vCluster's idle nodes were borrowed by another vCluster (elastic sharing). The home vCluster now needs them back. Borrowed nodes carry an implicit preemption risk — the checkpoint cost model (f₈) accounts for this.
 
-### 3. Medical Node Claim
+### 3. Sensitive Node Claim
 
-A medical user claims nodes that are currently occupied by non-medical allocations. Medical claims are class 10 (highest). The scheduler triggers immediate checkpoint + preemption of the occupying allocations.
+A sensitive user claims nodes that are currently occupied by non-sensitive allocations. Sensitive claims are class 10 (highest). The scheduler triggers immediate checkpoint + preemption of the occupying allocations.
 
 ### 4. Quota Enforcement
 
@@ -47,7 +47,7 @@ PreemptionDecision(pending_job, candidates):
 
 1. Filter candidates:
    - Only allocations with preemption_class < pending_job.preemption_class
-   - Exclude medical allocations (never preempted)
+   - Exclude sensitive allocations (never preempted)
    - Exclude allocations in Checkpointing state (already being preempted)
 
 2. Score each candidate by preemption cost:
@@ -128,7 +128,7 @@ Sometimes freeing one allocation isn't enough. The scheduler can preempt multipl
 | HPC Batch | Yes | Class-based, checkpoint-aware |
 | ML Training | Yes | Checkpoint cost heavily weighted (w₈=0.15) |
 | Service | Yes (borrowed nodes only) | Services on home nodes are not preempted; borrowed nodes reclaimable |
-| Medical | Never preempted | Class 10, no exceptions |
+| Sensitive | Never preempted | Class 10, no exceptions |
 | Interactive | Yes | Short-lived, low cost to preempt |
 
 ## Non-Preemptible Allocations
@@ -136,7 +136,7 @@ Sometimes freeing one allocation isn't enough. The scheduler can preempt multipl
 An allocation is effectively non-preemptible when:
 
 1. `checkpoint: None` AND `preemption_class >= 7` — High cost to preempt (all progress lost), high priority
-2. Medical allocations (always class 10)
+2. Sensitive allocations (always class 10)
 3. Allocations within 5 minutes of walltime completion (configurable: `near_completion_threshold`)
 
 The scheduler avoids placing non-preemptible allocations on borrowed nodes, since those nodes may need to be reclaimed.
@@ -145,7 +145,7 @@ The scheduler avoids placing non-preemptible allocations on borrowed nodes, sinc
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `lattice_preemptions_total` | counter | Labels: `vcluster`, `reason` (priority/reclaim/medical) |
+| `lattice_preemptions_total` | counter | Labels: `vcluster`, `reason` (priority/reclaim/sensitive) |
 | `lattice_preemption_checkpoint_duration_seconds` | histogram | Time from hint to checkpoint completion |
 | `lattice_preemption_victim_requeue_total` | counter | Preempted allocations re-entering queue |
 | `lattice_preemption_failed_checkpoint_total` | counter | Checkpoint timeouts during preemption |
@@ -156,4 +156,4 @@ The scheduler avoids placing non-preemptible allocations on borrowed nodes, sinc
 - [checkpoint-broker.md](checkpoint-broker.md) — Checkpoint cost model and application protocol
 - [failure-modes.md](failure-modes.md) — Requeue policy for preempted allocations
 - [node-lifecycle.md](node-lifecycle.md) — Node state transitions during preemption
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical allocations never preempted
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive allocations never preempted

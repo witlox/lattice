@@ -34,7 +34,7 @@ Before deploying Lattice:
 3. Register node inventory in SMD
 4. Prepare boot images:
    - Standard compute image (Linux + node agent)
-   - Medical hardened image (minimal kernel, SELinux, no SSH)
+   - Sensitive hardened image (minimal kernel, SELinux, no SSH)
 5. Generate PKI:
    - Site root CA
    - Intermediate CA for OPAAL
@@ -156,7 +156,7 @@ The new member syncs the Raft log from the leader and becomes a follower.
 A freshly bootstrapped quorum has:
 - Empty node registry (populated when nodes boot)
 - Empty tenant/vCluster configuration (created by admin)
-- Empty medical audit log
+- Empty sensitive audit log
 - Default system configuration
 
 ## Disaster Recovery
@@ -220,14 +220,14 @@ If a minority of quorum members fail (1 of 3, or 2 of 5):
 
 ### Non-Raft State Backup
 
-The Raft snapshot captures quorum state (node ownership, tenants, medical audit). Other stateful components require separate backup strategies:
+The Raft snapshot captures quorum state (node ownership, tenants, sensitive audit). Other stateful components require separate backup strategies:
 
 | Component | State Location | Backup Strategy |
 |-----------|---------------|----------------|
 | TSDB (metrics) | VictoriaMetrics / Thanos | TSDB-native snapshot + S3 replication |
 | S3 logs | `s3://{tenant}/{project}/{alloc_id}/logs/` | S3 bucket versioning + cross-region replication |
 | Accounting WAL | `/var/lib/lattice/accounting-wal` | Include in node backup or replicate to S3 |
-| Medical audit log | Raft state (primary) + S3 archive (cold) | Covered by Raft snapshot; S3 archive has its own retention |
+| Sensitive audit log | Raft state (primary) + S3 archive (cold) | Covered by Raft snapshot; S3 archive has its own retention |
 | Grafana dashboards | `infra/grafana/` (version-controlled) | Git repository |
 
 **Recommended schedule:** Daily backup verification for TSDB snapshots. Accounting WAL backed up on the same schedule as Raft snapshots.
@@ -319,7 +319,7 @@ S3 snapshots follow a lifecycle policy:
 - Keep all snapshots for 7 days (hourly granularity)
 - After 7 days: keep one snapshot per day for 30 days
 - After 30 days: keep one snapshot per week for 90 days
-- After 90 days: delete (unless medical audit retention requires longer)
+- After 90 days: delete (unless sensitive audit retention requires longer)
 
 Configure via S3 lifecycle rules on the `lattice-backup` bucket.
 

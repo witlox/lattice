@@ -58,13 +58,13 @@ pub fn evaluate_preemption(
         NodeCount::Range { min, .. } => min as usize,
     };
 
-    // Filter candidates: lower class, not medical, not already checkpointing
+    // Filter candidates: lower class, not sensitive, not already checkpointing
     let mut candidates: Vec<PreemptionCandidate> = running
         .iter()
         .filter(|a| {
             a.lifecycle.preemption_class < pending_class
                 && a.state == AllocationState::Running
-                && !is_medical(a)
+                && !is_sensitive(a)
         })
         .map(|a| PreemptionCandidate {
             allocation_id: a.id,
@@ -161,13 +161,13 @@ fn remaining_walltime_value(alloc: &Allocation, config: &PreemptionConfig) -> f6
     }
 }
 
-/// Check if an allocation is medical (never preempted).
-fn is_medical(alloc: &Allocation) -> bool {
+/// Check if an allocation is sensitive (never preempted).
+fn is_sensitive(alloc: &Allocation) -> bool {
     alloc.lifecycle.preemption_class >= 10
         || alloc
             .tags
             .get("workload_class")
-            .is_some_and(|v| v == "medical")
+            .is_some_and(|v| v == "sensitive")
 }
 
 #[cfg(test)]
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn medical_never_preempted() {
+    fn sensitive_never_preempted() {
         let pending = AllocationBuilder::new()
             .nodes(2)
             .preemption_class(9)
@@ -251,7 +251,7 @@ mod tests {
             .nodes(2)
             .preemption_class(5)
             .state(AllocationState::Running)
-            .medical()
+            .sensitive()
             .build();
         victim.assigned_nodes = vec!["n1".into(), "n2".into()];
 

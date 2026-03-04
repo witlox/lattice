@@ -8,7 +8,7 @@
 │  Use: active datasets, home dirs, checkpoints, scratch │
 │  Performance: NVMe-speed, low-latency                  │
 │  Scheduler integration: QoS per export, pre-staging    │
-│  Medical: encrypted pool, access-logged                │
+│  Sensitive: encrypted pool, access-logged                │
 └────────────────────┬───────────────────────────────────┘
                      │ policy-driven data mover
 ┌────────────────────┴───────────────────────────────────┐
@@ -22,7 +22,7 @@
 │  Cold Tier (tape/object archive)                       │
 │  Protocol: S3-compatible (Glacier-style retrieval)     │
 │  Use: regulatory retention, long-term archival         │
-│  Medical: 7+ year retention, immutable                 │
+│  Sensitive: 7+ year retention, immutable                 │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -83,10 +83,10 @@ The scheduler integrates with the storage API for intelligent data movement:
 | Set bandwidth floor | PATCH /exports/{id}/qos | Job starts |
 | Audit log query | GET /audit/logs?path=... | Compliance reporting |
 
-### Medical Storage Policy
+### Sensitive Storage Policy
 
 ```yaml
-vcluster: medical-secure
+vcluster: sensitive-secure
   storage_policy:
     encryption: aes-256-at-rest
     pool: dedicated               # separate VAST view/tenant
@@ -109,7 +109,7 @@ s3://{tenant}/{project}/{alloc_id}/logs/
     └── metadata.json
 ```
 
-Medical allocation logs are stored in the encrypted medical S3 pool with access logging enabled.
+Sensitive allocation logs are stored in the encrypted sensitive S3 pool with access logging enabled.
 
 ## Node-Local Storage (Optional)
 

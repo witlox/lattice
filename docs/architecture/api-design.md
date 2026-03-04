@@ -238,7 +238,7 @@ The protobuf definitions in `proto/lattice/v1/allocations.proto` currently cover
 | DAG RPCs (get, list, cancel) | Defined | Part of AllocationService |
 | NodeService (list, get, drain, undrain, disable) | Defined | `proto/lattice/v1/nodes.proto` |
 | AdminService (tenant CRUD, vCluster CRUD, Raft status, backup verify) | Defined | `proto/lattice/v1/admin.proto` |
-| AuditService (medical audit log queries) | Planned | Will be a separate service proto |
+| AuditService (sensitive audit log queries) | Planned | Will be a separate service proto |
 | SessionService (create, terminal) | Planned | May merge into AllocationService or be separate |
 | AccountingService (usage queries) | Planned | May integrate with Waldur API directly |
 
@@ -248,4 +248,4 @@ Planned services will be added as the proto matures. REST endpoints for planned 
 
 All API calls require OIDC bearer token. FirecREST handles the OIDC flow (institutional IdP integration). The lattice-api server validates tokens against the configured OIDC provider.
 
-Medical tenant tokens include additional claims for audit trail binding.
+Sensitive tenant tokens include additional claims for audit trail binding.

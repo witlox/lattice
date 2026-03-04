@@ -33,8 +33,8 @@ Events pushed from Lattice to Waldur:
 | `allocation.started` | Allocation enters Running state | tenant, project, user, resources (nodes, GPUs, GPU type), estimated duration |
 | `allocation.completed` | Allocation reaches terminal state | actual duration, GPU-hours consumed, exit status, storage bytes written |
 | `allocation.checkpointed` | Checkpoint written | checkpoint storage consumed, checkpoint duration |
-| `node.claimed` | Medical node claimed by a user | tenant, user, node IDs, claiming timestamp |
-| `node.released` | Medical node released | tenant, user, node IDs, release timestamp, wipe confirmation |
+| `node.claimed` | Sensitive node claimed by a user | tenant, user, node IDs, claiming timestamp |
+| `node.released` | Sensitive node released | tenant, user, node IDs, release timestamp, wipe confirmation |
 | `quota.updated` | Waldur updates a tenant's quota | new quota values (Waldur → Lattice direction) |
 
 Events are timestamped and include the allocation ID for correlation.
@@ -109,14 +109,14 @@ Conversely, when a tenant purchases more compute:
 2. Lattice picks up the new limits
 3. Previously-starved allocations can now be scheduled
 
-## Medical Accounting
+## Sensitive Accounting
 
-Medical allocations have additional accounting requirements:
+Sensitive allocations have additional accounting requirements:
 
 - All accounting events include the claiming user's identity (not just tenant)
 - Idle node time (nodes claimed but no running allocation) is billable — Waldur receives `node.claimed` and `node.released` events
-- Accounting events for medical allocations are also written to the Raft-committed audit log (cross-ref: [sensitive-workloads.md](sensitive-workloads.md))
-- Waldur must retain medical billing records for 7 years (configured on the Waldur side)
+- Accounting events for sensitive allocations are also written to the Raft-committed audit log (cross-ref: [sensitive-workloads.md](sensitive-workloads.md))
+- Waldur must retain sensitive billing records for 7 years (configured on the Waldur side)
 
 ## Configuration
 
@@ -140,5 +140,5 @@ When `accounting.enabled` is false, no accounting code runs and no Waldur depend
 - [quota-enforcement.md](quota-enforcement.md) — Waldur updates quotas, hard vs. soft semantics
 - [failure-modes.md](failure-modes.md) — Accounting service failure buffering
 - [security.md](security.md) — Waldur API token management
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical billing and audit requirements
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive billing and audit requirements
 - [telemetry.md](telemetry.md) — Accounting buffer metrics in scheduler self-monitoring

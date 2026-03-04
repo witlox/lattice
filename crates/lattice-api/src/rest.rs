@@ -1182,7 +1182,9 @@ async fn create_vcluster(
         tenant: req.tenant_id.clone(),
         scheduler_type: match req.scheduler_type.as_deref() {
             Some("service_bin_pack") => lattice_common::types::SchedulerType::ServiceBinPack,
-            Some("medical_reservation") => lattice_common::types::SchedulerType::MedicalReservation,
+            Some("sensitive_reservation") => {
+                lattice_common::types::SchedulerType::SensitiveReservation
+            }
             Some("interactive_fifo") => lattice_common::types::SchedulerType::InteractiveFifo,
             _ => lattice_common::types::SchedulerType::HpcBackfill,
         },
@@ -1198,8 +1200,8 @@ async fn create_vcluster(
         scheduler_type: match &vc.scheduler_type {
             lattice_common::types::SchedulerType::HpcBackfill => "hpc_backfill".to_string(),
             lattice_common::types::SchedulerType::ServiceBinPack => "service_bin_pack".to_string(),
-            lattice_common::types::SchedulerType::MedicalReservation => {
-                "medical_reservation".to_string()
+            lattice_common::types::SchedulerType::SensitiveReservation => {
+                "sensitive_reservation".to_string()
             }
             lattice_common::types::SchedulerType::InteractiveFifo => "interactive_fifo".to_string(),
         },
@@ -1240,8 +1242,8 @@ async fn list_vclusters(State(state): State<Arc<ApiState>>) -> impl IntoResponse
                     lattice_common::types::SchedulerType::ServiceBinPack => {
                         "service_bin_pack".to_string()
                     }
-                    lattice_common::types::SchedulerType::MedicalReservation => {
-                        "medical_reservation".to_string()
+                    lattice_common::types::SchedulerType::SensitiveReservation => {
+                        "sensitive_reservation".to_string()
                     }
                     lattice_common::types::SchedulerType::InteractiveFifo => {
                         "interactive_fifo".to_string()
@@ -1277,8 +1279,8 @@ async fn get_vcluster(
                         lattice_common::types::SchedulerType::ServiceBinPack => {
                             "service_bin_pack".to_string()
                         }
-                        lattice_common::types::SchedulerType::MedicalReservation => {
-                            "medical_reservation".to_string()
+                        lattice_common::types::SchedulerType::SensitiveReservation => {
+                            "sensitive_reservation".to_string()
                         }
                         lattice_common::types::SchedulerType::InteractiveFifo => {
                             "interactive_fifo".to_string()

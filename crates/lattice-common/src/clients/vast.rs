@@ -38,7 +38,7 @@ pub struct VastConfig {
 ///
 /// Provides concrete storage operations: data readiness checks (is data
 /// on hot tier?), prefetch/staging, QoS floor bandwidth, and secure wipe
-/// for medical workload teardown.
+/// for sensitive workload teardown.
 pub struct VastClient {
     http: Client,
     config: VastConfig,
@@ -399,7 +399,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = client.wipe_data("/medical/patient-123").await;
+        let result = client.wipe_data("/sensitive/patient-123").await;
         assert!(result.is_ok());
     }
 

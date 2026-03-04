@@ -213,7 +213,7 @@ fn federation_accepted_offer_produces_usable_node_ids() {
     let config = FederationConfig {
         site_id: "alps".to_string(),
         max_federation_pct: 0.3,
-        accept_medical: false,
+        accept_sensitive: false,
         trusted_sites: vec!["daint".to_string()],
     };
     let broker = FederationBroker::new(config);
@@ -223,7 +223,7 @@ fn federation_accepted_offer_produces_usable_node_ids() {
         allocation_id: Uuid::new_v4(),
         tenant_id: "cern-physics".to_string(),
         node_count: 4,
-        medical: false,
+        sensitive: false,
         data_locations: vec!["alps".to_string()],
         offered_at: Utc::now(),
         ttl_secs: 300,
@@ -254,7 +254,7 @@ fn federation_data_gravity_local_vs_remote() {
     let config = FederationConfig {
         site_id: "alps".to_string(),
         max_federation_pct: 0.5,
-        accept_medical: false,
+        accept_sensitive: false,
         trusted_sites: vec!["daint".to_string()],
     };
     let broker = FederationBroker::new(config);
@@ -265,7 +265,7 @@ fn federation_data_gravity_local_vs_remote() {
         allocation_id: Uuid::new_v4(),
         tenant_id: "ml-team".to_string(),
         node_count: 2,
-        medical: false,
+        sensitive: false,
         data_locations: vec!["alps".to_string()],
         offered_at: Utc::now(),
         ttl_secs: 300,
@@ -282,7 +282,7 @@ fn federation_data_gravity_local_vs_remote() {
         allocation_id: Uuid::new_v4(),
         tenant_id: "ml-team".to_string(),
         node_count: 2,
-        medical: false,
+        sensitive: false,
         data_locations: vec!["daint".to_string()],
         offered_at: Utc::now(),
         ttl_secs: 300,
@@ -296,47 +296,47 @@ fn federation_data_gravity_local_vs_remote() {
     );
 }
 
-/// Medical offer rejected when config disallows it, but accepted
+/// Sensitive offer rejected when config disallows it, but accepted
 /// when explicitly enabled. Then verify the accepted nodes could
 /// feed into a scheduling cycle's node pool.
 #[test]
-fn federation_medical_policy_and_scheduler_integration() {
-    // Config that rejects medical
+fn federation_sensitive_policy_and_scheduler_integration() {
+    // Config that rejects sensitive
     let strict_config = FederationConfig {
         site_id: "secure-site".to_string(),
         max_federation_pct: 0.5,
-        accept_medical: false,
+        accept_sensitive: false,
         trusted_sites: vec!["hospital-site".to_string()],
     };
     let strict_broker = FederationBroker::new(strict_config);
 
-    let medical_offer = FederationOffer {
+    let sensitive_offer = FederationOffer {
         source_site: "hospital-site".to_string(),
         allocation_id: Uuid::new_v4(),
         tenant_id: "radiology".to_string(),
         node_count: 2,
-        medical: true,
+        sensitive: true,
         data_locations: vec![],
         offered_at: Utc::now(),
         ttl_secs: 300,
     };
 
-    let reject_decision = strict_broker.evaluate_offer(&medical_offer, 10, 100);
+    let reject_decision = strict_broker.evaluate_offer(&sensitive_offer, 10, 100);
     assert!(
         matches!(reject_decision, OfferDecision::Reject { .. }),
-        "medical should be rejected when accept_medical=false"
+        "sensitive should be rejected when accept_sensitive=false"
     );
 
-    // Config that accepts medical
+    // Config that accepts sensitive
     let open_config = FederationConfig {
         site_id: "secure-site".to_string(),
         max_federation_pct: 0.5,
-        accept_medical: true,
+        accept_sensitive: true,
         trusted_sites: vec!["hospital-site".to_string()],
     };
     let open_broker = FederationBroker::new(open_config);
 
-    let accept_decision = open_broker.evaluate_offer(&medical_offer, 10, 100);
+    let accept_decision = open_broker.evaluate_offer(&sensitive_offer, 10, 100);
     match accept_decision {
         OfferDecision::Accept { nodes } => {
             assert_eq!(nodes.len(), 2);
@@ -348,7 +348,7 @@ fn federation_medical_policy_and_scheduler_integration() {
             }
         }
         OfferDecision::Reject { reason } => {
-            panic!("expected accept with medical enabled, got reject: {reason}");
+            panic!("expected accept with sensitive enabled, got reject: {reason}");
         }
     }
 }

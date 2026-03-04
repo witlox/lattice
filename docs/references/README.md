@@ -9,7 +9,7 @@
 - **Components we integrate with:** SMD (State Management Daemon), BSS (Boot Script Service), Magellan (Redfish discovery), OPAAL (auth), Cloud-init
 - **Founded by:** LANL, NERSC, CSCS, HPE, University of Bristol
 - **Language:** Go
-- **Our integration:** Infrastructure plane — Lattice queries SMD for node inventory, triggers BSS for boot image selection (e.g., medical hardened image), uses Magellan for hardware discovery
+- **Our integration:** Infrastructure plane — Lattice queries SMD for node inventory, triggers BSS for boot image selection (e.g., sensitive hardened image), uses Magellan for hardware discovery
 
 ### FirecREST
 - **What:** RESTful API gateway for HPC systems
@@ -29,7 +29,7 @@
 - **What:** OCI-compliant container runtime for HPC
 - **Repo:** https://github.com/eth-cscs/sarus
 - **Key properties:** Near-native performance, direct GPU/interconnect access via OCI hooks, no network namespace overhead for MPI
-- **Our integration:** Software plane — used when full container isolation is needed (multi-tenant node sharing, third-party images, medical workloads with enhanced isolation)
+- **Our integration:** Software plane — used when full container isolation is needed (multi-tenant node sharing, third-party images, sensitive workloads with enhanced isolation)
 
 ### Sovra
 - **What:** Federated sovereign key management for critical infrastructure
@@ -37,7 +37,7 @@
 - **Docs:** https://witlox.github.io/sovra/
 - **Key properties:** Peer-to-peer control planes, customer-controlled root keys, OPA-based policy, air-gap capable, cross-domain sharing
 - **Language:** Go
-- **Our integration:** Federation trust layer (optional, feature-gated). Provides cross-site authentication, medical data encryption key management, audit log signing.
+- **Our integration:** Federation trust layer (optional, feature-gated). Provides cross-site authentication, sensitive data encryption key management, audit log signing.
 
 ## Networking
 
@@ -51,7 +51,7 @@
 - **Spec:** https://ultraethernet.org (1.0 released June 2025)
 - **Key properties:** UET transport (native RDMA over Ethernet), packet spraying (adaptive multi-path), CSIG (in-band congestion signaling), built-in encryption, libfabric 2.0 API
 - **Relationship to Slingshot:** ~75% of UET derives from Slingshot transport. Migration path is evolutionary, not revolutionary.
-- **Scheduler relevance:** CSIG feeds into telemetry (congestion-aware scheduling), encryption simplifies medical compliance, libfabric abstraction enables fabric-agnostic scheduler
+- **Scheduler relevance:** CSIG feeds into telemetry (congestion-aware scheduling), encryption simplifies sensitive compliance, libfabric abstraction enables fabric-agnostic scheduler
 
 ### libfabric
 - **What:** Fabric abstraction library (provider-based: CXI for Slingshot, EFA for AWS, verbs for InfiniBand, UET for Ultra Ethernet)
@@ -62,7 +62,7 @@
 ### VAST Data Platform
 - **What:** All-flash unified storage (NFS + S3 + block), DASE architecture
 - **Key properties:** Multiprotocol (NFS + S3 native), RESTful API for everything, QoS per export, auto-indexing catalog, snapshots, DataSpace (global namespace with prefetch)
-- **Scheduler integration:** QoS setting at job start, data locality queries via Catalog API, pre-staging via DataSpace prefetch, snapshots for reproducibility, audit logs for medical compliance
+- **Scheduler integration:** QoS setting at job start, data locality queries via Catalog API, pre-staging via DataSpace prefetch, snapshots for reproducibility, audit logs for sensitive compliance
 
 ### IBM Storage Scale (GPFS)
 - **What:** Parallel file system with extensive management features

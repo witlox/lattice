@@ -21,7 +21,7 @@ Components included in the fingerprint:
 - NIC firmware version (Slingshot/UE adapter firmware)
 - BIOS/BMC firmware version (reported via Redfish/OpenCHAMI)
 - Kernel version and boot parameters
-- uenv base image hash (for medical: the hardened OS image)
+- uenv base image hash (for sensitive: the hardened OS image)
 
 The fingerprint is a content hash (SHA-256 of the sorted component list). Nodes with identical fingerprints belong to the same **conformance group**.
 
@@ -29,7 +29,7 @@ The fingerprint is a content hash (SHA-256 of the sorted component list). Nodes 
 
 The node agent reports the conformance fingerprint alongside its existing health data. This is **eventually consistent** — conformance group membership does not go through Raft (it's derived from node agent reports, same as health status).
 
-Exception: for medical nodes, conformance state changes are recorded in the Raft-committed audit log (per sensitive workload requirements).
+Exception: for sensitive nodes, conformance state changes are recorded in the Raft-committed audit log (per sensitive workload requirements).
 
 ### Staleness
 
@@ -70,7 +70,7 @@ During node selection (solver step 2a), the solver prefers nodes from the same c
 | HPC Batch | Soft preference (w₉=0.10). Prefers homogeneous sets but will mix if needed. |
 | ML Training | Strong preference (w₉=0.25). Multi-node training is sensitive to driver mismatches. |
 | Service | Weak preference (w₉=0.05). Services are usually single-node or tolerate heterogeneity. |
-| Medical | Hard constraint at solver level (drifted nodes excluded before scoring). w₉=0.10 as tiebreaker among conformant nodes. |
+| Sensitive | Hard constraint at solver level (drifted nodes excluded before scoring). w₉=0.10 as tiebreaker among conformant nodes. |
 | Interactive | Ignored (w₉=0.00). Short-lived, single-node, not sensitive to drift. |
 
 ## Drift Response
@@ -80,7 +80,7 @@ When the scheduler detects that a node's conformance fingerprint has changed (or
 1. **Continue running workloads.** Existing allocations are not disrupted — the drift already happened, and disrupting would make things worse.
 2. **Stop scheduling new work.** The node is deprioritized for new allocations (it now belongs to a smaller conformance group, scoring lower on f₉).
 3. **Signal OpenCHAMI.** The scheduler (or node agent) notifies OpenCHAMI that the node has drifted, triggering remediation (firmware update, reboot into correct image, etc.).
-4. **For medical nodes:** additionally flag the drift in the audit log and set the node to `Draining` — no new medical claims until remediated and verified.
+4. **For sensitive nodes:** additionally flag the drift in the audit log and set the node to `Draining` — no new sensitive claims until remediated and verified.
 
 The scheduler does **not** attempt to remediate drift itself. It only avoids scheduling on drifted nodes and signals the infrastructure layer to fix them.
 
@@ -97,7 +97,7 @@ When the scheduler detects drift:
 2. **OpenCHAMI response:** OpenCHAMI evaluates the drift against its remediation policy:
    - Minor drift (kernel param change): schedule firmware update at next maintenance window
    - Major drift (GPU driver version): schedule immediate reboot into correct image via BSS
-   - Critical drift (medical node): immediate remediation, operator notified
+   - Critical drift (sensitive node): immediate remediation, operator notified
 
 3. **Wait for remediation:** The scheduler does not re-enable the node automatically. After OpenCHAMI remediates (reboot, firmware flash), the node agent:
    - Recomputes conformance fingerprint on startup
@@ -110,10 +110,10 @@ When the scheduler detects drift:
    - Node transitions to `Down` (removed from scheduling entirely)
    - Operator must investigate and manually undrain after fix
 
-5. **Medical nodes (stricter):**
+5. **Sensitive nodes (stricter):**
    - Drift triggers immediate `Draining` (no grace period for new claims)
    - Remediation timeout: 4 hours (shorter, due to regulatory risk)
-   - After remediation: conformance re-verified AND admin approval required before accepting medical claims again
+   - After remediation: conformance re-verified AND admin approval required before accepting sensitive claims again
 
 ## Relationship to Existing Concepts
 

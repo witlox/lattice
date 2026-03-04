@@ -213,8 +213,8 @@ pub struct NodeAgentConfig {
     pub heartbeat_timeout_seconds: u64,
     /// Grace period before marking node Down (seconds)
     pub grace_period_seconds: u64,
-    /// Extended grace period for medical nodes (seconds)
-    pub medical_grace_period_seconds: u64,
+    /// Extended grace period for sensitive nodes (seconds)
+    pub sensitive_grace_period_seconds: u64,
 }
 
 impl Default for NodeAgentConfig {
@@ -223,7 +223,7 @@ impl Default for NodeAgentConfig {
             heartbeat_interval_seconds: 10,
             heartbeat_timeout_seconds: 30,
             grace_period_seconds: 120,
-            medical_grace_period_seconds: 600,
+            sensitive_grace_period_seconds: 600,
         }
     }
 }
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(cfg.heartbeat_interval_seconds, 10);
         assert_eq!(cfg.heartbeat_timeout_seconds, 30);
         assert_eq!(cfg.grace_period_seconds, 120);
-        assert_eq!(cfg.medical_grace_period_seconds, 600);
+        assert_eq!(cfg.sensitive_grace_period_seconds, 600);
     }
 
     #[test]

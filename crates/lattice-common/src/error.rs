@@ -23,8 +23,8 @@ pub enum LatticeError {
     #[error("Quota exceeded for tenant {tenant}: {detail}")]
     QuotaExceeded { tenant: String, detail: String },
 
-    #[error("Medical isolation violation: {0}")]
-    MedicalIsolation(String),
+    #[error("Sensitive isolation violation: {0}")]
+    SensitiveIsolation(String),
 
     #[error("Node ownership conflict: node {node} already owned by {owner}")]
     OwnershipConflict { node: String, owner: String },

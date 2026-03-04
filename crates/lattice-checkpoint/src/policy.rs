@@ -40,8 +40,8 @@ pub fn evaluate_policy(alloc: &Allocation) -> CheckpointPolicy {
         CheckpointStrategy::Auto => {
             // Auto: scheduler-coordinated
             let base = CheckpointPolicy::default();
-            // Medical: more conservative (less frequent, longer timeout)
-            if is_medical(alloc) {
+            // Sensitive: more conservative (less frequent, longer timeout)
+            if is_sensitive(alloc) {
                 CheckpointPolicy {
                     min_interval_secs: 600,
                     max_interval_secs: 3600,
@@ -105,11 +105,11 @@ pub fn can_checkpoint_now(
     }
 }
 
-fn is_medical(alloc: &Allocation) -> bool {
+fn is_sensitive(alloc: &Allocation) -> bool {
     alloc
         .tags
         .get("workload_class")
-        .is_some_and(|v| v == "medical")
+        .is_some_and(|v| v == "sensitive")
 }
 
 #[cfg(test)]
@@ -127,8 +127,8 @@ mod tests {
     }
 
     #[test]
-    fn medical_policy_more_conservative() {
-        let alloc = AllocationBuilder::new().medical().build();
+    fn sensitive_policy_more_conservative() {
+        let alloc = AllocationBuilder::new().sensitive().build();
         let policy = evaluate_policy(&alloc);
         assert!(policy.min_interval_secs > 300);
         assert!(policy.timeout_secs > 600);

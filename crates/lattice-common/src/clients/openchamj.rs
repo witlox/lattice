@@ -39,7 +39,7 @@ pub struct OpenChamiConfig {
 ///
 /// Wraps reqwest to communicate with SMD for inventory/state and BSS for
 /// boot parameters. Used by the scheduler to boot nodes, query health,
-/// and wipe nodes for medical workload teardown.
+/// and wipe nodes for sensitive workload teardown.
 pub struct OpenChamiClient {
     http: Client,
     config: OpenChamiConfig,
@@ -171,7 +171,7 @@ impl InfrastructureService for OpenChamiClient {
     }
 
     async fn wipe_node(&self, node_id: &NodeId) -> Result<(), LatticeError> {
-        // For medical workload teardown: boot the node with a secure-wipe image
+        // For sensitive workload teardown: boot the node with a secure-wipe image
         // that zeroes memory and local storage before returning to the pool.
         let wipe_image = "secure-wipe-v1";
         self.boot_node(node_id, wipe_image).await?;

@@ -748,7 +748,7 @@ fn isolation_to_str(l: &IsolationLevel) -> &'static str {
 fn scheduler_type_from_str(s: &str) -> SchedulerType {
     match s {
         "service_bin_pack" => SchedulerType::ServiceBinPack,
-        "medical_reservation" => SchedulerType::MedicalReservation,
+        "sensitive_reservation" => SchedulerType::SensitiveReservation,
         "interactive_fifo" => SchedulerType::InteractiveFifo,
         _ => SchedulerType::HpcBackfill,
     }
@@ -758,7 +758,7 @@ fn scheduler_type_to_str(t: &SchedulerType) -> &'static str {
     match t {
         SchedulerType::HpcBackfill => "hpc_backfill",
         SchedulerType::ServiceBinPack => "service_bin_pack",
-        SchedulerType::MedicalReservation => "medical_reservation",
+        SchedulerType::SensitiveReservation => "sensitive_reservation",
         SchedulerType::InteractiveFifo => "interactive_fifo",
     }
 }

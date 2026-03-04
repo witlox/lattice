@@ -70,7 +70,7 @@ service AllocationService {
 //
 // NodeService — Node lifecycle management (list, drain, undrain, disable)
 // TenantService — Tenant CRUD, quota management
-// AuditService — Medical audit log queries, compliance reporting
+// AuditService — Sensitive audit log queries, compliance reporting
 // SessionService — Interactive session creation and terminal management
 
 // ─── Submit ─────────────────────────────────────────────────
@@ -148,7 +148,7 @@ message EnvironmentSpec {
   string view = 2;          // e.g., "default"
   string image = 3;         // OCI image (alternative to uenv)
   string tools_uenv = 4;    // additional tools uenv
-  bool sign_required = 5;   // medical: require signed images
+  bool sign_required = 5;   // sensitive: require signed images
 }
 
 message ResourceSpec {

@@ -12,7 +12,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  ├── Data management (stage, browse, transfer)                 │
 │  ├── uenv management (list, pull, test)                        │
 │  ├── Observability (attach, logs, metrics, diagnostics)        │
-│  └── Medical: user-level node claim/release                    │
+│  └── Sensitive: user-level node claim/release                    │
 └───────────────────────────┬────────────────────────────────────┘
                             │
 ┌─ Software Plane ──────────┴────────────────────────────────────┐
@@ -20,18 +20,18 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  Optional: OCI/Sarus (isolation, third-party images)           │
 │  Registry: JFrog/Nexus → S3 backing (VAST hot tier)            │
 │  Node-local NVMe image cache (optional)                        │
-│  Medical: signed images only, vulnerability-scanned            │
+│  Sensitive: signed images only, vulnerability-scanned            │
 └───────────────────────────┬────────────────────────────────────┘
                             │
 ┌─ Scheduling Plane ────────┴────────────────────────────────────┐
 │  Quorum (Raft, 3-5 replicas)                                   │
-│  Strong: (1) node ownership  (2) medical audit log             │
+│  Strong: (1) node ownership  (2) sensitive audit log             │
 │  Eventual: job queues, telemetry, quotas                       │
 │                                                                │
 │  vCluster Schedulers:                                          │
 │  ├── HPC: backfill + dragonfly group packing                   │
 │  ├── Service: bin-pack + autoscale                             │
-│  ├── Medical: user-claim reservation, dedicated nodes          │
+│  ├── Sensitive: user-claim reservation, dedicated nodes          │
 │  └── Interactive: FIFO, short-lived, node-sharing via Sarus    │
 └───────────────────────────┬────────────────────────────────────┘
                             │
@@ -40,7 +40,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │    ├── Home dirs, scratch, active datasets (NFS)               │
 │    ├── Checkpoints, image cache, objects (S3)                  │
 │    ├── Scheduler integration: QoS, pre-staging, snapshots      │
-│    └── Medical: encrypted view, audit-logged, dedicated pool   │
+│    └── Sensitive: encrypted view, audit-logged, dedicated pool   │
 │  Warm: Capacity store (S3-compat, cost-optimized)              │
 │  Cold: Tape archive (S3-compat, regulatory retention)          │
 │  Data mover: pre-stages during queue wait, policy-driven       │
@@ -52,7 +52,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  ├── VNI-based network domains (job isolation)                 │
 │  ├── Traffic classes: compute | management | telemetry         │
 │  ├── CSIG for in-band congestion telemetry                     │
-│  └── Medical: encrypted RDMA, dedicated VNI                    │
+│  └── Sensitive: encrypted RDMA, dedicated VNI                    │
 └───────────────────────────┬────────────────────────────────────┘
                             │
 ┌─ Node Plane ──────────────┴────────────────────────────────────┐
@@ -88,7 +88,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
    a. Scores pending allocations with cost function
    b. Solves knapsack: maximize value subject to resource constraints
    c. Proposes allocation → quorum
-5. Quorum validates (node ownership, quotas, medical isolation)
+5. Quorum validates (node ownership, quotas, sensitive isolation)
 6. Quorum commits: node ownership updated (strong consistency)
 7. Quorum notifies node agents of new allocation
 8. Node agents:
@@ -164,7 +164,7 @@ GlobalState {
     tenants: Map<TenantId, TenantState>,  // quotas, fair-share counters
     vclusters: Map<VClusterId, VClusterConfig>, // scheduler configs
     topology: TopologyModel,              // dragonfly group structure
-    medical_audit: AppendOnlyLog<AuditEvent>, // strong consistency
+    sensitive_audit: AppendOnlyLog<AuditEvent>, // strong consistency
 }
 
 NodeState {
@@ -176,6 +176,6 @@ NodeState {
 }
 ```
 
-Transitions are proposed by vCluster schedulers and validated by the quorum before commit. Only node ownership changes and medical audit events require Raft consensus; everything else is eventually consistent.
+Transitions are proposed by vCluster schedulers and validated by the quorum before commit. Only node ownership changes and sensitive audit events require Raft consensus; everything else is eventually consistent.
 
-**Note:** Observability data (logs, metrics, attach sessions, diagnostics) is NOT stored in the Raft state machine. This data lives in the TSDB, S3, and node agent memory. Only medical audit events *about* observability actions (e.g., "Dr. X attached to allocation Y") flow through Raft consensus (per ADR-004).
+**Note:** Observability data (logs, metrics, attach sessions, diagnostics) is NOT stored in the Raft state machine. This data lives in the TSDB, S3, and node agent memory. Only sensitive audit events *about* observability actions (e.g., "Dr. X attached to allocation Y") flow through Raft consensus (per ADR-004).

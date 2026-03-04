@@ -1,7 +1,7 @@
 //! Integration tests for lattice-node-agent.
 //!
 //! These tests exercise multi-component interactions across module
-//! boundaries: prologue + runtime + cache, epilogue + runtime + medical
+//! boundaries: prologue + runtime + cache, epilogue + runtime + sensitive
 //! wipe, full runtime lifecycle, agent heartbeat + health, signal
 //! delivery through all modes, and image cache eviction.
 
@@ -18,7 +18,7 @@ use lattice_node_agent::checkpoint_handler::{CheckpointHandler, CheckpointMode};
 use lattice_node_agent::conformance::ConformanceComponents;
 use lattice_node_agent::data_stage::NoopDataStageExecutor;
 use lattice_node_agent::epilogue::{
-    EpilogueConfig, EpiloguePipeline, MedicalWiper, NoopEpilogueReporter, NoopMedicalWiper,
+    EpilogueConfig, EpiloguePipeline, NoopEpilogueReporter, NoopSensitiveWiper, SensitiveWiper,
 };
 use lattice_node_agent::health::ObservedHealth;
 use lattice_node_agent::heartbeat_loop::{HeartbeatSink, StaticHealthObserver};
@@ -97,12 +97,12 @@ impl S3Sink for MockS3 {
     }
 }
 
-/// Mock medical wiper that records wipe calls.
-struct RecordingMedicalWiper {
+/// Mock sensitive wiper that records wipe calls.
+struct RecordingSensitiveWiper {
     wiped: Arc<Mutex<AllocIdLog>>,
 }
 
-impl RecordingMedicalWiper {
+impl RecordingSensitiveWiper {
     fn new() -> (Self, Arc<Mutex<AllocIdLog>>) {
         let wiped = Arc::new(Mutex::new(Vec::new()));
         (
@@ -115,7 +115,7 @@ impl RecordingMedicalWiper {
 }
 
 #[async_trait]
-impl MedicalWiper for RecordingMedicalWiper {
+impl SensitiveWiper for RecordingSensitiveWiper {
     async fn wipe(&self, alloc_id: lattice_common::types::AllocId) -> Result<(), String> {
         self.wiped.lock().await.push(alloc_id);
         Ok(())
@@ -308,11 +308,11 @@ async fn prologue_runtime_cache_miss_then_hit() {
 }
 
 // ===============================================================
-// Test 2: Epilogue + Runtime + Medical wipe
+// Test 2: Epilogue + Runtime + Sensitive wipe
 // ===============================================================
 
 #[tokio::test]
-async fn epilogue_runtime_medical_wipe() {
+async fn epilogue_runtime_sensitive_wipe() {
     let alloc_id = Uuid::new_v4();
 
     // Prepare the runtime so cleanup will succeed.
@@ -332,12 +332,12 @@ async fn epilogue_runtime_medical_wipe() {
     runtime.prepare(&prep_config).await.unwrap();
 
     let log_buf = LogRingBuffer::with_capacity(1024);
-    let (wiper, wiped_ids) = RecordingMedicalWiper::new();
+    let (wiper, wiped_ids) = RecordingSensitiveWiper::new();
 
-    // Epilogue with medical_wipe = true.
+    // Epilogue with sensitive_wipe = true.
     let pipeline = EpiloguePipeline::new(EpilogueConfig {
-        log_bucket: "medical-logs".to_string(),
-        medical_wipe: true,
+        log_bucket: "sensitive-logs".to_string(),
+        sensitive_wipe: true,
     });
 
     let result = pipeline
@@ -355,8 +355,11 @@ async fn epilogue_runtime_medical_wipe() {
         .await
         .unwrap();
 
-    // Medical wipe was triggered.
-    assert!(result.medical_wiped, "medical wipe should have occurred");
+    // Sensitive wipe was triggered.
+    assert!(
+        result.sensitive_wiped,
+        "sensitive wipe should have occurred"
+    );
     let wiped = wiped_ids.lock().await;
     assert_eq!(wiped.len(), 1);
     assert_eq!(wiped[0], alloc_id);
@@ -646,11 +649,11 @@ async fn image_cache_lru_eviction() {
 }
 
 // ===============================================================
-// Test 7: Epilogue with log flush + runtime cleanup + no medical wipe
+// Test 7: Epilogue with log flush + runtime cleanup + no sensitive wipe
 // ===============================================================
 
 #[tokio::test]
-async fn epilogue_log_flush_and_cleanup_no_medical() {
+async fn epilogue_log_flush_and_cleanup_no_sensitive() {
     let alloc_id = Uuid::new_v4();
 
     // Prepare the runtime so cleanup succeeds.
@@ -686,7 +689,7 @@ async fn epilogue_log_flush_and_cleanup_no_medical() {
             Some(&s3),
             &NoopDataStageExecutor,
             &[],
-            &NoopMedicalWiper,
+            &NoopSensitiveWiper,
             &NoopEpilogueReporter,
         )
         .await
@@ -705,8 +708,8 @@ async fn epilogue_log_flush_and_cleanup_no_medical() {
     // Runtime cleanup completed.
     assert!(result.cleaned_up);
 
-    // No medical wipe (default config has medical_wipe=false).
-    assert!(!result.medical_wiped);
+    // No sensitive wipe (default config has sensitive_wipe=false).
+    assert!(!result.sensitive_wiped);
 
     // Exit status passed through.
     assert_eq!(result.exit_status, ExitStatus::Code(0));
@@ -853,7 +856,7 @@ async fn prologue_then_epilogue_end_to_end() {
             Some(&s3),
             &NoopDataStageExecutor,
             &[],
-            &NoopMedicalWiper,
+            &NoopSensitiveWiper,
             &NoopEpilogueReporter,
         )
         .await
@@ -861,7 +864,7 @@ async fn prologue_then_epilogue_end_to_end() {
 
     assert!(epilogue_result.logs_flushed);
     assert!(epilogue_result.cleaned_up);
-    assert!(!epilogue_result.medical_wiped);
+    assert!(!epilogue_result.sensitive_wiped);
     assert_eq!(epilogue_result.exit_status, ExitStatus::Code(0));
 
     // Verify the log data was flushed to S3.

@@ -11,13 +11,13 @@ A distributed workload scheduler that sits between Slurm (HPC batch) and Kuberne
 - VAST-like tiered storage (NFS + S3)
 - OpenCHAMI infrastructure management (Redfish BMC)
 - uenv software delivery (SquashFS mount namespaces)
-- Medical/regulated workload isolation requirements
+- Sensitive/regulated workload isolation requirements
 
 ## Architecture Summary
 
 ### Control Plane
-- **Raft Quorum** (3-5 replicas): Strong consistency for node ownership + medical audit
-- **vCluster Schedulers**: Per-workload-type schedulers (HPC backfill, service bin-pack, medical reservation, interactive FIFO)
+- **Raft Quorum** (3-5 replicas): Strong consistency for node ownership + sensitive audit
+- **vCluster Schedulers**: Per-workload-type schedulers (HPC backfill, service bin-pack, sensitive reservation, interactive FIFO)
 - Each vCluster scheduler proposes allocations → quorum validates and commits
 
 ### Scheduling Algorithm
@@ -37,7 +37,7 @@ Score(j) = Σ wᵢ · fᵢ(j)
 Weights are tunable per vCluster. Use RM-Replay simulator to test weight changes before production.
 
 ### Consistency Model
-- **Strong (Raft-committed)**: (1) Node ownership (2) Medical audit state
+- **Strong (Raft-committed)**: (1) Node ownership (2) Sensitive audit state
 - **Eventually consistent**: Job queues, telemetry, quota accounting, session state
 
 ### Key Abstractions
@@ -62,7 +62,7 @@ Weights are tunable per vCluster. Use RM-Replay simulator to test weight changes
 ### Storage Integration
 - Hot tier: VAST (NFS + S3), scheduler can set QoS, pre-stage data, snapshot
 - Warm/Cold: tiered, S3-compatible
-- Medical: encrypted pool, access-logged, wipe-on-release
+- Sensitive: encrypted pool, access-logged, wipe-on-release
 - Data mover: pre-stages during queue wait time (invisible to user)
 
 ### Telemetry
@@ -82,16 +82,16 @@ Scheduler-coordinated with cost function:
 - Sovra for cryptographic trust (federated sovereign key management)
 - Loose coupling: federation broker suggests, local scheduler decides
 - Data gravity drives placement
-- Medical data sovereignty enforced (data stays at designated site)
+- Sensitive data sovereignty enforced (data stays at designated site)
 - System fully functional without federation
 
-### Medical Workload Model
+### Sensitive Workload Model
 - User (not cluster) claims nodes → quorum records user identity as owner
 - Dedicated nodes, no sharing, hardened OS image via OpenCHAMI
 - Encrypted storage pool, all access logged, wipe on release
 - Signed uenv images only, vulnerability-scanned
 - 7-year audit retention
-- Risk-averse: no clever optimizations on medical resources
+- Risk-averse: no clever optimizations on sensitive resources
 
 ## Code Organization
 
@@ -99,8 +99,8 @@ Scheduler-coordinated with cost function:
 All performance-critical components. Shared protobuf types generated into lattice-common.
 
 - `lattice-common`: Shared types (Allocation, Node, Tenant, vCluster), config, errors, protobuf bindings
-- `lattice-quorum`: Raft consensus implementation, global state machine, node ownership, medical audit log
-- `lattice-scheduler`: vCluster scheduler trait + implementations (HPC backfill, service bin-pack, medical, interactive), knapsack solver, cost function, topology model
+- `lattice-quorum`: Raft consensus implementation, global state machine, node ownership, sensitive audit log
+- `lattice-scheduler`: vCluster scheduler trait + implementations (HPC backfill, service bin-pack, sensitive, interactive), knapsack solver, cost function, topology model
 - `lattice-node-agent`: Per-node daemon, Sarus/uenv lifecycle, eBPF telemetry loading, health reporting, checkpoint signal forwarding
 - `lattice-api`: gRPC server (tonic) + REST gateway, Intent API + Compatibility API endpoints
 - `lattice-cli`: `lattice` CLI binary, subcommands for submit/status/cancel/session/telemetry, Slurm compat aliases

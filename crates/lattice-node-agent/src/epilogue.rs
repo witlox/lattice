@@ -4,7 +4,7 @@
 //! 1. Flush logs to S3 persistent storage
 //! 2. Collect final telemetry snapshot
 //! 3. Clean up runtime environment (unmount, remove dirs)
-//! 4. Medical wipe if required (sensitive workloads)
+//! 4. Sensitive wipe if required (sensitive workloads)
 //!
 //! The epilogue runs even if the allocation failed, to ensure cleanup.
 
@@ -34,15 +34,15 @@ impl EpilogueReporter for NoopEpilogueReporter {
 pub struct EpilogueConfig {
     /// S3 bucket for persistent log storage.
     pub log_bucket: String,
-    /// Whether to perform medical wipe (encrypted storage, access log purge).
-    pub medical_wipe: bool,
+    /// Whether to perform sensitive wipe (encrypted storage, access log purge).
+    pub sensitive_wipe: bool,
 }
 
 impl Default for EpilogueConfig {
     fn default() -> Self {
         Self {
             log_bucket: "lattice-logs".to_string(),
-            medical_wipe: false,
+            sensitive_wipe: false,
         }
     }
 }
@@ -54,27 +54,27 @@ pub struct EpilogueResult {
     pub logs_flushed: bool,
     /// Whether data mount cleanup was performed.
     pub data_cleaned: bool,
-    /// Whether medical wipe was performed.
-    pub medical_wiped: bool,
+    /// Whether sensitive wipe was performed.
+    pub sensitive_wiped: bool,
     /// Whether runtime cleanup succeeded.
     pub cleaned_up: bool,
     /// The process exit status.
     pub exit_status: ExitStatus,
 }
 
-/// Trait for medical wipe operations (secure data destruction).
+/// Trait for sensitive wipe operations (secure data destruction).
 #[async_trait]
-pub trait MedicalWiper: Send + Sync {
+pub trait SensitiveWiper: Send + Sync {
     /// Securely wipe all data associated with an allocation.
     /// This includes encrypted storage pools, access logs, and temporary files.
     async fn wipe(&self, alloc_id: AllocId) -> Result<(), String>;
 }
 
-/// No-op medical wiper for non-medical workloads.
-pub struct NoopMedicalWiper;
+/// No-op sensitive wiper for non-sensitive workloads.
+pub struct NoopSensitiveWiper;
 
 #[async_trait]
-impl MedicalWiper for NoopMedicalWiper {
+impl SensitiveWiper for NoopSensitiveWiper {
     async fn wipe(&self, _alloc_id: AllocId) -> Result<(), String> {
         Ok(())
     }
@@ -101,12 +101,12 @@ impl EpiloguePipeline {
         s3_sink: Option<&dyn S3Sink>,
         data_stager: &dyn DataStageExecutor,
         data_mounts: &[DataMount],
-        medical_wiper: &dyn MedicalWiper,
+        sensitive_wiper: &dyn SensitiveWiper,
         reporter: &dyn EpilogueReporter,
     ) -> Result<EpilogueResult, RuntimeError> {
         let mut logs_flushed = false;
         let mut data_cleaned = false;
-        let mut medical_wiped = false;
+        let mut sensitive_wiped = false;
         let mut cleaned_up = false;
 
         // Step 1: Flush logs to S3
@@ -154,7 +154,7 @@ impl EpiloguePipeline {
                 reporter
                     .report_step(alloc_id, "runtime_cleanup", "failed")
                     .await;
-                // Continue with data cleanup and medical wipe even if cleanup failed
+                // Continue with data cleanup and sensitive wipe even if cleanup failed
             }
         }
 
@@ -183,26 +183,26 @@ impl EpiloguePipeline {
             }
         }
 
-        // Step 4: Medical wipe if required
-        if self.config.medical_wipe {
+        // Step 4: Sensitive wipe if required
+        if self.config.sensitive_wipe {
             reporter
-                .report_step(alloc_id, "medical_wipe", "started")
+                .report_step(alloc_id, "sensitive_wipe", "started")
                 .await;
-            match medical_wiper.wipe(alloc_id).await {
+            match sensitive_wiper.wipe(alloc_id).await {
                 Ok(()) => {
-                    medical_wiped = true;
+                    sensitive_wiped = true;
                     reporter
-                        .report_step(alloc_id, "medical_wipe", "completed")
+                        .report_step(alloc_id, "sensitive_wipe", "completed")
                         .await;
                 }
                 Err(e) => {
                     tracing::error!(
                         alloc_id = %alloc_id,
                         error = %e,
-                        "epilogue: medical wipe failed (CRITICAL)"
+                        "epilogue: sensitive wipe failed (CRITICAL)"
                     );
                     reporter
-                        .report_step(alloc_id, "medical_wipe", "failed")
+                        .report_step(alloc_id, "sensitive_wipe", "failed")
                         .await;
                 }
             }
@@ -211,7 +211,7 @@ impl EpiloguePipeline {
         Ok(EpilogueResult {
             logs_flushed,
             data_cleaned,
-            medical_wiped,
+            sensitive_wiped,
             cleaned_up,
             exit_status,
         })
@@ -271,7 +271,7 @@ mod tests {
         }
     }
 
-    /// Mock medical wiper that records wipe calls.
+    /// Mock sensitive wiper that records wipe calls.
     struct MockWiper {
         wiped: Arc<Mutex<Vec<AllocId>>>,
     }
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl MedicalWiper for MockWiper {
+    impl SensitiveWiper for MockWiper {
         async fn wipe(&self, alloc_id: AllocId) -> Result<(), String> {
             self.wiped.lock().await.push(alloc_id);
             Ok(())
@@ -333,7 +333,7 @@ mod tests {
                 Some(&s3),
                 &NoopDataStageExecutor,
                 &[],
-                &NoopMedicalWiper,
+                &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
             .await
@@ -341,7 +341,7 @@ mod tests {
 
         assert!(result.logs_flushed);
         assert!(result.cleaned_up);
-        assert!(!result.medical_wiped);
+        assert!(!result.sensitive_wiped);
         assert_eq!(result.exit_status, ExitStatus::Code(0));
 
         let uploads = uploads.lock().await;
@@ -366,7 +366,7 @@ mod tests {
                 None,
                 &NoopDataStageExecutor,
                 &[],
-                &NoopMedicalWiper,
+                &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
             .await
@@ -394,7 +394,7 @@ mod tests {
                 Some(&FailingS3),
                 &NoopDataStageExecutor,
                 &[],
-                &NoopMedicalWiper,
+                &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
             .await
@@ -405,15 +405,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn epilogue_medical_wipe() {
+    async fn epilogue_sensitive_wipe() {
         let alloc_id = uuid::Uuid::new_v4();
         let runtime = setup_runtime(alloc_id).await;
         let log_buf = LogRingBuffer::with_capacity(1024);
         let (wiper, wiped) = MockWiper::new();
 
         let pipeline = EpiloguePipeline::new(EpilogueConfig {
-            log_bucket: "medical-logs".to_string(),
-            medical_wipe: true,
+            log_bucket: "sensitive-logs".to_string(),
+            sensitive_wipe: true,
         });
 
         let result = pipeline
@@ -431,7 +431,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.medical_wiped);
+        assert!(result.sensitive_wiped);
         assert_eq!(result.exit_status, ExitStatus::Signal(15));
 
         let wiped = wiped.lock().await;
@@ -455,7 +455,7 @@ mod tests {
                 None,
                 &NoopDataStageExecutor,
                 &[],
-                &NoopMedicalWiper,
+                &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
             .await
@@ -482,7 +482,7 @@ mod tests {
                 None,
                 &NoopDataStageExecutor,
                 &[],
-                &NoopMedicalWiper,
+                &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
             .await

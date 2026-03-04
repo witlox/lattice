@@ -2,7 +2,7 @@
 //!
 //! Raft consensus layer for the Lattice scheduler. Manages the authoritative
 //! cluster state: node ownership, allocations, tenants, vClusters, topology,
-//! and the medical audit log.
+//! and the sensitive audit log.
 //!
 //! Built on [openraft](https://docs.rs/openraft) with:
 //! - In-memory log + state machine (suitable for testing / single-process)
@@ -11,7 +11,7 @@
 //!
 //! ## Architecture (per docs/architecture/system-architecture.md)
 //!
-//! - **Strong consistency** (Raft-committed): node ownership, medical audit
+//! - **Strong consistency** (Raft-committed): node ownership, sensitive audit
 //! - **Eventually consistent**: job queues, telemetry, quota accounting
 
 pub mod client;

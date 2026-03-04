@@ -6,7 +6,7 @@
 //! The [`RbacPolicy`] encodes the authorization matrix:
 //! - `SystemAdmin` -- unrestricted access.
 //! - `TenantAdmin` -- tenant-scoped management plus all `User` permissions.
-//! - `ClaimingUser` -- medical node claim/release plus all `User` permissions.
+//! - `ClaimingUser` -- sensitive node claim/release plus all `User` permissions.
 //! - `User` -- workload lifecycle, read-only cluster views, own-resource mutations.
 
 use super::oidc::TokenClaims;
@@ -24,7 +24,7 @@ pub enum Role {
     TenantAdmin,
     /// System administrator -- full, unrestricted access.
     SystemAdmin,
-    /// Medical claiming user -- can claim and release medical nodes.
+    /// Sensitive claiming user -- can claim and release sensitive nodes.
     ClaimingUser,
 }
 
@@ -72,7 +72,7 @@ pub enum Operation {
     BackupVerify,
     QueryAudit,
 
-    // Medical node claiming
+    // Sensitive node claiming
     ClaimNode,
     ReleaseNode,
 }
@@ -208,7 +208,7 @@ impl RbacPolicy {
 /// Precedence (first match wins):
 /// 1. `"admin"` or `"system:admin"` --> `SystemAdmin`
 /// 2. `"tenant:admin"` --> `TenantAdmin`
-/// 3. `"medical:claim"` --> `ClaimingUser`
+/// 3. `"sensitive:claim"` --> `ClaimingUser`
 /// 4. Anything else --> `User`
 pub fn derive_role(claims: &TokenClaims) -> Role {
     for scope in &claims.scopes {
@@ -222,7 +222,7 @@ pub fn derive_role(claims: &TokenClaims) -> Role {
         }
     }
     for scope in &claims.scopes {
-        if scope == "medical:claim" {
+        if scope == "sensitive:claim" {
             return Role::ClaimingUser;
         }
     }
@@ -493,7 +493,7 @@ mod tests {
             Role::TenantAdmin
         );
         assert_eq!(
-            derive_role(&claims_with_scopes(&["medical:claim"])),
+            derive_role(&claims_with_scopes(&["sensitive:claim"])),
             Role::ClaimingUser
         );
         assert_eq!(

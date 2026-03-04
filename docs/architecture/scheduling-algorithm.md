@@ -26,7 +26,7 @@ Score(j) = Σ wᵢ · fᵢ(j)
 
 #### Component Functions
 
-**f₁: priority_class(j)** — Static priority tier (0-10). Medical claims are highest. Preemption only moves down tiers.
+**f₁: priority_class(j)** — Static priority tier (0-10). Sensitive claims are highest. Preemption only moves down tiers.
 
 **f₂: wait_time_factor(j)** — Anti-starvation. Increases monotonically with time in queue.
 ```
@@ -84,7 +84,7 @@ See [data-staging.md](data-staging.md) for details on how input data is pre-stag
 
 #### Weight Profiles
 
-| Weight | HPC Batch | ML Training | Service | Medical | Interactive |
+| Weight | HPC Batch | ML Training | Service | Sensitive | Interactive |
 |---|---|---|---|---|---|
 | w₁ (priority) | 0.15 | 0.10 | 0.15 | 0.90 | 0.10 |
 | w₂ (wait_time) | 0.20 | 0.10 | 0.05 | 0.00 | 0.30 |
@@ -96,7 +96,7 @@ See [data-staging.md](data-staging.md) for details on how input data is pre-stag
 | w₈ (checkpoint) | 0.05 | 0.10 | 0.10 | 0.00 | 0.00 |
 | w₉ (conformance) | 0.10 | 0.10 | 0.30 | 0.10 | 0.30 |
 
-Medical scheduler is degenerate: priority dominates because node claims are non-negotiable (w₁=0.90). Conformance (w₉=0.10) acts as a tiebreaker among conformant nodes; non-conformant nodes are excluded entirely as a hard constraint at the solver level (step 2a), not via the weight system.
+Sensitive scheduler is degenerate: priority dominates because node claims are non-negotiable (w₁=0.90). Conformance (w₉=0.10) acts as a tiebreaker among conformant nodes; non-conformant nodes are excluded entirely as a hard constraint at the solver level (step 2a), not via the weight system.
 
 **Note:** The `CostWeights::default()` in `crates/lattice-common/src/types.rs` provides a "balanced HPC" baseline (w₁=0.20, w₂=0.20, w₃=0.20, w₄=0.15, w₅=0.10, w₆=0.05, w₇=0.00, w₈=0.00, w₉=0.10). This is not identical to any named profile in the table above — it is a general-purpose starting point. Each vCluster should have its weights tuned for its workload type, either manually or via RM-Replay simulation.
 

@@ -79,7 +79,7 @@ A test harness that spins up:
 | **Preemption** | Higher-priority allocation preempts lower-priority |
 | **Elastic borrowing** | vCluster borrows and returns nodes |
 | **Quota rejection** | Hard quota exceeded → proposal rejected |
-| **Medical claim** | Node claim, audit logging, wipe on release |
+| **Sensitive claim** | Node claim, audit logging, wipe on release |
 | **Session lifecycle** | Session create → terminal → disconnect → cleanup |
 | **Rolling upgrade simulation** | Mixed-version node agents, protocol negotiation |
 | **Conformance drift** | Node fingerprint changes → scheduling impact |
@@ -143,7 +143,7 @@ Maintain a library of representative workload traces:
 | `steady-state.trace` | Normal mixed workload (HPC + ML + services) | Utilization > 85% |
 | `burst.trace` | Sudden spike in submissions | No starvation (p99 wait < 4h) |
 | `unfair.trace` | One tenant submits heavily | Fair share deviation < 10% |
-| `medical-claim.trace` | Medical claims interleaved with HPC | Medical wait = 0 (immediate) |
+| `sensitive-claim.trace` | Sensitive claims interleaved with HPC | Sensitive wait = 0 (immediate) |
 | `preemption-heavy.trace` | Many priority inversions | Checkpoint success rate > 95% |
 | `empty-to-full.trace` | Cluster goes from idle to full | Ramp-up time, scheduling cycle latency |
 
@@ -177,7 +177,7 @@ Use a test harness that can inject faults at configurable times:
 | **Node failure with requeue** | Start 10 allocations, kill 2 node agents | Allocations requeued, rescheduled on healthy nodes, total delay < 2 min |
 | **Split-brain prevention** | Partition 3-member quorum into 1+2 | Minority (1) cannot commit, majority (2) continues, no divergent state |
 | **Cascade failure** | Kill 3 node agents simultaneously | Allocations on all 3 nodes requeued, scheduling continues for remaining nodes |
-| **Medical node failure** | Kill medical node agent | Extended grace period, operator alert, no auto-requeue |
+| **Sensitive node failure** | Kill sensitive node agent | Extended grace period, operator alert, no auto-requeue |
 | **Recovery from full quorum loss** | Kill all quorum members, restore from snapshot | State restored, node agents reconnect, scheduling resumes |
 
 ### Execution

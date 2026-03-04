@@ -13,7 +13,7 @@ use lattice_test_harness::mocks::*;
 use lattice_node_agent::agent::{AgentCommand, NodeAgent};
 use lattice_node_agent::data_stage::NoopDataStageExecutor;
 use lattice_node_agent::epilogue::{
-    EpilogueConfig, EpiloguePipeline, EpilogueResult, NoopEpilogueReporter, NoopMedicalWiper,
+    EpilogueConfig, EpiloguePipeline, EpilogueResult, NoopEpilogueReporter, NoopSensitiveWiper,
 };
 use lattice_node_agent::health::ObservedHealth;
 use lattice_node_agent::heartbeat::Heartbeat;
@@ -150,7 +150,7 @@ async fn given_vcluster(world: &mut LatticeWorld, name: String, scheduler: Strin
     let sched_type = match scheduler.as_str() {
         "HpcBackfill" => SchedulerType::HpcBackfill,
         "ServiceBinPack" => SchedulerType::ServiceBinPack,
-        "MedicalReservation" => SchedulerType::MedicalReservation,
+        "SensitiveReservation" => SchedulerType::SensitiveReservation,
         "InteractiveFifo" => SchedulerType::InteractiveFifo,
         other => panic!("Unknown scheduler type: {other}"),
     };
@@ -278,7 +278,7 @@ async fn allocation_transitions(world: &mut LatticeWorld, target_str: String) {
     }
 }
 
-#[when(regex = r#"^user "(\w[\w-]*)" claims node (\d+) for a medical allocation$"#)]
+#[when(regex = r#"^user "(\w[\w-]*)" claims node (\d+) for a sensitive allocation$"#)]
 async fn user_claims_node(world: &mut LatticeWorld, user: String, node_idx: usize) {
     let node_id = world.nodes[node_idx].id.clone();
     let tenant_id = world
@@ -288,7 +288,7 @@ async fn user_claims_node(world: &mut LatticeWorld, user: String, node_idx: usiz
         .unwrap_or_else(|| "test-tenant".into());
     let ownership = NodeOwnership {
         tenant: tenant_id,
-        vcluster: "medical".into(),
+        vcluster: "sensitive".into(),
         allocation: Uuid::new_v4(),
         claimed_by: Some(user.clone()),
         is_borrowed: false,
@@ -322,7 +322,7 @@ async fn user_attempts_claim(world: &mut LatticeWorld, user: String, node_idx: u
         .unwrap_or_else(|| "test-tenant".into());
     let ownership = NodeOwnership {
         tenant: tenant_id,
-        vcluster: "medical".into(),
+        vcluster: "sensitive".into(),
         allocation: Uuid::new_v4(),
         claimed_by: Some(user),
         is_borrowed: false,
@@ -337,8 +337,8 @@ async fn user_attempts_claim(world: &mut LatticeWorld, user: String, node_idx: u
     }
 }
 
-#[when("I submit a medical allocation")]
-async fn submit_medical_allocation(world: &mut LatticeWorld) {
+#[when("I submit a sensitive allocation")]
+async fn submit_sensitive_allocation(world: &mut LatticeWorld) {
     let tenant_id = world
         .tenants
         .first()
@@ -346,7 +346,7 @@ async fn submit_medical_allocation(world: &mut LatticeWorld) {
         .unwrap_or_else(|| "test-tenant".into());
     let alloc = AllocationBuilder::new()
         .tenant(&tenant_id)
-        .medical()
+        .sensitive()
         .build();
     world.allocations.push(alloc);
 }
@@ -525,7 +525,7 @@ async fn receives_ownership_conflict(world: &mut LatticeWorld, _user: String) {
 async fn requires_signed_images(world: &mut LatticeWorld) {
     assert!(
         world.last_allocation().environment.sign_required,
-        "Medical allocation should require signed images"
+        "Sensitive allocation should require signed images"
     );
 }
 
@@ -533,7 +533,7 @@ async fn requires_signed_images(world: &mut LatticeWorld) {
 async fn requires_vuln_scan(world: &mut LatticeWorld) {
     assert!(
         world.last_allocation().environment.scan_required,
-        "Medical allocation should require vulnerability scanning"
+        "Sensitive allocation should require vulnerability scanning"
     );
 }
 
@@ -982,8 +982,8 @@ async fn run_prologue(world: &mut LatticeWorld) {
     world.image_cache = Some(cache);
 }
 
-#[when("I run the medical epilogue for an allocation")]
-async fn run_medical_epilogue(world: &mut LatticeWorld) {
+#[when("I run the sensitive epilogue for an allocation")]
+async fn run_sensitive_epilogue(world: &mut LatticeWorld) {
     let alloc_id = Uuid::new_v4();
     let runtime = MockRuntime::new();
     // Prepare the runtime so cleanup works
@@ -1003,8 +1003,8 @@ async fn run_medical_epilogue(world: &mut LatticeWorld) {
 
     let log_buf = LogRingBuffer::with_capacity(1024);
     let pipeline = EpiloguePipeline::new(EpilogueConfig {
-        log_bucket: "medical-logs".to_string(),
-        medical_wipe: true,
+        log_bucket: "sensitive-logs".to_string(),
+        sensitive_wipe: true,
     });
 
     let result = pipeline
@@ -1016,7 +1016,7 @@ async fn run_medical_epilogue(world: &mut LatticeWorld) {
             None,
             &NoopDataStageExecutor,
             &[],
-            &NoopMedicalWiper,
+            &NoopSensitiveWiper,
             &NoopEpilogueReporter,
         )
         .await
@@ -1044,7 +1044,7 @@ async fn run_standard_epilogue(world: &mut LatticeWorld) {
     runtime.prepare(&prep).await.unwrap();
 
     let log_buf = LogRingBuffer::with_capacity(1024);
-    let pipeline = EpiloguePipeline::default(); // medical_wipe: false
+    let pipeline = EpiloguePipeline::default(); // sensitive_wipe: false
 
     let result = pipeline
         .execute(
@@ -1055,7 +1055,7 @@ async fn run_standard_epilogue(world: &mut LatticeWorld) {
             None,
             &NoopDataStageExecutor,
             &[],
-            &NoopMedicalWiper,
+            &NoopSensitiveWiper,
             &NoopEpilogueReporter,
         )
         .await
@@ -1085,22 +1085,22 @@ async fn runtime_prepared(world: &mut LatticeWorld) {
     );
 }
 
-#[then("the medical wipe should have been triggered")]
-async fn medical_wipe_triggered(world: &mut LatticeWorld) {
+#[then("the sensitive wipe should have been triggered")]
+async fn sensitive_wipe_triggered(world: &mut LatticeWorld) {
     let result = world.epilogue_result.as_ref().expect("no epilogue result");
-    // Note: NoopMedicalWiper always succeeds, so medical_wiped is true when config.medical_wipe=true
+    // Note: NoopSensitiveWiper always succeeds, so sensitive_wiped is true when config.sensitive_wipe=true
     assert!(
-        result.medical_wiped,
-        "Expected medical wipe to have been triggered"
+        result.sensitive_wiped,
+        "Expected sensitive wipe to have been triggered"
     );
 }
 
-#[then("the medical wipe should not have been triggered")]
-async fn medical_wipe_not_triggered(world: &mut LatticeWorld) {
+#[then("the sensitive wipe should not have been triggered")]
+async fn sensitive_wipe_not_triggered(world: &mut LatticeWorld) {
     let result = world.epilogue_result.as_ref().expect("no epilogue result");
     assert!(
-        !result.medical_wiped,
-        "Expected medical wipe NOT to have been triggered"
+        !result.sensitive_wiped,
+        "Expected sensitive wipe NOT to have been triggered"
     );
 }
 
@@ -1224,7 +1224,7 @@ async fn given_federation_broker(world: &mut LatticeWorld, site_id: String) {
     let config = FederationConfig {
         site_id,
         max_federation_pct: 0.2,
-        accept_medical: false,
+        accept_sensitive: false,
         trusted_sites: Vec::new(),
     };
     world.federation_broker = Some(FederationBroker::new(config));
@@ -1242,7 +1242,7 @@ async fn given_trusted_sites(world: &mut LatticeWorld, sites_str: String) {
     let config = FederationConfig {
         site_id,
         max_federation_pct: 0.2,
-        accept_medical: false,
+        accept_sensitive: false,
         trusted_sites: sites,
     };
     drop(old);
@@ -1255,14 +1255,14 @@ async fn given_node_counts(world: &mut LatticeWorld, total: u32, idle: u32) {
     world.federation_idle_nodes = idle;
 }
 
-#[when(regex = r#"^site "([^"]+)" offers (\d+) nodes for a non-medical workload$"#)]
-async fn site_offers_non_medical(world: &mut LatticeWorld, source: String, nodes: u32) {
+#[when(regex = r#"^site "([^"]+)" offers (\d+) nodes for a non-sensitive workload$"#)]
+async fn site_offers_non_sensitive(world: &mut LatticeWorld, source: String, nodes: u32) {
     let offer = FederationOffer {
         source_site: source,
         allocation_id: Uuid::new_v4(),
         tenant_id: "remote-tenant".to_string(),
         node_count: nodes,
-        medical: false,
+        sensitive: false,
         data_locations: vec![],
         offered_at: chrono::Utc::now(),
         ttl_secs: 300,
@@ -1279,14 +1279,14 @@ async fn site_offers_non_medical(world: &mut LatticeWorld, source: String, nodes
     world.federation_decision = Some(decision);
 }
 
-#[when(regex = r#"^site "([^"]+)" offers (\d+) nodes for a medical workload$"#)]
-async fn site_offers_medical(world: &mut LatticeWorld, source: String, nodes: u32) {
+#[when(regex = r#"^site "([^"]+)" offers (\d+) nodes for a sensitive workload$"#)]
+async fn site_offers_sensitive(world: &mut LatticeWorld, source: String, nodes: u32) {
     let offer = FederationOffer {
         source_site: source,
         allocation_id: Uuid::new_v4(),
         tenant_id: "remote-tenant".to_string(),
         node_count: nodes,
-        medical: true,
+        sensitive: true,
         data_locations: vec![],
         offered_at: chrono::Utc::now(),
         ttl_secs: 300,

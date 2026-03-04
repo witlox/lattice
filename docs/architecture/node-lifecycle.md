@@ -75,7 +75,7 @@ Nodes follow a formal state machine with well-defined transitions, timeouts, and
 
 **Effect:** Node is removed from scheduling candidates for new allocations. Running allocations continue undisturbed. No user notification.
 
-**Medical override:** Medical nodes use a longer degradation window (default: 2 minutes) to avoid false positives from transient network issues.
+**Sensitive override:** Sensitive nodes use a longer degradation window (default: 2 minutes) to avoid false positives from transient network issues.
 
 ### Degraded → Ready
 
@@ -91,7 +91,7 @@ Nodes follow a formal state machine with well-defined transitions, timeouts, and
 | Node Type | Grace Period | Rationale |
 |-----------|-------------|-----------|
 | Standard | 60s | Balance between fast recovery and false positive avoidance |
-| Medical | 5 minutes | Medical allocations are high-value; avoid premature requeue |
+| Sensitive | 5 minutes | Sensitive allocations are high-value; avoid premature requeue |
 | Borrowed | 30s | Borrowed nodes should be reclaimed quickly |
 
 **Effect:**
@@ -102,7 +102,7 @@ Nodes follow a formal state machine with well-defined transitions, timeouts, and
 
 ### Ready → Draining
 
-**Trigger:** Explicit operator command (`lattice node drain <id>`) or scheduler-initiated (upgrade, conformance drift on medical node).
+**Trigger:** Explicit operator command (`lattice node drain <id>`) or scheduler-initiated (upgrade, conformance drift on sensitive node).
 
 **Effect:**
 1. Node removed from scheduling candidates
@@ -148,11 +148,11 @@ Nodes follow a formal state machine with well-defined transitions, timeouts, and
 
 **Effect:** Node marked `Failed`. Alert raised. Operator must investigate.
 
-## Medical Node Lifecycle Extensions
+## Sensitive Node Lifecycle Extensions
 
-Medical nodes have additional constraints:
+Sensitive nodes have additional constraints:
 
-| Event | Standard Node | Medical Node |
+| Event | Standard Node | Sensitive Node |
 |-------|--------------|-------------|
 | Claim | Scheduler assigns | User claims explicitly, Raft-committed |
 | Degraded grace | 60s | 5 minutes |
@@ -160,12 +160,12 @@ Medical nodes have additional constraints:
 | Release | Node returns to pool | Node must be wiped (OpenCHAMI secure erase) before returning |
 | Conformance drift | Deprioritized | Immediate `Draining`, audit logged |
 
-### Medical Release Sequence
+### Sensitive Release Sequence
 
 ```
-1. User releases medical allocation
+1. User releases sensitive allocation
 2. Quorum releases node ownership (Raft commit, audit entry)
-3. Node enters Draining (if other medical allocations) or proceeds to wipe
+3. Node enters Draining (if other sensitive allocations) or proceeds to wipe
 4. OpenCHAMI initiates secure wipe:
    a. GPU memory clear
    b. NVMe secure erase (if present)
@@ -177,16 +177,16 @@ Medical nodes have additional constraints:
 
 ### Wipe Failure Handling
 
-If the OpenCHAMI secure wipe fails or times out during medical node release:
+If the OpenCHAMI secure wipe fails or times out during sensitive node release:
 
-1. **Timeout:** Default wipe timeout is 30 minutes (configurable: `medical.wipe_timeout`). If wipe does not complete within this window, the node enters a `Quarantine` state (treated as `Down` by the scheduler).
+1. **Timeout:** Default wipe timeout is 30 minutes (configurable: `sensitive.wipe_timeout`). If wipe does not complete within this window, the node enters a `Quarantine` state (treated as `Down` by the scheduler).
 2. **Quarantine:** Quarantined nodes are excluded from scheduling and flagged for operator intervention. They do not return to the general pool.
 3. **Operator intervention:** The operator investigates (BMC console, hardware diagnostics) and either:
    - Retries the wipe: `lattice admin node wipe <id> --force`
    - Replaces the node hardware
    - Marks the node as permanently failed: `lattice node disable <id>`
-4. **Audit:** Wipe failures are logged as critical audit events (Raft-committed for medical nodes). The audit entry records: node ID, wipe start time, failure reason, operator action.
-5. **Alert:** `lattice_medical_wipe_failure_total` counter incremented; critical alert fired.
+4. **Audit:** Wipe failures are logged as critical audit events (Raft-committed for sensitive nodes). The audit entry records: node ID, wipe start time, failure reason, operator action.
+5. **Alert:** `lattice_sensitive_wipe_failure_total` counter incremented; critical alert fired.
 
 ## Operator Commands
 
@@ -208,7 +208,7 @@ Node agents send heartbeats to the quorum at a configurable interval:
 | `heartbeat_interval` | 10s | How often the agent sends a heartbeat |
 | `heartbeat_timeout` | 30s | Quorum marks `Degraded` after this silence |
 | `grace_period` | 60s | `Degraded` → `Down` after this additional silence |
-| `medical_grace_period` | 5m | Extended grace for medical nodes |
+| `sensitive_grace_period` | 5m | Extended grace for sensitive nodes |
 
 Heartbeats include:
 - Monotonic sequence number (replay detection)
@@ -221,8 +221,8 @@ Heartbeats are lightweight (~200 bytes) and sent over the management traffic cla
 ## Cross-References
 
 - [failure-modes.md](failure-modes.md) — Allocation requeue on node failure
-- [conformance.md](conformance.md) — Conformance drift triggers drain on medical nodes
+- [conformance.md](conformance.md) — Conformance drift triggers drain on sensitive nodes
 - [upgrades.md](upgrades.md) — Drain/undrain during rolling upgrades
 - [checkpoint-broker.md](checkpoint-broker.md) — Checkpoint on urgent drain
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical node claim/release/wipe
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive node claim/release/wipe
 - [security.md](security.md) — Heartbeat authentication (mTLS, sequence numbers)

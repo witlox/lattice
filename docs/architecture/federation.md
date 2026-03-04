@@ -30,7 +30,7 @@ Site A Sovra Instance              Site B Sovra Instance
 ├── Site A Root Key (sovereign)    ├── Site B Root Key (sovereign)
 ├── Workspace: "hpc-general"       ├── Workspace: "hpc-general"
 │   (shared federation key)        │   (federated with Site A)
-├── Workspace: "medical-ch"        └── Policy: Site B OPA rules
+├── Workspace: "sensitive-ch"        └── Policy: Site B OPA rules
 │   (hospital CRK, delegated)
 └── Policy: Site A OPA rules
 
@@ -41,7 +41,7 @@ Sovra Federation Protocol (peer-to-peer, no central authority)
 
 1. **Site root keys never leave the site.** All cross-site authentication uses derived keys from shared workspaces.
 2. **Federation is revocable.** Revoking a shared workspace invalidates all cross-site tokens. Instant defederation.
-3. **Medical keys are tenant-controlled.** The hospital (data owner) holds the Customer Root Key. The operating site holds a delegated key. If the relationship ends, the hospital retains access.
+3. **Sensitive keys are tenant-controlled.** The hospital (data owner) holds the Customer Root Key. The operating site holds a delegated key. If the relationship ends, the hospital retains access.
 4. **Audit logs are cryptographically signed.** Each site signs its audit entries with its own key. Cross-site audit trails are verifiable by any party in the trust chain.
 
 ## Federation Components
@@ -128,7 +128,7 @@ Factors:
 4. Tenant authorization: is this user allowed at the target site?
    → OPA policy check via Sovra-delegated credentials
 5. Data sovereignty: can the data legally transit to the target site?
-   → Medical data: check jurisdiction constraints
+   → Sensitive data: check jurisdiction constraints
 
 Decision: route to site with best composite score, or reject if no site qualifies
 ```
@@ -158,7 +158,7 @@ When a federated job runs at a remote site but needs data from the home site:
 - **Small data (<1 GB):** Fetched on demand via S3 over WAN
 - **Medium data (1 GB - 1 TB):** Pre-staged during queue wait via VAST DataSpace sync
 - **Large data (>1 TB):** Strong recommendation to run job at data's home site
-- **Medical data:** Never transferred. Job must run at data's home site. No exceptions.
+- **Sensitive data:** Never transferred. Job must run at data's home site. No exceptions.
 
 ## Operational Considerations
 
@@ -190,5 +190,5 @@ When the local Raft quorum is undergoing a leader election (typically 1-3 second
 
 - [system-architecture.md](system-architecture.md) — Control plane architecture
 - [security.md](security.md) — Sovra trust model, mTLS
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical data sovereignty
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive data sovereignty
 - [failure-modes.md](failure-modes.md) — Quorum leader loss recovery

@@ -7,7 +7,7 @@
 //! Key principles:
 //! - Loose coupling: federation broker suggests, local scheduler decides
 //! - Data gravity drives placement (prefer sites where data lives)
-//! - Medical data sovereignty enforced (data stays at designated site)
+//! - Sensitive data sovereignty enforced (data stays at designated site)
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,8 +25,8 @@ pub struct FederationOffer {
     pub tenant_id: TenantId,
     /// Number of nodes requested.
     pub node_count: u32,
-    /// Whether this is a medical/regulated workload.
-    pub medical: bool,
+    /// Whether this is a sensitive/regulated workload.
+    pub sensitive: bool,
     /// Data location hints (site IDs where input data resides).
     pub data_locations: Vec<String>,
     /// When the offer was made.
@@ -54,8 +54,8 @@ pub struct FederationConfig {
     pub site_id: String,
     /// Maximum percentage of local capacity available for federation (0.0-1.0).
     pub max_federation_pct: f64,
-    /// Whether to accept medical workloads from remote sites.
-    pub accept_medical: bool,
+    /// Whether to accept sensitive workloads from remote sites.
+    pub accept_sensitive: bool,
     /// Trusted remote sites (site IDs).
     pub trusted_sites: Vec<String>,
 }
@@ -65,7 +65,7 @@ impl Default for FederationConfig {
         Self {
             site_id: "local".to_string(),
             max_federation_pct: 0.1,
-            accept_medical: false,
+            accept_sensitive: false,
             trusted_sites: Vec::new(),
         }
     }
@@ -96,10 +96,10 @@ impl FederationBroker {
             };
         }
 
-        // Medical workloads require explicit opt-in
-        if offer.medical && !self.config.accept_medical {
+        // Sensitive workloads require explicit opt-in
+        if offer.sensitive && !self.config.accept_sensitive {
             return OfferDecision::Reject {
-                reason: "medical workloads not accepted from federation".to_string(),
+                reason: "sensitive workloads not accepted from federation".to_string(),
             };
         }
 
@@ -162,7 +162,7 @@ mod tests {
         FederationConfig {
             site_id: "site-a".to_string(),
             max_federation_pct: 0.2,
-            accept_medical: false,
+            accept_sensitive: false,
             trusted_sites: vec!["site-b".to_string(), "site-c".to_string()],
         }
     }
@@ -173,7 +173,7 @@ mod tests {
             allocation_id: uuid::Uuid::new_v4(),
             tenant_id: "physics".to_string(),
             node_count: nodes,
-            medical: false,
+            sensitive: false,
             data_locations: vec![],
             offered_at: Utc::now(),
             ttl_secs: 300,
@@ -202,22 +202,22 @@ mod tests {
     }
 
     #[test]
-    fn reject_medical_by_default() {
+    fn reject_sensitive_by_default() {
         let broker = FederationBroker::new(test_config());
         let mut offer = test_offer("site-b", 1);
-        offer.medical = true;
+        offer.sensitive = true;
 
         let decision = broker.evaluate_offer(&offer, 10, 100);
         assert!(matches!(decision, OfferDecision::Reject { .. }));
     }
 
     #[test]
-    fn accept_medical_when_configured() {
+    fn accept_sensitive_when_configured() {
         let mut config = test_config();
-        config.accept_medical = true;
+        config.accept_sensitive = true;
         let broker = FederationBroker::new(config);
         let mut offer = test_offer("site-b", 1);
-        offer.medical = true;
+        offer.sensitive = true;
 
         let decision = broker.evaluate_offer(&offer, 10, 100);
         assert!(matches!(decision, OfferDecision::Accept { .. }));
@@ -282,7 +282,7 @@ mod tests {
         let config = FederationConfig::default();
         assert_eq!(config.site_id, "local");
         assert!((config.max_federation_pct - 0.1).abs() < 0.001);
-        assert!(!config.accept_medical);
+        assert!(!config.accept_sensitive);
         assert!(config.trusted_sites.is_empty());
     }
 

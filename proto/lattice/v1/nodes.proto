@@ -97,7 +97,7 @@ message NodeStatus {
   string owner_tenant = 20;
   string owner_vcluster = 21;
   string owner_allocation = 22;
-  string claimed_by = 23;       // medical: specific user
+  string claimed_by = 23;       // sensitive: specific user
   bool is_borrowed = 24;
 
   // Health

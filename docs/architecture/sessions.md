@@ -155,8 +155,8 @@ For sessions requesting multiple nodes:
 | Scenario | Allowed | Notes |
 |----------|---------|-------|
 | Same user, multiple terminals | Yes | Multiple attach sessions to the same allocation |
-| Different users (non-medical) | No | Only the allocation owner can attach |
-| Different users (medical) | No | Only the claiming user; one session at a time |
+| Different users (non-sensitive) | No | Only the allocation owner can attach |
+| Different users (sensitive) | No | Only the claiming user; one session at a time |
 | Same user, different nodes | Yes | Each attach targets a specific node |
 
 ## Slurm Compatibility
@@ -193,5 +193,5 @@ lattice attach 12345 --command="nvidia-smi -l 1"
 
 - [observability.md](observability.md) — Attach architecture, authorization model, rate limiting
 - [api-design.md](api-design.md) — Session API endpoints
-- [sensitive-workloads.md](sensitive-workloads.md) — Medical session constraints (one session, recording, signed uenv)
+- [sensitive-workloads.md](sensitive-workloads.md) — Sensitive session constraints (one session, recording, signed uenv)
 - [cli-design.md](cli-design.md) — Full CLI command reference

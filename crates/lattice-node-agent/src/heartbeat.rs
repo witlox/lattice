@@ -80,8 +80,8 @@ impl HeartbeatTracker {
         }
     }
 
-    /// Create a tracker with medical workload timeouts (more conservative).
-    pub fn medical() -> Self {
+    /// Create a tracker with sensitive workload timeouts (more conservative).
+    pub fn sensitive() -> Self {
         Self {
             last_received: None,
             last_sequence: 0,
@@ -237,8 +237,8 @@ mod tests {
     }
 
     #[test]
-    fn medical_tracker_has_longer_timeouts() {
-        let tracker = HeartbeatTracker::medical();
+    fn sensitive_tracker_has_longer_timeouts() {
+        let tracker = HeartbeatTracker::sensitive();
         assert_eq!(tracker.timeout_secs(), 120);
         assert_eq!(tracker.grace_period_secs(), 300);
     }

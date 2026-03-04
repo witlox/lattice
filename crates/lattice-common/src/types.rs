@@ -134,7 +134,7 @@ pub struct Environment {
     pub image: Option<String>,
     /// Additional uenv for tools (mounted at /user-tools)
     pub tools_uenv: Option<String>,
-    /// For medical: require signed images
+    /// For sensitive: require signed images
     pub sign_required: bool,
     /// Require vulnerability scan before scheduling (sensitive-workloads)
     pub scan_required: bool,
@@ -560,7 +560,7 @@ pub struct NodeOwnership {
     pub tenant: TenantId,
     pub vcluster: VClusterId,
     pub allocation: AllocId,
-    /// For medical: the specific user who claimed this node
+    /// For sensitive: the specific user who claimed this node
     pub claimed_by: Option<UserId>,
     /// Home vCluster (permanent assignment) vs current (may be borrowed)
     pub is_borrowed: bool,
@@ -619,8 +619,8 @@ pub enum SchedulerType {
     HpcBackfill,
     /// Bin-packing + autoscale (services)
     ServiceBinPack,
-    /// User-claim reservation (medical)
-    MedicalReservation,
+    /// User-claim reservation (sensitive)
+    SensitiveReservation,
     /// FIFO, short-lived (interactive sessions)
     InteractiveFifo,
 }
