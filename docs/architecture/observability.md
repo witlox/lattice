@@ -9,22 +9,22 @@ All observability data flows through existing pipelines — no new collection in
 ## Overview
 
 ```
-┌─ User ──────────────────────────────────────────────────────┐
-│  lattice attach / logs / top / watch / diag / compare       │
+┌─ User ───────────────────────────────────────────────────────┐
+│  lattice attach / logs / top / watch / diag / compare        │
 │         │           │          │         │         │         │
 │         ▼           ▼          ▼         ▼         ▼         │
-│    ┌─────────── lattice-api (gRPC + REST) ──────────────┐   │
+│    ┌─────────── lattice-api (gRPC + REST) ───────────────┐   │
 │    │  Attach ──────────────── bidir stream to node agent │   │
 │    │  Logs ────────────────── ring buffer (live) + S3    │   │
 │    │  Metrics ─────────────── PromQL query to TSDB       │   │
 │    │  StreamMetrics ───────── fan-out to node agents     │   │
 │    │  Diagnostics ─────────── TSDB + fabric telemetry    │   │
 │    │  Compare ─────────────── multi-alloc TSDB query     │   │
-│    └────────────────────────────────────────────────────┘   │
+│    └─────────────────────────────────────────────────────┘   │
 │         │           │          │         │                   │
 │         ▼           ▼          ▼         ▼                   │
-│    Node Agents    S3 logs     TSDB    Slingshot CSIG        │
-└─────────────────────────────────────────────────────────────┘
+│    Node Agents    S3 logs     TSDB    Slingshot CSIG         │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 | Capability | Data Source | Latency | CLI Command |
