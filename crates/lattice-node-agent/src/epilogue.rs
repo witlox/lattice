@@ -10,9 +10,10 @@
 
 use async_trait::async_trait;
 
+use crate::data_stage::DataStageExecutor;
 use crate::runtime::{ExitStatus, Runtime, RuntimeError};
 use crate::telemetry::log_buffer::{LogRingBuffer, S3Sink};
-use lattice_common::types::AllocId;
+use lattice_common::types::{AllocId, DataMount};
 
 /// Reports epilogue progress.
 #[async_trait]
@@ -51,6 +52,8 @@ impl Default for EpilogueConfig {
 pub struct EpilogueResult {
     /// Whether logs were flushed to S3.
     pub logs_flushed: bool,
+    /// Whether data mount cleanup was performed.
+    pub data_cleaned: bool,
     /// Whether medical wipe was performed.
     pub medical_wiped: bool,
     /// Whether runtime cleanup succeeded.
@@ -96,10 +99,13 @@ impl EpiloguePipeline {
         runtime: &dyn Runtime,
         log_buffer: &LogRingBuffer,
         s3_sink: Option<&dyn S3Sink>,
+        data_stager: &dyn DataStageExecutor,
+        data_mounts: &[DataMount],
         medical_wiper: &dyn MedicalWiper,
         reporter: &dyn EpilogueReporter,
     ) -> Result<EpilogueResult, RuntimeError> {
         let mut logs_flushed = false;
+        let mut data_cleaned = false;
         let mut medical_wiped = false;
         let mut cleaned_up = false;
 
@@ -148,11 +154,36 @@ impl EpiloguePipeline {
                 reporter
                     .report_step(alloc_id, "runtime_cleanup", "failed")
                     .await;
-                // Continue with medical wipe even if cleanup failed
+                // Continue with data cleanup and medical wipe even if cleanup failed
             }
         }
 
-        // Step 3: Medical wipe if required
+        // Step 3: Data mount cleanup (non-fatal)
+        if !data_mounts.is_empty() {
+            reporter
+                .report_step(alloc_id, "data_cleanup", "started")
+                .await;
+            match data_stager.cleanup_mounts(alloc_id, data_mounts).await {
+                Ok(()) => {
+                    data_cleaned = true;
+                    reporter
+                        .report_step(alloc_id, "data_cleanup", "completed")
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        alloc_id = %alloc_id,
+                        error = %e,
+                        "epilogue: data cleanup failed (non-fatal)"
+                    );
+                    reporter
+                        .report_step(alloc_id, "data_cleanup", "failed")
+                        .await;
+                }
+            }
+        }
+
+        // Step 4: Medical wipe if required
         if self.config.medical_wipe {
             reporter
                 .report_step(alloc_id, "medical_wipe", "started")
@@ -179,6 +210,7 @@ impl EpiloguePipeline {
 
         Ok(EpilogueResult {
             logs_flushed,
+            data_cleaned,
             medical_wiped,
             cleaned_up,
             exit_status,
@@ -195,6 +227,7 @@ impl Default for EpiloguePipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_stage::NoopDataStageExecutor;
     use crate::runtime::MockRuntime;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -274,6 +307,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
         rt.prepare(&config).await.unwrap();
         rt
@@ -296,6 +331,8 @@ mod tests {
                 &runtime,
                 &log_buf,
                 Some(&s3),
+                &NoopDataStageExecutor,
+                &[],
                 &NoopMedicalWiper,
                 &NoopEpilogueReporter,
             )
@@ -327,6 +364,8 @@ mod tests {
                 &runtime,
                 &log_buf,
                 None,
+                &NoopDataStageExecutor,
+                &[],
                 &NoopMedicalWiper,
                 &NoopEpilogueReporter,
             )
@@ -353,6 +392,8 @@ mod tests {
                 &runtime,
                 &log_buf,
                 Some(&FailingS3),
+                &NoopDataStageExecutor,
+                &[],
                 &NoopMedicalWiper,
                 &NoopEpilogueReporter,
             )
@@ -382,6 +423,8 @@ mod tests {
                 &runtime,
                 &log_buf,
                 None,
+                &NoopDataStageExecutor,
+                &[],
                 &wiper,
                 &NoopEpilogueReporter,
             )
@@ -410,6 +453,8 @@ mod tests {
                 &runtime,
                 &log_buf,
                 None,
+                &NoopDataStageExecutor,
+                &[],
                 &NoopMedicalWiper,
                 &NoopEpilogueReporter,
             )
@@ -435,6 +480,8 @@ mod tests {
                 &runtime,
                 &log_buf,
                 None,
+                &NoopDataStageExecutor,
+                &[],
                 &NoopMedicalWiper,
                 &NoopEpilogueReporter,
             )

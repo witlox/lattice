@@ -10,16 +10,19 @@
 //! - [`log_buffer`]: Per-allocation log ring buffer with S3 flush support.
 //! - [`ebpf_stubs`]: Stub interfaces for eBPF-based telemetry collectors.
 
+pub mod aya_collector;
 pub mod ebpf_stubs;
 pub mod gpu_discovery;
 pub mod log_buffer;
 pub mod memory_discovery;
+pub mod proc_collector;
 
 pub use ebpf_stubs::{EbpfCollector, EbpfEvent, StubEbpfCollector};
 pub use log_buffer::{LogRingBuffer, S3Sink};
 pub use memory_discovery::{
     MemoryDiscoveryProvider, StubMemoryDiscovery, SysfsMemoryDiscovery, UnifiedMemoryDiscovery,
 };
+pub use proc_collector::ProcSysCollector;
 
 use std::collections::VecDeque;
 

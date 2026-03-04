@@ -74,6 +74,78 @@ pub struct GpuMetrics {
     pub temperature_celsius: f64,
 }
 
+/// Scheduler and context switch metrics parsed from /proc/stat.
+#[derive(Debug, Clone, Default)]
+pub struct SchedulerMetrics {
+    /// Total context switches since boot.
+    pub context_switches: u64,
+    /// Total processes created since boot.
+    pub processes_created: u64,
+    /// Currently running processes.
+    pub procs_running: u64,
+    /// Currently blocked processes.
+    pub procs_blocked: u64,
+}
+
+/// Per-device disk I/O metrics parsed from /proc/diskstats.
+#[derive(Debug, Clone, Default)]
+pub struct DiskIoMetrics {
+    /// Device name (e.g. "sda", "nvme0n1").
+    pub device: String,
+    /// Number of reads completed.
+    pub reads_completed: u64,
+    /// Number of sectors read.
+    pub sectors_read: u64,
+    /// Time spent reading (ms).
+    pub read_time_ms: u64,
+    /// Number of writes completed.
+    pub writes_completed: u64,
+    /// Number of sectors written.
+    pub sectors_written: u64,
+    /// Time spent writing (ms).
+    pub write_time_ms: u64,
+    /// Current I/Os in progress.
+    pub ios_in_progress: u64,
+}
+
+/// Virtual memory statistics parsed from /proc/vmstat.
+#[derive(Debug, Clone, Default)]
+pub struct VmStatMetrics {
+    /// Page faults (minor).
+    pub pgfault: u64,
+    /// Page faults (major).
+    pub pgmajfault: u64,
+    /// Pages allocated (normal zone).
+    pub pgalloc_normal: u64,
+    /// Pages freed.
+    pub pgfree: u64,
+    /// Pages paged in from disk.
+    pub pgpgin: u64,
+    /// Pages paged out to disk.
+    pub pgpgout: u64,
+    /// Pages swapped in.
+    pub pswpin: u64,
+    /// Pages swapped out.
+    pub pswpout: u64,
+    /// NUMA local allocations.
+    pub numa_local: u64,
+    /// NUMA foreign allocations.
+    pub numa_foreign: u64,
+}
+
+/// TCP connection state counters parsed from /proc/net/tcp.
+#[derive(Debug, Clone, Default)]
+pub struct TcpConnectionMetrics {
+    /// Connections in ESTABLISHED state.
+    pub established: u64,
+    /// Connections in TIME_WAIT state.
+    pub time_wait: u64,
+    /// Connections in CLOSE_WAIT state.
+    pub close_wait: u64,
+    /// Total connections.
+    pub total: u64,
+}
+
 /// A point-in-time snapshot of all system metrics.
 #[derive(Debug, Clone, Default)]
 pub struct SystemSnapshot {
@@ -81,6 +153,10 @@ pub struct SystemSnapshot {
     pub memory: MemoryMetrics,
     pub network: Vec<NetworkMetrics>,
     pub gpus: Vec<GpuMetrics>,
+    pub scheduler: SchedulerMetrics,
+    pub disk_io: Vec<DiskIoMetrics>,
+    pub vmstat: VmStatMetrics,
+    pub tcp: TcpConnectionMetrics,
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +408,123 @@ pub fn parse_rocm_smi(output: &str) -> Vec<GpuMetrics> {
     result
 }
 
+/// Parse scheduler-related counters from /proc/stat.
+///
+/// Looks for lines starting with `ctxt`, `processes`, `procs_running`, `procs_blocked`.
+pub fn parse_proc_stat_scheduler(content: &str) -> SchedulerMetrics {
+    let mut metrics = SchedulerMetrics::default();
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        match parts.next() {
+            Some("ctxt") => {
+                metrics.context_switches = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            Some("processes") => {
+                metrics.processes_created = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            Some("procs_running") => {
+                metrics.procs_running = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            Some("procs_blocked") => {
+                metrics.procs_blocked = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    metrics
+}
+
+/// Parse /proc/diskstats for per-device I/O counters.
+///
+/// Format: `major minor device reads_completed reads_merged sectors_read read_time
+///          writes_completed writes_merged sectors_written write_time ios_in_progress ...`
+///
+/// Skips loop devices (loop*) and ram devices (ram*).
+pub fn parse_proc_diskstats(content: &str) -> Vec<DiskIoMetrics> {
+    let mut result = Vec::new();
+    for line in content.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 14 {
+            continue;
+        }
+        let device = fields[2];
+        // Skip virtual devices
+        if device.starts_with("loop") || device.starts_with("ram") || device.starts_with("dm-") {
+            continue;
+        }
+
+        let parse = |i: usize| -> u64 { fields[i].parse().unwrap_or(0) };
+
+        result.push(DiskIoMetrics {
+            device: device.to_string(),
+            reads_completed: parse(3),
+            sectors_read: parse(5),
+            read_time_ms: parse(6),
+            writes_completed: parse(7),
+            sectors_written: parse(9),
+            write_time_ms: parse(10),
+            ios_in_progress: parse(11),
+        });
+    }
+    result
+}
+
+/// Parse /proc/vmstat for virtual memory statistics.
+///
+/// Each line is `key value`. We extract a known set of keys.
+pub fn parse_proc_vmstat(content: &str) -> VmStatMetrics {
+    let mut metrics = VmStatMetrics::default();
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        let key = match parts.next() {
+            Some(k) => k,
+            None => continue,
+        };
+        let val: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        match key {
+            "pgfault" => metrics.pgfault = val,
+            "pgmajfault" => metrics.pgmajfault = val,
+            "pgalloc_normal" => metrics.pgalloc_normal = val,
+            "pgfree" => metrics.pgfree = val,
+            "pgpgin" => metrics.pgpgin = val,
+            "pgpgout" => metrics.pgpgout = val,
+            "pswpin" => metrics.pswpin = val,
+            "pswpout" => metrics.pswpout = val,
+            "numa_local" => metrics.numa_local = val,
+            "numa_foreign" => metrics.numa_foreign = val,
+            _ => {}
+        }
+    }
+    metrics
+}
+
+/// Parse /proc/net/tcp for TCP connection state counters.
+///
+/// Each line after the header has `sl local_address rem_address st ...`
+/// where `st` is the TCP state as a 2-digit hex code.
+///
+/// Key states:
+/// - 01 = ESTABLISHED
+/// - 06 = TIME_WAIT
+/// - 08 = CLOSE_WAIT
+pub fn parse_proc_net_tcp(content: &str) -> TcpConnectionMetrics {
+    let mut metrics = TcpConnectionMetrics::default();
+    for line in content.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 4 {
+            continue;
+        }
+        metrics.total += 1;
+        match fields[3] {
+            "01" => metrics.established += 1,
+            "06" => metrics.time_wait += 1,
+            "08" => metrics.close_wait += 1,
+            _ => {}
+        }
+    }
+    metrics
+}
+
 // ---------------------------------------------------------------------------
 // ProcSysCollector
 // ---------------------------------------------------------------------------
@@ -361,11 +554,19 @@ impl ProcSysCollector {
         let memory = self.read_memory().await;
         let network = self.read_network().await;
         let gpus = self.read_gpus().await;
+        let scheduler = self.read_scheduler().await;
+        let disk_io = self.read_disk_io().await;
+        let vmstat = self.read_vmstat().await;
+        let tcp = self.read_tcp().await;
         SystemSnapshot {
             cpu,
             memory,
             network,
             gpus,
+            scheduler,
+            disk_io,
+            vmstat,
+            tcp,
         }
     }
 
@@ -450,6 +651,66 @@ impl ProcSysCollector {
 
         Vec::new()
     }
+
+    // -- Scheduler ----------------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    async fn read_scheduler(&self) -> SchedulerMetrics {
+        match tokio::fs::read_to_string("/proc/stat").await {
+            Ok(content) => parse_proc_stat_scheduler(&content),
+            Err(_) => SchedulerMetrics::default(),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn read_scheduler(&self) -> SchedulerMetrics {
+        SchedulerMetrics::default()
+    }
+
+    // -- Disk I/O -----------------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    async fn read_disk_io(&self) -> Vec<DiskIoMetrics> {
+        match tokio::fs::read_to_string("/proc/diskstats").await {
+            Ok(content) => parse_proc_diskstats(&content),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn read_disk_io(&self) -> Vec<DiskIoMetrics> {
+        Vec::new()
+    }
+
+    // -- vmstat -------------------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    async fn read_vmstat(&self) -> VmStatMetrics {
+        match tokio::fs::read_to_string("/proc/vmstat").await {
+            Ok(content) => parse_proc_vmstat(&content),
+            Err(_) => VmStatMetrics::default(),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn read_vmstat(&self) -> VmStatMetrics {
+        VmStatMetrics::default()
+    }
+
+    // -- TCP connections ----------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    async fn read_tcp(&self) -> TcpConnectionMetrics {
+        match tokio::fs::read_to_string("/proc/net/tcp").await {
+            Ok(content) => parse_proc_net_tcp(&content),
+            Err(_) => TcpConnectionMetrics::default(),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn read_tcp(&self) -> TcpConnectionMetrics {
+        TcpConnectionMetrics::default()
+    }
 }
 
 impl Default for ProcSysCollector {
@@ -500,6 +761,25 @@ impl EbpfCollector for ProcSysCollector {
             },
             "network_interfaces": snapshot.network.len(),
             "gpus": snapshot.gpus.len(),
+            "scheduler": {
+                "context_switches": snapshot.scheduler.context_switches,
+                "processes_created": snapshot.scheduler.processes_created,
+                "procs_running": snapshot.scheduler.procs_running,
+                "procs_blocked": snapshot.scheduler.procs_blocked,
+            },
+            "disk_io_devices": snapshot.disk_io.len(),
+            "vmstat": {
+                "pgfault": snapshot.vmstat.pgfault,
+                "pgmajfault": snapshot.vmstat.pgmajfault,
+                "pswpin": snapshot.vmstat.pswpin,
+                "pswpout": snapshot.vmstat.pswpout,
+            },
+            "tcp": {
+                "established": snapshot.tcp.established,
+                "time_wait": snapshot.tcp.time_wait,
+                "close_wait": snapshot.tcp.close_wait,
+                "total": snapshot.tcp.total,
+            },
         }))
         .unwrap_or_default();
 
@@ -834,5 +1114,155 @@ Inter-|   Receive                                                |  Transmit
     fn test_default_trait() {
         let collector = ProcSysCollector::default();
         assert_eq!(collector.state(), CollectorState::Detached);
+    }
+
+    // -- parse_proc_stat_scheduler tests ------------------------------------
+
+    #[test]
+    fn test_parse_proc_stat_scheduler() {
+        let content = "\
+cpu  10132153 290696 3084719 46828483 16683 0 25195 0 0 0
+cpu0 5066076 145348 1542359 23414241 8341 0 12597 0 0 0
+intr 12345678 0 0 0 0 0 0 0
+ctxt 987654321
+btime 1700000000
+processes 123456
+procs_running 3
+procs_blocked 1
+softirq 5432100 0 0 0 0 0 0 0 0 0 0";
+        let sched = parse_proc_stat_scheduler(content);
+        assert_eq!(sched.context_switches, 987_654_321);
+        assert_eq!(sched.processes_created, 123_456);
+        assert_eq!(sched.procs_running, 3);
+        assert_eq!(sched.procs_blocked, 1);
+    }
+
+    #[test]
+    fn test_parse_proc_stat_scheduler_empty() {
+        let sched = parse_proc_stat_scheduler("");
+        assert_eq!(sched.context_switches, 0);
+        assert_eq!(sched.processes_created, 0);
+    }
+
+    // -- parse_proc_diskstats tests -----------------------------------------
+
+    const SAMPLE_DISKSTATS: &str = "\
+   7       0 loop0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   1       0 ram0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   8       0 sda 12345 100 234567 5000 67890 200 456789 8000 5 0 0 0 0 0 0 0 0
+ 259       0 nvme0n1 99999 50 888888 3000 55555 100 777777 4000 2 0 0 0 0 0 0 0 0";
+
+    #[test]
+    fn test_parse_proc_diskstats() {
+        let disks = parse_proc_diskstats(SAMPLE_DISKSTATS);
+        assert_eq!(disks.len(), 2, "loop and ram devices should be skipped");
+
+        assert_eq!(disks[0].device, "sda");
+        assert_eq!(disks[0].reads_completed, 12345);
+        assert_eq!(disks[0].sectors_read, 234567);
+        assert_eq!(disks[0].read_time_ms, 5000);
+        assert_eq!(disks[0].writes_completed, 67890);
+        assert_eq!(disks[0].sectors_written, 456789);
+        assert_eq!(disks[0].write_time_ms, 8000);
+        assert_eq!(disks[0].ios_in_progress, 5);
+
+        assert_eq!(disks[1].device, "nvme0n1");
+        assert_eq!(disks[1].reads_completed, 99999);
+    }
+
+    #[test]
+    fn test_parse_proc_diskstats_empty() {
+        let disks = parse_proc_diskstats("");
+        assert!(disks.is_empty());
+    }
+
+    // -- parse_proc_vmstat tests --------------------------------------------
+
+    const SAMPLE_VMSTAT: &str = "\
+nr_free_pages 500000
+nr_zone_active_anon 100000
+pgfault 12345678
+pgmajfault 1234
+pgalloc_normal 5678900
+pgfree 5500000
+pgpgin 100000
+pgpgout 200000
+pswpin 50
+pswpout 100
+numa_local 999999
+numa_foreign 1111
+nr_dirty 500";
+
+    #[test]
+    fn test_parse_proc_vmstat() {
+        let vm = parse_proc_vmstat(SAMPLE_VMSTAT);
+        assert_eq!(vm.pgfault, 12_345_678);
+        assert_eq!(vm.pgmajfault, 1234);
+        assert_eq!(vm.pgalloc_normal, 5_678_900);
+        assert_eq!(vm.pgfree, 5_500_000);
+        assert_eq!(vm.pgpgin, 100_000);
+        assert_eq!(vm.pgpgout, 200_000);
+        assert_eq!(vm.pswpin, 50);
+        assert_eq!(vm.pswpout, 100);
+        assert_eq!(vm.numa_local, 999_999);
+        assert_eq!(vm.numa_foreign, 1111);
+    }
+
+    #[test]
+    fn test_parse_proc_vmstat_empty() {
+        let vm = parse_proc_vmstat("");
+        assert_eq!(vm.pgfault, 0);
+        assert_eq!(vm.pgmajfault, 0);
+    }
+
+    // -- parse_proc_net_tcp tests -------------------------------------------
+
+    const SAMPLE_NET_TCP: &str = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:0CEA 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0
+   1: 0100007F:1F40 0100007F:E1A8 01 00000000:00000000 00:00000000 00000000  1000        0 23456 1 0
+   2: 0100007F:E1A8 0100007F:1F40 01 00000000:00000000 00:00000000 00000000  1000        0 34567 1 0
+   3: AC1100C8:01BB AC110064:C958 06 00000000:00000000 03:00000000 00000000     0        0 0 3 0
+   4: AC1100C8:0050 AC110032:D4B0 08 00000000:00000000 00:00000000 00000000    33        0 45678 1 0
+   5: AC1100C8:01BB AC110096:F234 01 00000000:00000000 00:00000000 00000000     0        0 56789 1 0";
+
+    #[test]
+    fn test_parse_proc_net_tcp() {
+        let tcp = parse_proc_net_tcp(SAMPLE_NET_TCP);
+        assert_eq!(tcp.total, 6);
+        assert_eq!(tcp.established, 3); // lines with st=01
+        assert_eq!(tcp.time_wait, 1); // lines with st=06
+        assert_eq!(tcp.close_wait, 1); // lines with st=08
+    }
+
+    #[test]
+    fn test_parse_proc_net_tcp_empty() {
+        let tcp = parse_proc_net_tcp("");
+        assert_eq!(tcp.total, 0);
+        assert_eq!(tcp.established, 0);
+    }
+
+    #[test]
+    fn test_parse_proc_net_tcp_header_only() {
+        let tcp = parse_proc_net_tcp("  sl  local_address rem_address   st tx_queue rx_queue");
+        assert_eq!(tcp.total, 0);
+    }
+
+    // -- Updated snapshot event test ----------------------------------------
+
+    #[tokio::test]
+    async fn test_collector_read_events_includes_new_fields() {
+        let mut collector = ProcSysCollector::new();
+        collector.attach().await.unwrap();
+
+        let events = collector.read_events().await.unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&events[0].payload).expect("valid JSON");
+
+        // Verify new fields are present in the payload
+        assert!(payload.get("scheduler").is_some());
+        assert!(payload.get("disk_io_devices").is_some());
+        assert!(payload.get("vmstat").is_some());
+        assert!(payload.get("tcp").is_some());
     }
 }

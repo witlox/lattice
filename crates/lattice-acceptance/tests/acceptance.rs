@@ -11,6 +11,7 @@ use lattice_test_harness::fixtures::*;
 use lattice_test_harness::mocks::*;
 
 use lattice_node_agent::agent::{AgentCommand, NodeAgent};
+use lattice_node_agent::data_stage::NoopDataStageExecutor;
 use lattice_node_agent::epilogue::{
     EpilogueConfig, EpiloguePipeline, EpilogueResult, NoopEpilogueReporter, NoopMedicalWiper,
 };
@@ -961,10 +962,19 @@ async fn run_prologue(world: &mut LatticeWorld) {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
 
     let result = pipeline
-        .execute(alloc_id, &config, &runtime, &mut cache, &NoopReporter)
+        .execute(
+            alloc_id,
+            &config,
+            &runtime,
+            &mut cache,
+            &NoopDataStageExecutor,
+            &NoopReporter,
+        )
         .await
         .unwrap();
 
@@ -986,6 +996,8 @@ async fn run_medical_epilogue(world: &mut LatticeWorld) {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     runtime.prepare(&prep).await.unwrap();
 
@@ -1002,6 +1014,8 @@ async fn run_medical_epilogue(world: &mut LatticeWorld) {
             &runtime,
             &log_buf,
             None,
+            &NoopDataStageExecutor,
+            &[],
             &NoopMedicalWiper,
             &NoopEpilogueReporter,
         )
@@ -1024,6 +1038,8 @@ async fn run_standard_epilogue(world: &mut LatticeWorld) {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     runtime.prepare(&prep).await.unwrap();
 
@@ -1037,6 +1053,8 @@ async fn run_standard_epilogue(world: &mut LatticeWorld) {
             &runtime,
             &log_buf,
             None,
+            &NoopDataStageExecutor,
+            &[],
             &NoopMedicalWiper,
             &NoopEpilogueReporter,
         )

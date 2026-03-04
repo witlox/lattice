@@ -261,6 +261,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
         rt.prepare(&config).await.unwrap();
         let handle = rt.spawn(alloc_id, "python", &[]).await.unwrap();

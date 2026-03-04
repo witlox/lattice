@@ -10,6 +10,7 @@
 
 use async_trait::async_trait;
 
+use crate::data_stage::DataStageExecutor;
 use crate::image_cache::ImageCache;
 use crate::runtime::{PrepareConfig, Runtime, RuntimeError};
 use lattice_common::types::{AllocId, MemoryPolicy};
@@ -67,12 +68,15 @@ impl ProloguePipeline {
     /// 1. Check image cache
     /// 2. If miss: record in cache (pull is handled by runtime.prepare())
     /// 3. Call runtime.prepare()
+    /// 4. Pre-stage data mounts via DataStageExecutor
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute(
         &self,
         alloc_id: AllocId,
         prepare_config: &PrepareConfig,
         runtime: &dyn Runtime,
         cache: &mut ImageCache,
+        data_stager: &dyn DataStageExecutor,
         reporter: &dyn PrologueReporter,
     ) -> Result<PrologueResult, RuntimeError> {
         let image_ref = prepare_config
@@ -133,13 +137,43 @@ impl ProloguePipeline {
             }
         }
 
-        // Step 4: Data staging (placeholder — real implementation reads DataRequirements)
-        let data_staged = !prepare_config.env_vars.is_empty(); // simplified signal
-        if data_staged {
+        // Step 4: Data staging
+        let data_staged = if !prepare_config.data_mounts.is_empty() {
             reporter
-                .report_step(alloc_id, "data_staging", "completed")
+                .report_step(alloc_id, "data_staging", "started")
                 .await;
-        }
+            match data_stager
+                .stage_mounts(
+                    alloc_id,
+                    &prepare_config.data_mounts,
+                    prepare_config.scratch_per_node.as_deref(),
+                )
+                .await
+            {
+                Ok(_result) => {
+                    reporter
+                        .report_step(alloc_id, "data_staging", "completed")
+                        .await;
+                    true
+                }
+                Err(e) => {
+                    tracing::error!(
+                        alloc_id = %alloc_id,
+                        error = %e,
+                        "prologue: data staging failed"
+                    );
+                    reporter
+                        .report_step(alloc_id, "data_staging", "failed")
+                        .await;
+                    return Err(RuntimeError::PrepareFailed {
+                        alloc_id,
+                        reason: format!("data staging failed: {e}"),
+                    });
+                }
+            }
+        } else {
+            false
+        };
 
         Ok(PrologueResult {
             cache_hit,
@@ -167,6 +201,7 @@ impl Default for ProloguePipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_stage::NoopDataStageExecutor;
     use crate::runtime::MockRuntime;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -216,11 +251,20 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         // First run: cache miss
         let result = pipeline
-            .execute(alloc_id, &config, &runtime, &mut cache, &NoopReporter)
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &NoopReporter,
+            )
             .await
             .unwrap();
         assert!(!result.cache_hit);
@@ -240,9 +284,18 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
         let result2 = pipeline
-            .execute(alloc_id2, &config2, &runtime, &mut cache, &NoopReporter)
+            .execute(
+                alloc_id2,
+                &config2,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &NoopReporter,
+            )
             .await
             .unwrap();
         assert!(result2.cache_hit);
@@ -265,10 +318,19 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         pipeline
-            .execute(alloc_id, &config, &runtime, &mut cache, &reporter)
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &reporter,
+            )
             .await
             .unwrap();
 
@@ -299,10 +361,19 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         let result = pipeline
-            .execute(alloc_id, &config, &runtime, &mut cache, &NoopReporter)
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &NoopReporter,
+            )
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("image not found"));
@@ -324,10 +395,19 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         let result = pipeline
-            .execute(alloc_id, &config, &runtime, &mut cache, &NoopReporter)
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &NoopReporter,
+            )
             .await
             .unwrap();
         assert!(!result.cache_hit);
@@ -377,10 +457,19 @@ mod tests {
             env_vars: vec![],
             memory_policy: Some(MemoryPolicy::Interleave),
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         pipeline
-            .execute(alloc_id, &config, &runtime, &mut cache, &reporter)
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &reporter,
+            )
             .await
             .unwrap();
 
@@ -407,10 +496,19 @@ mod tests {
             env_vars: vec![],
             memory_policy: Some(MemoryPolicy::Local),
             is_unified_memory: true,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         pipeline
-            .execute(alloc_id, &config, &runtime, &mut cache, &reporter)
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &reporter,
+            )
             .await
             .unwrap();
 
@@ -421,7 +519,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prologue_data_staging_signal() {
+    async fn prologue_data_staging_with_mounts() {
+        use crate::data_stage::MockDataStageExecutor;
+        use lattice_common::types::{DataAccess, DataMount, StorageTier};
+
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+        let stager = MockDataStageExecutor::new();
+        let (reporter, steps) = RecordingReporter::new();
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("test".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
+            data_mounts: vec![DataMount {
+                source: "s3://data/input".to_string(),
+                target: "/mnt/input".to_string(),
+                access: DataAccess::ReadOnly,
+                tier_hint: Some(StorageTier::Hot),
+            }],
+            scratch_per_node: None,
+        };
+
+        let result = pipeline
+            .execute(alloc_id, &config, &runtime, &mut cache, &stager, &reporter)
+            .await
+            .unwrap();
+        assert!(result.data_staged);
+
+        // Verify staging was called
+        let calls = stager.staged_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, alloc_id);
+
+        // Verify progress reporting
+        let steps = steps.lock().await;
+        assert!(steps
+            .iter()
+            .any(|(_, step, status)| step == "data_staging" && status == "started"));
+        assert!(steps
+            .iter()
+            .any(|(_, step, status)| step == "data_staging" && status == "completed"));
+    }
+
+    #[tokio::test]
+    async fn prologue_no_data_mounts_skips_staging() {
         let pipeline = ProloguePipeline::default();
         let runtime = MockRuntime::new();
         let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
@@ -433,15 +582,70 @@ mod tests {
             view: None,
             image: None,
             workdir: None,
-            env_vars: vec![("DATA_DIR".to_string(), "/data/input".to_string())],
+            env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         let result = pipeline
-            .execute(alloc_id, &config, &runtime, &mut cache, &NoopReporter)
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &NoopReporter,
+            )
             .await
             .unwrap();
-        assert!(result.data_staged);
+        assert!(!result.data_staged);
+    }
+
+    #[tokio::test]
+    async fn prologue_data_staging_failure() {
+        use crate::data_stage::MockDataStageExecutor;
+        use lattice_common::types::{DataAccess, DataMount, StorageTier};
+
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+        let stager = MockDataStageExecutor::with_error("storage unavailable");
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("test".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
+            data_mounts: vec![DataMount {
+                source: "s3://data/input".to_string(),
+                target: "/mnt/input".to_string(),
+                access: DataAccess::ReadOnly,
+                tier_hint: Some(StorageTier::Hot),
+            }],
+            scratch_per_node: None,
+        };
+
+        let result = pipeline
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &stager,
+                &NoopReporter,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("data staging failed"));
     }
 }

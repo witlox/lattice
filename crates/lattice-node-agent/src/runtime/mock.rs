@@ -324,6 +324,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -351,6 +353,8 @@ mod tests {
             env_vars: vec![("KEY".to_string(), "VAL".to_string())],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -384,6 +388,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         let result = rt.prepare(&config).await;
@@ -411,6 +417,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -436,6 +444,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -461,6 +471,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -484,6 +496,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
         let config_b = PrepareConfig {
             alloc_id: alloc_b,
@@ -494,6 +508,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         rt.prepare(&config_a).await.unwrap();
@@ -520,6 +536,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -551,6 +569,8 @@ mod tests {
             env_vars: vec![],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
 
         rt.prepare(&config).await.unwrap();
@@ -574,6 +594,8 @@ mod tests {
                 env_vars: vec![],
                 memory_policy: None,
                 is_unified_memory: false,
+                data_mounts: vec![],
+                scratch_per_node: None,
             };
             rt.prepare(&config).await.unwrap();
             let handle = rt.spawn(alloc_id, "python", &[]).await.unwrap();

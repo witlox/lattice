@@ -10,6 +10,7 @@ pub mod allocation_runner;
 pub mod attach;
 pub mod checkpoint_handler;
 pub mod conformance;
+pub mod data_stage;
 pub mod epilogue;
 pub mod grpc_client;
 pub mod health;

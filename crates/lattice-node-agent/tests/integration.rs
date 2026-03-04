@@ -16,6 +16,7 @@ use lattice_common::types::NodeCapabilities;
 use lattice_node_agent::agent::{AgentCommand, NodeAgent};
 use lattice_node_agent::checkpoint_handler::{CheckpointHandler, CheckpointMode};
 use lattice_node_agent::conformance::ConformanceComponents;
+use lattice_node_agent::data_stage::NoopDataStageExecutor;
 use lattice_node_agent::epilogue::{
     EpilogueConfig, EpiloguePipeline, MedicalWiper, NoopEpilogueReporter, NoopMedicalWiper,
 };
@@ -238,11 +239,20 @@ async fn prologue_runtime_cache_miss_then_hit() {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
 
     // First prologue run: cache miss, runtime.prepare called, cache updated.
     let result_1 = pipeline
-        .execute(alloc_id_1, &config_1, &runtime, &mut cache, &NoopReporter)
+        .execute(
+            alloc_id_1,
+            &config_1,
+            &runtime,
+            &mut cache,
+            &NoopDataStageExecutor,
+            &NoopReporter,
+        )
         .await
         .unwrap();
 
@@ -267,10 +277,19 @@ async fn prologue_runtime_cache_miss_then_hit() {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
 
     let result_2 = pipeline
-        .execute(alloc_id_2, &config_2, &runtime, &mut cache, &NoopReporter)
+        .execute(
+            alloc_id_2,
+            &config_2,
+            &runtime,
+            &mut cache,
+            &NoopDataStageExecutor,
+            &NoopReporter,
+        )
         .await
         .unwrap();
 
@@ -307,6 +326,8 @@ async fn epilogue_runtime_medical_wipe() {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     runtime.prepare(&prep_config).await.unwrap();
 
@@ -326,6 +347,8 @@ async fn epilogue_runtime_medical_wipe() {
             &runtime,
             &log_buf,
             None, // no S3
+            &NoopDataStageExecutor,
+            &[],
             &wiper,
             &NoopEpilogueReporter,
         )
@@ -367,6 +390,8 @@ async fn runtime_full_lifecycle() {
         ],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     runtime.prepare(&config).await.unwrap();
 
@@ -480,6 +505,8 @@ async fn signal_delivery_all_modes() {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     rt_signal.prepare(&prep).await.unwrap();
     let handle_signal = rt_signal.spawn(alloc_signal, "python", &[]).await.unwrap();
@@ -511,6 +538,8 @@ async fn signal_delivery_all_modes() {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     rt_shmem.prepare(&prep2).await.unwrap();
     let handle_shmem = rt_shmem.spawn(alloc_shmem, "app", &[]).await.unwrap();
@@ -545,6 +574,8 @@ async fn signal_delivery_all_modes() {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     rt_grpc.prepare(&prep3).await.unwrap();
     let handle_grpc = rt_grpc.spawn(alloc_grpc, "server", &[]).await.unwrap();
@@ -633,6 +664,8 @@ async fn epilogue_log_flush_and_cleanup_no_medical() {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     runtime.prepare(&prep_config).await.unwrap();
 
@@ -651,6 +684,8 @@ async fn epilogue_log_flush_and_cleanup_no_medical() {
             &runtime,
             &log_buf,
             Some(&s3),
+            &NoopDataStageExecutor,
+            &[],
             &NoopMedicalWiper,
             &NoopEpilogueReporter,
         )
@@ -771,16 +806,25 @@ async fn prologue_then_epilogue_end_to_end() {
         env_vars: vec![("DATA_DIR".to_string(), "/data".to_string())],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
 
     let prologue = ProloguePipeline::default();
     let prologue_result = prologue
-        .execute(alloc_id, &prep_config, &runtime, &mut cache, &NoopReporter)
+        .execute(
+            alloc_id,
+            &prep_config,
+            &runtime,
+            &mut cache,
+            &NoopDataStageExecutor,
+            &NoopReporter,
+        )
         .await
         .unwrap();
 
     assert!(!prologue_result.cache_hit);
-    assert!(prologue_result.data_staged); // env_vars non-empty triggers data_staged
+    assert!(!prologue_result.data_staged); // no data_mounts configured
     assert!(cache.contains("ml-tools/2.0:v1"));
 
     // -- Simulate running: spawn, do some work, write logs --
@@ -807,6 +851,8 @@ async fn prologue_then_epilogue_end_to_end() {
             &runtime,
             &log_buf,
             Some(&s3),
+            &NoopDataStageExecutor,
+            &[],
             &NoopMedicalWiper,
             &NoopEpilogueReporter,
         )
@@ -873,6 +919,8 @@ async fn agent_checkpoint_to_signal_delivery() {
         env_vars: vec![],
         memory_policy: None,
         is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
     };
     runtime.prepare(&prep).await.unwrap();
     let handle = runtime.spawn(alloc_id, "server", &[]).await.unwrap();

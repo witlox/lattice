@@ -20,7 +20,7 @@ pub use sarus::SarusRuntime;
 pub use uenv::UenvRuntime;
 
 use async_trait::async_trait;
-use lattice_common::types::AllocId;
+use lattice_common::types::{AllocId, DataMount};
 
 /// Exit status from a runtime process.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +59,10 @@ pub struct PrepareConfig {
     pub memory_policy: Option<lattice_common::types::MemoryPolicy>,
     /// Whether the node has unified memory (skips numactl).
     pub is_unified_memory: bool,
+    /// Data mounts to pre-stage before execution.
+    pub data_mounts: Vec<DataMount>,
+    /// Per-node scratch directory size hint.
+    pub scratch_per_node: Option<String>,
 }
 
 /// Handle to a running process managed by a runtime.
@@ -151,6 +155,8 @@ mod tests {
             env_vars: vec![("CUDA_VISIBLE_DEVICES".to_string(), "0,1".to_string())],
             memory_policy: None,
             is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
         };
         assert!(config.uenv.is_some());
         assert!(config.image.is_none());
