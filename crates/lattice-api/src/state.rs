@@ -25,6 +25,8 @@ pub struct ApiState {
     /// Optional quorum client for Raft-committed mutations.
     /// When present, tenant/vCluster operations go through Raft.
     pub quorum: Option<Arc<lattice_quorum::QuorumClient>>,
+    /// Data directory for persistent Raft storage (needed for backup/restore).
+    pub data_dir: Option<std::path::PathBuf>,
     /// Event bus for streaming RPCs (watch, stream_logs, stream_metrics).
     pub events: Arc<EventBus>,
     /// Optional TSDB client for metrics push/query (e.g., VictoriaMetrics).

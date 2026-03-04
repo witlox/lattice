@@ -206,6 +206,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         })
     }
 
@@ -286,6 +287,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         })
     }
 

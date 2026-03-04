@@ -14,10 +14,13 @@
 //! - **Strong consistency** (Raft-committed): node ownership, sensitive audit
 //! - **Eventually consistent**: job queues, telemetry, quota accounting
 
+pub mod backup;
 pub mod client;
 pub mod commands;
 pub mod global_state;
+pub mod log_store_variant;
 pub mod network;
+pub mod persistent_store;
 pub mod state_machine;
 pub mod store;
 pub mod transport;
@@ -48,10 +51,13 @@ openraft::declare_raft_types!(
 /// Convenience type alias for the Raft instance.
 pub type LatticeRaft = openraft::Raft<TypeConfig>;
 
+pub use backup::{export_backup, restore_backup, verify_backup, BackupMetadata};
 pub use client::QuorumClient;
 pub use commands::{Command as QuorumCommand, CommandResponse as QuorumResponse};
 pub use global_state::GlobalState;
+pub use log_store_variant::LogStoreVariant;
 pub use network::MemNetworkFactory;
+pub use persistent_store::FileLogStore;
 pub use state_machine::LatticeStateMachine;
 pub use store::MemLogStore;
 pub use transport::GrpcNetworkFactory;
@@ -59,16 +65,17 @@ pub use transport_server::RaftTransportServer;
 
 /// Create a quorum from configuration.
 ///
-/// - If `peers` is empty → single-node in-memory quorum (test/dev mode).
+/// - If `peers` is empty and `data_dir` is None → single-node in-memory quorum (test/dev mode).
 /// - If `peers` is non-empty → multi-node gRPC-based quorum with real Raft transport.
+/// - If `data_dir` is set → uses persistent file-backed log store and snapshots.
 ///
 /// Returns `(QuorumClient, Option<JoinHandle>)`. The handle is the Raft
 /// transport server task; `None` for single-node mode.
 pub async fn create_quorum_from_config(
     config: &lattice_common::config::QuorumConfig,
 ) -> Result<(QuorumClient, Option<tokio::task::JoinHandle<()>>), anyhow::Error> {
-    if config.peers.is_empty() {
-        // Single-node mode — delegate to test quorum
+    if config.peers.is_empty() && config.data_dir.is_none() {
+        // Single-node in-memory mode — delegate to test quorum
         let client = create_test_quorum().await?;
         return Ok((client, None));
     }
@@ -103,18 +110,34 @@ pub async fn create_quorum_from_config(
     }
 
     let state = Arc::new(RwLock::new(GlobalState::new()));
-    let raft_config = Arc::new(
-        openraft::Config {
-            heartbeat_interval: config.heartbeat_interval_ms,
-            election_timeout_min: config.election_timeout_ms,
-            election_timeout_max: config.election_timeout_ms * 2,
-            ..Default::default()
-        }
-        .validate()?,
-    );
 
-    let log_store = MemLogStore::new();
-    let sm = LatticeStateMachine::new(Arc::clone(&state));
+    // Build log store and state machine based on data_dir
+    let (log_store, sm) = if let Some(ref data_dir) = config.data_dir {
+        let snapshot_dir = data_dir.join("raft").join("snapshots");
+        let file_store = FileLogStore::new(data_dir)?;
+        let sm = LatticeStateMachine::with_snapshot_dir(Arc::clone(&state), snapshot_dir)?;
+        (LogStoreVariant::File(file_store), sm)
+    } else {
+        (
+            LogStoreVariant::Memory(MemLogStore::new()),
+            LatticeStateMachine::new(Arc::clone(&state)),
+        )
+    };
+
+    let mut raft_config_builder = openraft::Config {
+        heartbeat_interval: config.heartbeat_interval_ms,
+        election_timeout_min: config.election_timeout_ms,
+        election_timeout_max: config.election_timeout_ms * 2,
+        ..Default::default()
+    };
+
+    // Enable automatic snapshotting when persistent storage is configured
+    if config.data_dir.is_some() {
+        raft_config_builder.snapshot_policy =
+            openraft::SnapshotPolicy::LogsSinceLast(config.snapshot_threshold);
+    }
+
+    let raft_config = Arc::new(raft_config_builder.validate()?);
 
     let raft =
         openraft::Raft::new(node_id, raft_config, network_factory.clone(), log_store, sm).await?;

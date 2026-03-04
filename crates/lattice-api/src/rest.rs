@@ -63,6 +63,9 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
         .route("/api/v1/vclusters/:id/queue", get(vcluster_queue))
         .route("/api/v1/accounting/usage", get(accounting_usage))
         .route("/api/v1/raft/status", get(raft_status))
+        .route("/api/v1/admin/backup", post(create_backup))
+        .route("/api/v1/admin/backup/verify", post(verify_backup))
+        .route("/api/v1/admin/backup/restore", post(restore_backup))
         .route("/api/v1/nodes", get(list_nodes))
         .route("/api/v1/nodes/:id", get(get_node))
         .route("/api/v1/nodes/:id/drain", post(drain_node))
@@ -1342,6 +1345,140 @@ async fn raft_status(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     }
 }
 
+// ─── Backup endpoints ───────────────────────────────────────
+
+#[derive(Deserialize)]
+struct BackupRequest {
+    backup_path: String,
+}
+
+#[derive(Serialize)]
+struct BackupResponse {
+    success: bool,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct BackupVerifyResponse {
+    valid: bool,
+    message: String,
+    node_count: Option<usize>,
+    allocation_count: Option<usize>,
+    tenant_count: Option<usize>,
+}
+
+async fn create_backup(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<BackupRequest>,
+) -> impl IntoResponse {
+    let quorum = match state.quorum.as_ref() {
+        Some(q) => q,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(BackupResponse {
+                    success: false,
+                    message: "quorum not configured".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let path = std::path::Path::new(&req.backup_path);
+    match lattice_quorum::export_backup(quorum.state(), path).await {
+        Ok(meta) => (
+            StatusCode::OK,
+            Json(BackupResponse {
+                success: true,
+                message: format!(
+                    "Backup created: {} nodes, {} allocations",
+                    meta.node_count, meta.allocation_count
+                ),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BackupResponse {
+                success: false,
+                message: format!("Backup failed: {e}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn verify_backup(Json(req): Json<BackupRequest>) -> impl IntoResponse {
+    let path = std::path::Path::new(&req.backup_path);
+    match lattice_quorum::verify_backup(path) {
+        Ok(meta) => (
+            StatusCode::OK,
+            Json(BackupVerifyResponse {
+                valid: true,
+                message: "Backup is valid".to_string(),
+                node_count: Some(meta.node_count),
+                allocation_count: Some(meta.allocation_count),
+                tenant_count: Some(meta.tenant_count),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::OK,
+            Json(BackupVerifyResponse {
+                valid: false,
+                message: format!("Verification failed: {e}"),
+                node_count: None,
+                allocation_count: None,
+                tenant_count: None,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn restore_backup(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<BackupRequest>,
+) -> impl IntoResponse {
+    let data_dir = match state.data_dir.as_ref() {
+        Some(d) => d,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(BackupResponse {
+                    success: false,
+                    message: "data_dir not configured".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let backup_path = std::path::Path::new(&req.backup_path);
+    match lattice_quorum::restore_backup(backup_path, data_dir) {
+        Ok(meta) => (
+            StatusCode::OK,
+            Json(BackupResponse {
+                success: true,
+                message: format!(
+                    "Restored {} nodes, {} allocations. Restart required.",
+                    meta.node_count, meta.allocation_count
+                ),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BackupResponse {
+                success: false,
+                message: format!("Restore failed: {e}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn list_nodes(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     let filter = lattice_common::traits::NodeFilter::default();
     match state.nodes.list_nodes(&filter).await {
@@ -1683,6 +1820,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         })
     }
 
@@ -1703,6 +1841,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         })
     }
 
@@ -1979,6 +2118,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         });
         let app = router(state);
         let resp = app

@@ -116,6 +116,10 @@ pub struct QuorumConfig {
     /// Address for the Raft transport to listen on
     #[serde(default = "default_raft_listen_address")]
     pub raft_listen_address: String,
+    /// Directory for persistent Raft storage (WAL, snapshots).
+    /// When None, uses in-memory storage (test/dev mode).
+    #[serde(default)]
+    pub data_dir: Option<PathBuf>,
 }
 
 fn default_raft_listen_address() -> String {
@@ -131,6 +135,7 @@ impl Default for QuorumConfig {
             heartbeat_interval_ms: 100,
             snapshot_threshold: 10000,
             raft_listen_address: default_raft_listen_address(),
+            data_dir: None,
         }
     }
 }

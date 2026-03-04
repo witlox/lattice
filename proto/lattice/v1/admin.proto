@@ -26,6 +26,12 @@ service AdminService {
 
   // Verify backup integrity
   rpc BackupVerify(BackupVerifyRequest) returns (BackupVerifyResponse);
+
+  // Create a backup of the current Raft state
+  rpc CreateBackup(CreateBackupRequest) returns (CreateBackupResponse);
+
+  // Restore from a backup (requires restart)
+  rpc RestoreBackup(RestoreBackupRequest) returns (RestoreBackupResponse);
 }
 
 // ─── Tenant Management ─────────────────────────────────────
@@ -129,4 +135,31 @@ message BackupVerifyResponse {
   google.protobuf.Timestamp backup_timestamp = 3;
   uint64 snapshot_term = 4;
   uint64 snapshot_index = 5;
+}
+
+// ─── Backup Create ──────────────────────────────────────────
+
+message CreateBackupRequest {
+  string backup_path = 1;      // File path to write the backup to
+}
+
+message CreateBackupResponse {
+  bool success = 1;
+  string message = 2;
+  google.protobuf.Timestamp backup_timestamp = 3;
+  uint64 node_count = 4;
+  uint64 allocation_count = 5;
+  uint64 tenant_count = 6;
+  uint64 audit_entry_count = 7;
+}
+
+// ─── Backup Restore ─────────────────────────────────────────
+
+message RestoreBackupRequest {
+  string backup_path = 1;      // File path of backup to restore from
+}
+
+message RestoreBackupResponse {
+  bool success = 1;
+  string message = 2;
 }

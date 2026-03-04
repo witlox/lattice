@@ -1169,6 +1169,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         })
     }
 
@@ -1187,6 +1188,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         })
     }
 
@@ -1830,6 +1832,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: Some(pty.clone()),
+            data_dir: None,
         });
         assert!(state.pty.is_some());
 
@@ -1867,6 +1870,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: Some(pty),
+            data_dir: None,
         });
         let svc = LatticeAllocationService::new(state.clone());
 

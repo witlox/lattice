@@ -161,6 +161,7 @@ async fn main() -> Result<()> {
         rate_limiter: None,
         sovra,
         pty: None,
+        data_dir: config.quorum.data_dir.clone(),
     });
 
     let server_config = ServerConfig {

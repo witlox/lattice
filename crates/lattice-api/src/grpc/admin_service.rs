@@ -300,13 +300,104 @@ impl AdminService for LatticeAdminService {
             return Err(Status::invalid_argument("backup_path is required"));
         }
 
-        Ok(Response::new(pb::BackupVerifyResponse {
-            valid: false,
-            message: "backup verification not yet implemented".to_string(),
-            backup_timestamp: None,
-            snapshot_term: 0,
-            snapshot_index: 0,
-        }))
+        let path = std::path::Path::new(&req.backup_path);
+        match lattice_quorum::verify_backup(path) {
+            Ok(meta) => Ok(Response::new(pb::BackupVerifyResponse {
+                valid: true,
+                message: format!(
+                    "Backup valid: {} nodes, {} allocations, {} tenants",
+                    meta.node_count, meta.allocation_count, meta.tenant_count
+                ),
+                backup_timestamp: Some(prost_types::Timestamp {
+                    seconds: meta.timestamp.timestamp(),
+                    nanos: meta.timestamp.timestamp_subsec_nanos() as i32,
+                }),
+                snapshot_term: meta.snapshot_term,
+                snapshot_index: meta.snapshot_index,
+            })),
+            Err(e) => Ok(Response::new(pb::BackupVerifyResponse {
+                valid: false,
+                message: format!("Backup verification failed: {e}"),
+                backup_timestamp: None,
+                snapshot_term: 0,
+                snapshot_index: 0,
+            })),
+        }
+    }
+
+    async fn create_backup(
+        &self,
+        request: Request<pb::CreateBackupRequest>,
+    ) -> Result<Response<pb::CreateBackupResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.backup_path.is_empty() {
+            return Err(Status::invalid_argument("backup_path is required"));
+        }
+
+        let quorum = self
+            .quorum()
+            .ok_or_else(|| Status::unavailable("quorum not configured"))?;
+
+        let path = std::path::Path::new(&req.backup_path);
+        let state = quorum.state();
+
+        match lattice_quorum::export_backup(state, path).await {
+            Ok(meta) => Ok(Response::new(pb::CreateBackupResponse {
+                success: true,
+                message: "Backup created successfully".to_string(),
+                backup_timestamp: Some(prost_types::Timestamp {
+                    seconds: meta.timestamp.timestamp(),
+                    nanos: meta.timestamp.timestamp_subsec_nanos() as i32,
+                }),
+                node_count: meta.node_count as u64,
+                allocation_count: meta.allocation_count as u64,
+                tenant_count: meta.tenant_count as u64,
+                audit_entry_count: meta.audit_entry_count as u64,
+            })),
+            Err(e) => Ok(Response::new(pb::CreateBackupResponse {
+                success: false,
+                message: format!("Backup failed: {e}"),
+                backup_timestamp: None,
+                node_count: 0,
+                allocation_count: 0,
+                tenant_count: 0,
+                audit_entry_count: 0,
+            })),
+        }
+    }
+
+    async fn restore_backup(
+        &self,
+        request: Request<pb::RestoreBackupRequest>,
+    ) -> Result<Response<pb::RestoreBackupResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.backup_path.is_empty() {
+            return Err(Status::invalid_argument("backup_path is required"));
+        }
+
+        let data_dir = self
+            .state
+            .data_dir
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("data_dir not configured, cannot restore"))?;
+
+        let backup_path = std::path::Path::new(&req.backup_path);
+
+        match lattice_quorum::restore_backup(backup_path, data_dir) {
+            Ok(meta) => Ok(Response::new(pb::RestoreBackupResponse {
+                success: true,
+                message: format!(
+                    "Backup restored successfully ({} nodes, {} allocations). Restart required.",
+                    meta.node_count, meta.allocation_count
+                ),
+            })),
+            Err(e) => Ok(Response::new(pb::RestoreBackupResponse {
+                success: false,
+                message: format!("Restore failed: {e}"),
+            })),
+        }
     }
 }
 
@@ -332,6 +423,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         })
     }
 
@@ -352,6 +444,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            data_dir: None,
         })
     }
 

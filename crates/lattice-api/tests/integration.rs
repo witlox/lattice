@@ -120,6 +120,7 @@ fn test_state() -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        data_dir: None,
     })
 }
 
@@ -942,6 +943,7 @@ fn rest_test_state() -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        data_dir: None,
     })
 }
 
@@ -1399,6 +1401,7 @@ async fn rest_audit_returns_entries() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        data_dir: None,
     });
 
     let app = rest::router(state);
@@ -1512,6 +1515,7 @@ fn streaming_test_state() -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        data_dir: None,
     })
 }
 
@@ -1530,6 +1534,7 @@ fn streaming_test_state_with_tsdb(tsdb: Arc<MockTsdb>) -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        data_dir: None,
     })
 }
 
@@ -1900,6 +1905,7 @@ async fn node_disable_sets_down_state() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        data_dir: None,
     });
     let node_svc = LatticeNodeService::new(state.clone());
 
@@ -1952,10 +1958,7 @@ async fn admin_backup_verify_empty_path_returns_error() {
         .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.err().unwrap().code(),
-        tonic::Code::InvalidArgument
-    );
+    assert_eq!(result.err().unwrap().code(), tonic::Code::InvalidArgument);
 }
 
 // ─── Test 40: LaunchTasks RPC returns task ID ────────────────
@@ -1977,7 +1980,7 @@ async fn launch_tasks_returns_task_id() {
             allocation_id: alloc_id.clone(),
             num_tasks: 4,
             tasks_per_node: 1,
-            entrypoint: "python worker.py".to_string()
+            entrypoint: "python worker.py".to_string(),
         }))
         .await
         .unwrap();
@@ -2004,15 +2007,12 @@ async fn launch_tasks_invalid_allocation_id_returns_error() {
             allocation_id: "not-a-uuid".to_string(),
             num_tasks: 1,
             tasks_per_node: 1,
-            entrypoint: "echo hello".to_string()
+            entrypoint: "echo hello".to_string(),
         }))
         .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.err().unwrap().code(),
-        tonic::Code::InvalidArgument
-    );
+    assert_eq!(result.err().unwrap().code(), tonic::Code::InvalidArgument);
 }
 
 // ─── Test 42: CompareMetrics with TSDB data ──────────────────
@@ -2181,6 +2181,7 @@ async fn rest_undrain_node() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        data_dir: None,
     });
     let node_id = &nodes[0].id;
 
@@ -2237,14 +2238,15 @@ async fn admin_drain_and_node_list_filters_correctly() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        data_dir: None,
     });
     let node_svc = LatticeNodeService::new(state.clone());
 
     // Drain 2 of 4 nodes
-    for i in 0..2 {
+    for node in nodes.iter().take(2) {
         node_svc
             .drain_node(Request::new(pb::DrainNodeRequest {
-                node_id: nodes[i].id.clone(),
+                node_id: node.id.clone(),
                 reason: "test".to_string(),
             }))
             .await
@@ -2328,5 +2330,8 @@ async fn rest_accounting_usage_without_service_returns_ok_with_null_budget() {
         .unwrap();
     let usage: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(usage["tenant"], "physics");
-    assert!(usage["remaining_budget"].is_null(), "budget should be null without accounting service");
+    assert!(
+        usage["remaining_budget"].is_null(),
+        "budget should be null without accounting service"
+    );
 }

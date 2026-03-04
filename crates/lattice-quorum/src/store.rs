@@ -54,7 +54,7 @@ impl MemLogStore {
 
 // ── RaftLogReader ──────────────────────────────────────────
 
-/// A cloneable reader into the log store.
+/// A cloneable reader into the in-memory log store.
 #[derive(Clone)]
 pub struct MemLogReader {
     inner: Arc<RwLock<MemLogStoreInner>>,
