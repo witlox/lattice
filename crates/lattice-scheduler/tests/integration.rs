@@ -865,3 +865,795 @@ fn autoscaler_and_borrowing_provide_complementary_scaling() {
     // Both mechanisms are complementary: borrowing is immediate,
     // autoscaling is for sustained demand.
 }
+
+// ===========================================================================
+// 9. Knapsack + conformance + topology
+// ===========================================================================
+
+/// Create nodes with mixed conformance fingerprints; verify the knapsack
+/// solver picks from the largest conformant group when conformance weight
+/// is non-zero.
+#[test]
+fn knapsack_conformant_nodes_preferred() {
+    use lattice_scheduler::cost::CostContext;
+    use lattice_scheduler::KnapsackSolver;
+
+    let solver = KnapsackSolver::new(CostWeights {
+        conformance: 1.0,
+        priority: 0.1,
+        ..CostWeights::default()
+    });
+
+    // 3 nodes with fingerprint "fp-a", 2 nodes with "fp-b"
+    let n1 = NodeBuilder::new().id("n1").group(0).conformance("fp-a").build();
+    let n2 = NodeBuilder::new().id("n2").group(0).conformance("fp-a").build();
+    let n3 = NodeBuilder::new().id("n3").group(0).conformance("fp-a").build();
+    let n4 = NodeBuilder::new().id("n4").group(0).conformance("fp-b").build();
+    let n5 = NodeBuilder::new().id("n5").group(0).conformance("fp-b").build();
+    let nodes = vec![n1, n2, n3, n4, n5];
+
+    let alloc = AllocationBuilder::new().tenant("t1").nodes(2).build();
+    let topology = create_test_topology(1, 5);
+
+    let result = solver.solve(
+        std::slice::from_ref(&alloc),
+        &nodes,
+        &topology,
+        &CostContext::default(),
+    );
+
+    assert_eq!(result.placed().len(), 1);
+
+    // The selected nodes should come from the "fp-a" group (larger group)
+    if let lattice_scheduler::PlacementDecision::Place {
+        nodes: assigned, ..
+    } = &result.decisions[0]
+    {
+        assert_eq!(assigned.len(), 2);
+        // All assigned nodes should be from the fp-a group (n1, n2, n3)
+        let fp_a_ids: Vec<&str> = vec!["n1", "n2", "n3"];
+        for node_id in assigned {
+            assert!(
+                fp_a_ids.contains(&node_id.as_str()),
+                "node {node_id} should be from the conformant group fp-a"
+            );
+        }
+    } else {
+        panic!("expected Place decision");
+    }
+}
+
+/// Create nodes in different dragonfly groups; verify the knapsack solver
+/// with tight topology packing prefers same-group placement.
+#[test]
+fn knapsack_topology_aware_packing() {
+    use lattice_scheduler::cost::CostContext;
+    use lattice_scheduler::topology::group_span;
+    use lattice_scheduler::KnapsackSolver;
+
+    let solver = KnapsackSolver::new(CostWeights::default());
+
+    // Group 0: 4 nodes, Group 1: 4 nodes
+    let mut nodes_g0: Vec<Node> = (0..4)
+        .map(|i| {
+            NodeBuilder::new()
+                .id(&format!("x1000c0s0b0n{i}"))
+                .group(0)
+                .build()
+        })
+        .collect();
+    let nodes_g1: Vec<Node> = (0..4)
+        .map(|i| {
+            NodeBuilder::new()
+                .id(&format!("x1000c0s1b0n{i}"))
+                .group(1)
+                .build()
+        })
+        .collect();
+    nodes_g0.extend(nodes_g1);
+
+    let alloc = AllocationBuilder::new().tenant("t1").nodes(3).build();
+    let topology = create_test_topology(2, 4);
+
+    let result = solver.solve(
+        std::slice::from_ref(&alloc),
+        &nodes_g0,
+        &topology,
+        &CostContext::default(),
+    );
+
+    assert_eq!(result.placed().len(), 1);
+
+    if let lattice_scheduler::PlacementDecision::Place {
+        nodes: assigned, ..
+    } = &result.decisions[0]
+    {
+        assert_eq!(assigned.len(), 3);
+        // All nodes should be within a single group (span = 1)
+        let span = group_span(assigned, &topology);
+        assert_eq!(
+            span, 1,
+            "tight packing should place all 3 nodes in one group"
+        );
+    } else {
+        panic!("expected Place decision");
+    }
+}
+
+// ===========================================================================
+// 10. Walltime + scheduling cycle
+// ===========================================================================
+
+/// Register allocations, advance time past walltime, verify expiry goes
+/// through Terminate then Kill phases.
+#[test]
+fn walltime_expired_triggers_termination() {
+    use chrono::Duration;
+    use lattice_scheduler::walltime::{ExpiryPhase, WalltimeEnforcer};
+
+    let mut enforcer = WalltimeEnforcer::new();
+    let start = Utc::now();
+
+    // Create two allocations with different walltimes via the scheduling cycle
+    let a1 = AllocationBuilder::new().tenant("t1").nodes(1).build();
+    let a2 = AllocationBuilder::new().tenant("t1").nodes(1).build();
+
+    enforcer.register(a1.id, Duration::hours(1), start);
+    enforcer.register(a2.id, Duration::hours(2), start);
+
+    // At 1 hour: a1 expired, a2 not yet
+    let expired = enforcer.check_expired(start + Duration::hours(1));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].allocation_id, a1.id);
+    assert_eq!(expired[0].phase, ExpiryPhase::Terminate);
+
+    // Still during a1's grace period (default 30s), verify Terminate persists
+    let expired = enforcer.check_expired(start + Duration::hours(1) + Duration::seconds(15));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].phase, ExpiryPhase::Terminate);
+
+    // Past a1's grace period: Kill
+    let expired = enforcer.check_expired(start + Duration::hours(1) + Duration::seconds(31));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].allocation_id, a1.id);
+    assert_eq!(expired[0].phase, ExpiryPhase::Kill);
+
+    // At 2 hours: a2 also enters Terminate, a1 stays in Kill
+    let expired = enforcer.check_expired(start + Duration::hours(2));
+    assert_eq!(expired.len(), 2);
+    let a1_exp = expired.iter().find(|e| e.allocation_id == a1.id).unwrap();
+    let a2_exp = expired.iter().find(|e| e.allocation_id == a2.id).unwrap();
+    assert_eq!(a1_exp.phase, ExpiryPhase::Kill);
+    assert_eq!(a2_exp.phase, ExpiryPhase::Terminate);
+}
+
+/// Set a custom grace period and verify the Kill phase respects it.
+#[test]
+fn walltime_grace_period_custom() {
+    use chrono::Duration;
+    use lattice_scheduler::walltime::{ExpiryPhase, WalltimeEnforcer};
+
+    // 120-second grace period (much longer than default 30s)
+    let mut enforcer = WalltimeEnforcer::with_grace_period(Duration::seconds(120));
+    let start = Utc::now();
+
+    let alloc = AllocationBuilder::new().tenant("t1").nodes(1).build();
+    enforcer.register(alloc.id, Duration::minutes(10), start);
+
+    let term_time = start + Duration::minutes(10);
+
+    // Trigger Terminate
+    let expired = enforcer.check_expired(term_time);
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].phase, ExpiryPhase::Terminate);
+
+    // 60s later: still Terminate (grace is 120s)
+    let expired = enforcer.check_expired(term_time + Duration::seconds(60));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].phase, ExpiryPhase::Terminate);
+
+    // 119s later: still Terminate
+    let expired = enforcer.check_expired(term_time + Duration::seconds(119));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].phase, ExpiryPhase::Terminate);
+
+    // 120s later: Kill
+    let expired = enforcer.check_expired(term_time + Duration::seconds(120));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].phase, ExpiryPhase::Kill);
+}
+
+// ===========================================================================
+// 11. Loop runner + cycle integration
+// ===========================================================================
+
+/// Create a SchedulerLoop with mock reader/sink, run one cycle, verify
+/// placements are communicated via the command sink.
+#[tokio::test]
+async fn scheduler_loop_runs_cycle_and_assigns() {
+    use lattice_scheduler::loop_runner::{SchedulerCommandSink, SchedulerStateReader};
+    use lattice_scheduler::{SchedulerLoop, SchedulerLoopConfig};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    struct MockReader {
+        pending: Vec<Allocation>,
+        nodes: Vec<Node>,
+    }
+
+    #[async_trait::async_trait]
+    impl SchedulerStateReader for MockReader {
+        async fn pending_allocations(
+            &self,
+        ) -> Result<Vec<Allocation>, lattice_common::error::LatticeError> {
+            Ok(self.pending.clone())
+        }
+        async fn running_allocations(
+            &self,
+        ) -> Result<Vec<Allocation>, lattice_common::error::LatticeError> {
+            Ok(vec![])
+        }
+        async fn available_nodes(
+            &self,
+        ) -> Result<Vec<Node>, lattice_common::error::LatticeError> {
+            Ok(self.nodes.clone())
+        }
+        async fn tenants(
+            &self,
+        ) -> Result<Vec<Tenant>, lattice_common::error::LatticeError> {
+            Ok(vec![TenantBuilder::new("t1").build()])
+        }
+        async fn topology(&self) -> TopologyModel {
+            create_test_topology(1, 8)
+        }
+    }
+
+    struct TrackingSink {
+        assignments: Mutex<Vec<(uuid::Uuid, Vec<String>)>>,
+        running_ids: Mutex<Vec<uuid::Uuid>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SchedulerCommandSink for TrackingSink {
+        async fn assign_nodes(
+            &self,
+            alloc_id: uuid::Uuid,
+            nodes: Vec<String>,
+        ) -> Result<(), lattice_common::error::LatticeError> {
+            self.assignments.lock().await.push((alloc_id, nodes));
+            Ok(())
+        }
+        async fn set_running(
+            &self,
+            alloc_id: uuid::Uuid,
+        ) -> Result<(), lattice_common::error::LatticeError> {
+            self.running_ids.lock().await.push(alloc_id);
+            Ok(())
+        }
+    }
+
+    let a1 = AllocationBuilder::new().tenant("t1").nodes(2).build();
+    let a2 = AllocationBuilder::new().tenant("t1").nodes(3).build();
+    let a1_id = a1.id;
+    let a2_id = a2.id;
+
+    let reader = Arc::new(MockReader {
+        pending: vec![a1, a2],
+        nodes: create_node_batch(8, 0),
+    });
+    let sink = Arc::new(TrackingSink {
+        assignments: Mutex::new(Vec::new()),
+        running_ids: Mutex::new(Vec::new()),
+    });
+
+    let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+    let placed = sched.run_once().await.unwrap();
+    assert_eq!(placed, 2, "both allocations should be placed");
+
+    let assignments = sink.assignments.lock().await;
+    assert_eq!(assignments.len(), 2);
+
+    let assigned_ids: Vec<uuid::Uuid> = assignments.iter().map(|(id, _)| *id).collect();
+    assert!(assigned_ids.contains(&a1_id));
+    assert!(assigned_ids.contains(&a2_id));
+
+    // Verify correct node counts
+    let a1_nodes = assignments.iter().find(|(id, _)| *id == a1_id).unwrap();
+    let a2_nodes = assignments.iter().find(|(id, _)| *id == a2_id).unwrap();
+    assert_eq!(a1_nodes.1.len(), 2);
+    assert_eq!(a2_nodes.1.len(), 3);
+
+    // Verify set_running was called for both
+    let running = sink.running_ids.lock().await;
+    assert_eq!(running.len(), 2);
+}
+
+/// Empty pending queue produces no placements.
+#[tokio::test]
+async fn scheduler_loop_handles_empty_queue() {
+    use lattice_scheduler::loop_runner::{SchedulerCommandSink, SchedulerStateReader};
+    use lattice_scheduler::{SchedulerLoop, SchedulerLoopConfig};
+    use std::sync::Arc;
+
+    struct EmptyReader;
+
+    #[async_trait::async_trait]
+    impl SchedulerStateReader for EmptyReader {
+        async fn pending_allocations(
+            &self,
+        ) -> Result<Vec<Allocation>, lattice_common::error::LatticeError> {
+            Ok(vec![])
+        }
+        async fn running_allocations(
+            &self,
+        ) -> Result<Vec<Allocation>, lattice_common::error::LatticeError> {
+            Ok(vec![])
+        }
+        async fn available_nodes(
+            &self,
+        ) -> Result<Vec<Node>, lattice_common::error::LatticeError> {
+            Ok(create_node_batch(4, 0))
+        }
+        async fn tenants(
+            &self,
+        ) -> Result<Vec<Tenant>, lattice_common::error::LatticeError> {
+            Ok(vec![])
+        }
+        async fn topology(&self) -> TopologyModel {
+            create_test_topology(1, 4)
+        }
+    }
+
+    struct CountingSink {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SchedulerCommandSink for CountingSink {
+        async fn assign_nodes(
+            &self,
+            _: uuid::Uuid,
+            _: Vec<String>,
+        ) -> Result<(), lattice_common::error::LatticeError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        async fn set_running(
+            &self,
+            _: uuid::Uuid,
+        ) -> Result<(), lattice_common::error::LatticeError> {
+            Ok(())
+        }
+    }
+
+    let reader = Arc::new(EmptyReader);
+    let sink = Arc::new(CountingSink {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+
+    let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+    let placed = sched.run_once().await.unwrap();
+    assert_eq!(placed, 0);
+    assert_eq!(
+        sink.calls.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "no assign_nodes calls should be made with empty queue"
+    );
+}
+
+// ===========================================================================
+// 12. DAG controller + dependency resolution
+// ===========================================================================
+
+/// Complete a parent allocation, verify the DAG controller unblocks children.
+#[tokio::test]
+async fn dag_controller_unblocks_ready_successors() {
+    use lattice_scheduler::dag_controller::{
+        DagCommandSink, DagController, DagControllerConfig, DagStateReader,
+    };
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    struct MockReader {
+        allocs: Mutex<Vec<Allocation>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DagStateReader for MockReader {
+        async fn dag_allocations(
+            &self,
+        ) -> Result<Vec<Allocation>, lattice_common::error::LatticeError> {
+            Ok(self.allocs.lock().await.clone())
+        }
+    }
+
+    struct MockSink {
+        unblocked: Mutex<Vec<uuid::Uuid>>,
+        cancelled: Mutex<Vec<(uuid::Uuid, String)>>,
+    }
+
+    impl MockSink {
+        fn new() -> Self {
+            Self {
+                unblocked: Mutex::new(Vec::new()),
+                cancelled: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DagCommandSink for MockSink {
+        async fn unblock_allocation(
+            &self,
+            alloc_id: uuid::Uuid,
+        ) -> Result<(), lattice_common::error::LatticeError> {
+            self.unblocked.lock().await.push(alloc_id);
+            Ok(())
+        }
+        async fn cancel_allocation(
+            &self,
+            alloc_id: uuid::Uuid,
+            reason: String,
+        ) -> Result<(), lattice_common::error::LatticeError> {
+            self.cancelled.lock().await.push((alloc_id, reason));
+            Ok(())
+        }
+    }
+
+    // Build: parent (completed) -> child_a, child_b (both pending, afterok)
+    let parent = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(1)
+        .dag_id("dag-ctrl-1")
+        .state(AllocationState::Completed)
+        .build();
+    let child_a = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(1)
+        .dag_id("dag-ctrl-1")
+        .depends_on(&parent.id.to_string(), DependencyCondition::Success)
+        .build();
+    let child_b = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(1)
+        .dag_id("dag-ctrl-1")
+        .depends_on(&parent.id.to_string(), DependencyCondition::Success)
+        .build();
+    let child_a_id = child_a.id;
+    let child_b_id = child_b.id;
+
+    let reader = Arc::new(MockReader {
+        allocs: Mutex::new(vec![parent, child_a, child_b]),
+    });
+    let sink = Arc::new(MockSink::new());
+    let mut ctrl = DagController::new(
+        reader,
+        sink.clone(),
+        DagControllerConfig::default(),
+    );
+
+    let count = ctrl.run_once().await.unwrap();
+    assert_eq!(count, 2, "both children should be unblocked");
+
+    let unblocked = sink.unblocked.lock().await;
+    assert!(unblocked.contains(&child_a_id));
+    assert!(unblocked.contains(&child_b_id));
+    assert!(sink.cancelled.lock().await.is_empty());
+}
+
+/// Fail a parent with afterok dependency, verify children get cancelled
+/// as unsatisfiable.
+#[tokio::test]
+async fn dag_controller_cancels_unsatisfiable() {
+    use lattice_scheduler::dag_controller::{
+        DagCommandSink, DagController, DagControllerConfig, DagStateReader,
+    };
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    struct MockReader {
+        allocs: Mutex<Vec<Allocation>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DagStateReader for MockReader {
+        async fn dag_allocations(
+            &self,
+        ) -> Result<Vec<Allocation>, lattice_common::error::LatticeError> {
+            Ok(self.allocs.lock().await.clone())
+        }
+    }
+
+    struct MockSink {
+        unblocked: Mutex<Vec<uuid::Uuid>>,
+        cancelled: Mutex<Vec<(uuid::Uuid, String)>>,
+    }
+
+    impl MockSink {
+        fn new() -> Self {
+            Self {
+                unblocked: Mutex::new(Vec::new()),
+                cancelled: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DagCommandSink for MockSink {
+        async fn unblock_allocation(
+            &self,
+            alloc_id: uuid::Uuid,
+        ) -> Result<(), lattice_common::error::LatticeError> {
+            self.unblocked.lock().await.push(alloc_id);
+            Ok(())
+        }
+        async fn cancel_allocation(
+            &self,
+            alloc_id: uuid::Uuid,
+            reason: String,
+        ) -> Result<(), lattice_common::error::LatticeError> {
+            self.cancelled.lock().await.push((alloc_id, reason));
+            Ok(())
+        }
+    }
+
+    // Parent failed, child depends on Success -> unsatisfiable
+    let parent = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(1)
+        .dag_id("dag-ctrl-2")
+        .state(AllocationState::Failed)
+        .build();
+    let child = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(1)
+        .dag_id("dag-ctrl-2")
+        .depends_on(&parent.id.to_string(), DependencyCondition::Success)
+        .build();
+    let child_id = child.id;
+
+    let reader = Arc::new(MockReader {
+        allocs: Mutex::new(vec![parent, child]),
+    });
+    let sink = Arc::new(MockSink::new());
+    let mut ctrl = DagController::new(
+        reader,
+        sink.clone(),
+        DagControllerConfig::default(),
+    );
+
+    let count = ctrl.run_once().await.unwrap();
+    assert_eq!(count, 0, "no allocations should be unblocked");
+
+    let cancelled = sink.cancelled.lock().await;
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0].0, child_id);
+    assert!(cancelled[0].1.contains("cannot be satisfied"));
+}
+
+// ===========================================================================
+// 13. Data stager integration
+// ===========================================================================
+
+/// Create allocations with different priorities and data mounts, verify
+/// the staging plan orders them by priority.
+#[test]
+fn data_stager_plans_by_priority() {
+    use lattice_common::types::{DataAccess, DataMount};
+    use lattice_scheduler::DataStager;
+
+    let stager = DataStager::new();
+
+    let mut low = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(1)
+        .preemption_class(1)
+        .state(AllocationState::Pending)
+        .build();
+    low.data.mounts.push(DataMount {
+        source: "s3://bucket/low-data".into(),
+        target: "/data/low".into(),
+        access: DataAccess::ReadOnly,
+        tier_hint: None,
+    });
+
+    let mut high = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(2)
+        .preemption_class(9)
+        .state(AllocationState::Pending)
+        .build();
+    high.data.mounts.push(DataMount {
+        source: "s3://bucket/high-data".into(),
+        target: "/data/high".into(),
+        access: DataAccess::ReadOnly,
+        tier_hint: None,
+    });
+
+    let mut mid = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(1)
+        .preemption_class(5)
+        .state(AllocationState::Pending)
+        .build();
+    mid.data.mounts.push(DataMount {
+        source: "nfs://server/mid-data".into(),
+        target: "/data/mid".into(),
+        access: DataAccess::ReadWrite,
+        tier_hint: None,
+    });
+
+    // Pass in non-priority order to verify sorting
+    let plan = stager.plan_staging(&[low, mid, high]);
+
+    assert_eq!(plan.requests.len(), 3);
+    assert_eq!(plan.requests[0].priority, 9, "highest priority first");
+    assert_eq!(plan.requests[1].priority, 5, "mid priority second");
+    assert_eq!(plan.requests[2].priority, 1, "lowest priority last");
+}
+
+/// Allocations without data mounts produce an empty staging plan.
+#[test]
+fn data_stager_skips_no_data_allocations() {
+    use lattice_scheduler::DataStager;
+
+    let stager = DataStager::new();
+
+    let a1 = AllocationBuilder::new()
+        .tenant("t1")
+        .nodes(2)
+        .state(AllocationState::Pending)
+        .build();
+    let a2 = AllocationBuilder::new()
+        .tenant("t2")
+        .nodes(4)
+        .state(AllocationState::Pending)
+        .build();
+
+    let plan = stager.plan_staging(&[a1, a2]);
+
+    assert!(
+        plan.requests.is_empty(),
+        "allocations without mounts should produce empty plan"
+    );
+    assert_eq!(plan.total_bytes, 0);
+    assert_eq!(plan.estimated_time_secs, 0);
+}
+
+// ===========================================================================
+// 14. Conformance + memory topology
+// ===========================================================================
+
+/// Create nodes with and without unified memory, filter with
+/// require_unified_memory=true; only unified nodes pass.
+#[test]
+fn filter_by_constraints_unified_memory() {
+    use lattice_scheduler::filter_by_constraints;
+
+    let unified_topo = MemoryTopology {
+        domains: vec![MemoryDomain {
+            id: 0,
+            domain_type: MemoryDomainType::Unified,
+            capacity_bytes: 512 * 1024 * 1024 * 1024,
+            numa_node: Some(0),
+            attached_cpus: vec![0, 1, 2, 3],
+            attached_gpus: vec![0],
+        }],
+        interconnects: Vec::new(),
+        total_capacity_bytes: 512 * 1024 * 1024 * 1024,
+    };
+
+    let dram_topo = MemoryTopology {
+        domains: vec![MemoryDomain {
+            id: 0,
+            domain_type: MemoryDomainType::Dram,
+            capacity_bytes: 256 * 1024 * 1024 * 1024,
+            numa_node: Some(0),
+            attached_cpus: vec![0, 1],
+            attached_gpus: vec![],
+        }],
+        interconnects: Vec::new(),
+        total_capacity_bytes: 256 * 1024 * 1024 * 1024,
+    };
+
+    let n_unified = NodeBuilder::new()
+        .id("n-unified")
+        .group(0)
+        .memory_topology(unified_topo)
+        .build();
+    let n_dram = NodeBuilder::new()
+        .id("n-dram")
+        .group(0)
+        .memory_topology(dram_topo)
+        .build();
+    let n_none = NodeBuilder::new().id("n-none").group(0).build();
+
+    let nodes: Vec<&Node> = vec![&n_unified, &n_dram, &n_none];
+    let constraints = ResourceConstraints {
+        require_unified_memory: true,
+        ..Default::default()
+    };
+
+    let filtered = filter_by_constraints(&nodes, &constraints);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].id, "n-unified");
+}
+
+/// Create nodes with CXL-only memory, filter with allow_cxl_memory=false;
+/// CXL-only nodes are rejected.
+#[test]
+fn filter_by_constraints_cxl_rejection() {
+    use lattice_scheduler::filter_by_constraints;
+
+    let cxl_only_topo = MemoryTopology {
+        domains: vec![MemoryDomain {
+            id: 0,
+            domain_type: MemoryDomainType::CxlAttached,
+            capacity_bytes: 1024 * 1024 * 1024 * 1024,
+            numa_node: None,
+            attached_cpus: vec![],
+            attached_gpus: vec![],
+        }],
+        interconnects: Vec::new(),
+        total_capacity_bytes: 1024 * 1024 * 1024 * 1024,
+    };
+
+    let mixed_topo = MemoryTopology {
+        domains: vec![
+            MemoryDomain {
+                id: 0,
+                domain_type: MemoryDomainType::Dram,
+                capacity_bytes: 256 * 1024 * 1024 * 1024,
+                numa_node: Some(0),
+                attached_cpus: vec![0, 1],
+                attached_gpus: vec![0],
+            },
+            MemoryDomain {
+                id: 1,
+                domain_type: MemoryDomainType::CxlAttached,
+                capacity_bytes: 512 * 1024 * 1024 * 1024,
+                numa_node: None,
+                attached_cpus: vec![],
+                attached_gpus: vec![],
+            },
+        ],
+        interconnects: Vec::new(),
+        total_capacity_bytes: 768 * 1024 * 1024 * 1024,
+    };
+
+    let n_cxl = NodeBuilder::new()
+        .id("n-cxl")
+        .group(0)
+        .memory_topology(cxl_only_topo)
+        .build();
+    let n_mixed = NodeBuilder::new()
+        .id("n-mixed")
+        .group(0)
+        .memory_topology(mixed_topo)
+        .build();
+    let n_plain = NodeBuilder::new().id("n-plain").group(0).build();
+
+    let nodes: Vec<&Node> = vec![&n_cxl, &n_mixed, &n_plain];
+    let constraints = ResourceConstraints {
+        allow_cxl_memory: false,
+        ..Default::default()
+    };
+
+    let filtered = filter_by_constraints(&nodes, &constraints);
+
+    // n_cxl should be rejected (CXL-only, no non-CXL capacity)
+    // n_mixed should pass (has DRAM capacity alongside CXL)
+    // n_plain should pass (no memory topology = allowed)
+    assert_eq!(filtered.len(), 2);
+    let ids: Vec<&str> = filtered.iter().map(|n| n.id.as_str()).collect();
+    assert!(ids.contains(&"n-mixed"), "mixed node should pass (has DRAM)");
+    assert!(
+        ids.contains(&"n-plain"),
+        "node without memory topology should pass"
+    );
+    assert!(
+        !ids.contains(&"n-cxl"),
+        "CXL-only node should be rejected when allow_cxl_memory=false"
+    );
+}

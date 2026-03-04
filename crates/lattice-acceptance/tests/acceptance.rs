@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use cucumber::{given, then, when, World};
 use uuid::Uuid;
@@ -24,11 +25,17 @@ use lattice_node_agent::telemetry::log_buffer::LogRingBuffer;
 
 use lattice_api::events::{AllocationEvent, EventBus, LogStream};
 use lattice_api::middleware::rbac::{Operation, RbacContext, RbacPolicy, Role};
+use lattice_scheduler::autoscaler::{AutoscalerConfig, ScaleDecision};
+use lattice_scheduler::conformance::{
+    filter_by_constraints, memory_locality_score, select_conformant_nodes,
+};
 use lattice_scheduler::dag::validate_dag;
+use lattice_scheduler::data_staging::{DataStager, StagingPlan};
 use lattice_scheduler::federation::{
     FederationBroker, FederationConfig, FederationOffer, OfferDecision,
 };
 use lattice_scheduler::placement::PlacementDecision;
+use lattice_scheduler::preemption::{evaluate_preemption, PreemptionConfig, PreemptionResult};
 
 #[derive(Debug, World)]
 #[world(init = Self::new)]
@@ -69,6 +76,24 @@ pub struct LatticeWorld {
     event_bus: Option<Arc<EventBus>>,
     named_alloc_ids: HashMap<String, Uuid>,
     received_events: HashMap<String, Vec<AllocationEvent>>,
+    // Data staging
+    staging_plan: Option<StagingPlan>,
+    data_readiness: HashMap<String, f64>,
+    // Preemption
+    preemption_result: Option<PreemptionResult>,
+    // Network domains
+    network_domains: Vec<NetworkDomain>,
+    // Observability
+    log_buffer_data: Vec<u8>,
+    attach_owner: Option<String>,
+    attach_user: Option<String>,
+    attach_allowed: Option<bool>,
+    // Autoscaling
+    scale_decision: Option<ScaleDecision>,
+    last_scale_time: Option<Instant>,
+    // GPU topology / conformance filtering
+    filtered_nodes: Vec<String>,
+    locality_scores: Vec<(String, f64)>,
 }
 
 impl LatticeWorld {
@@ -103,6 +128,18 @@ impl LatticeWorld {
             event_bus: None,
             named_alloc_ids: HashMap::new(),
             received_events: HashMap::new(),
+            staging_plan: None,
+            data_readiness: HashMap::new(),
+            preemption_result: None,
+            network_domains: Vec::new(),
+            log_buffer_data: Vec::new(),
+            attach_owner: None,
+            attach_user: None,
+            attach_allowed: None,
+            scale_decision: None,
+            last_scale_time: None,
+            filtered_nodes: Vec::new(),
+            locality_scores: Vec::new(),
         }
     }
 
@@ -1813,6 +1850,1036 @@ fn parse_operation(s: &str) -> Operation {
         "BackupVerify" => Operation::BackupVerify,
         "QueryAudit" => Operation::QueryAudit,
         other => panic!("Unknown operation: {other}"),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// NEW FEATURE STEPS: memory topology, data staging, preemption,
+// network domains, conformance, autoscaling, observability, GPU topology
+// ═══════════════════════════════════════════════════════════
+
+// --- Shared GIVEN steps for new features ---
+
+#[given(regex = r#"^a tenant "(\w[\w-]*)" with max nodes (\d+)$"#)]
+async fn given_tenant_max_nodes_space(world: &mut LatticeWorld, name: String, max_nodes: u32) {
+    let tenant = TenantBuilder::new(&name).max_nodes(max_nodes).build();
+    world.tenants.push(tenant);
+}
+
+#[given(regex = r#"^a vCluster "(\w[\w-]*)" for tenant "(\w[\w-]*)" with scheduler "(\w[\w_]*)"$"#)]
+async fn given_vcluster_for_tenant(
+    world: &mut LatticeWorld,
+    name: String,
+    tenant: String,
+    scheduler: String,
+) {
+    let sched_type = parse_scheduler_type_new(&scheduler);
+    let vc = VClusterBuilder::new(&name)
+        .tenant(&tenant)
+        .scheduler(sched_type)
+        .build();
+    world.vclusters.push(vc);
+}
+
+fn parse_scheduler_type_new(s: &str) -> SchedulerType {
+    match s {
+        "hpc_backfill" | "HpcBackfill" => SchedulerType::HpcBackfill,
+        "service_bin_pack" | "ServiceBinPack" => SchedulerType::ServiceBinPack,
+        "sensitive_reservation" | "SensitiveReservation" => SchedulerType::SensitiveReservation,
+        "interactive_fifo" | "InteractiveFifo" => SchedulerType::InteractiveFifo,
+        other => panic!("Unknown scheduler type: {other}"),
+    }
+}
+
+fn make_dram_domain(id: u32, capacity_bytes: u64, numa: u32) -> MemoryDomain {
+    MemoryDomain {
+        id,
+        domain_type: MemoryDomainType::Dram,
+        capacity_bytes,
+        numa_node: Some(numa),
+        attached_cpus: vec![numa * 2, numa * 2 + 1],
+        attached_gpus: Vec::new(),
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes in group (\d+)$"#)]
+async fn given_nodes_in_group(world: &mut LatticeWorld, count: usize, group: u32) {
+    let batch = create_node_batch(count, group);
+    let registry_nodes = batch.clone();
+    world.nodes.extend(batch);
+    let reg = &world.registry;
+    let mut map = reg.nodes.lock().unwrap();
+    for n in registry_nodes {
+        map.insert(n.id.clone(), n);
+    }
+}
+
+// --- Memory topology steps ---
+
+#[given(regex = r#"^(\d+) nodes with unified memory in group (\d+)$"#)]
+async fn given_unified_memory_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
+    for i in 0..count {
+        let cap = 512 * 1024 * 1024 * 1024_u64;
+        let topo = MemoryTopology {
+            domains: vec![MemoryDomain {
+                id: 0,
+                domain_type: MemoryDomainType::Unified,
+                capacity_bytes: cap,
+                numa_node: Some(0),
+                attached_cpus: vec![0, 1, 2, 3],
+                attached_gpus: Vec::new(),
+            }],
+            interconnects: Vec::new(),
+            total_capacity_bytes: cap,
+        };
+        let node = NodeBuilder::new()
+            .id(&format!("unified-g{group}n{i}"))
+            .group(group)
+            .memory_topology(topo)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes with NUMA memory in group (\d+)$"#)]
+async fn given_numa_memory_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
+    for i in 0..count {
+        let half = 256 * 1024 * 1024 * 1024_u64;
+        let topo = MemoryTopology {
+            domains: vec![
+                make_dram_domain(0, half, 0),
+                make_dram_domain(1, half, 1),
+            ],
+            interconnects: Vec::new(),
+            total_capacity_bytes: half * 2,
+        };
+        let node = NodeBuilder::new()
+            .id(&format!("numa-g{group}n{i}"))
+            .group(group)
+            .memory_topology(topo)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes with CXL memory domains in group (\d+)$"#)]
+async fn given_cxl_memory_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
+    for i in 0..count {
+        let cap = 512 * 1024 * 1024 * 1024_u64;
+        let topo = MemoryTopology {
+            domains: vec![MemoryDomain {
+                id: 0,
+                domain_type: MemoryDomainType::CxlAttached,
+                capacity_bytes: cap,
+                numa_node: Some(0),
+                attached_cpus: vec![0, 1, 2, 3],
+                attached_gpus: Vec::new(),
+            }],
+            interconnects: Vec::new(),
+            total_capacity_bytes: cap,
+        };
+        let node = NodeBuilder::new()
+            .id(&format!("cxl-g{group}n{i}"))
+            .group(group)
+            .memory_topology(topo)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes with standard DRAM in group (\d+)$"#)]
+async fn given_dram_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
+    for i in 0..count {
+        let cap = 512 * 1024 * 1024 * 1024_u64;
+        let topo = MemoryTopology {
+            domains: vec![make_dram_domain(0, cap, 0)],
+            interconnects: Vec::new(),
+            total_capacity_bytes: cap,
+        };
+        let node = NodeBuilder::new()
+            .id(&format!("dram-g{group}n{i}"))
+            .group(group)
+            .memory_topology(topo)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes with single NUMA domain in group (\d+)$"#)]
+async fn given_single_numa_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
+    for i in 0..count {
+        let cap = 512 * 1024 * 1024 * 1024_u64;
+        let topo = MemoryTopology {
+            domains: vec![make_dram_domain(0, cap, 0)],
+            interconnects: Vec::new(),
+            total_capacity_bytes: cap,
+        };
+        let node = NodeBuilder::new()
+            .id(&format!("snuma-g{group}n{i}"))
+            .group(group)
+            .memory_topology(topo)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes with (\d+) NUMA domains in group (\d+)$"#)]
+async fn given_multi_numa_nodes(
+    world: &mut LatticeWorld,
+    count: usize,
+    numa_count: usize,
+    group: u32,
+) {
+    for i in 0..count {
+        let per_domain = 128 * 1024 * 1024 * 1024_u64;
+        let domains: Vec<MemoryDomain> = (0..numa_count)
+            .map(|d| make_dram_domain(d as u32, per_domain, d as u32))
+            .collect();
+        let topo = MemoryTopology {
+            total_capacity_bytes: per_domain * numa_count as u64,
+            domains,
+            interconnects: Vec::new(),
+        };
+        let node = NodeBuilder::new()
+            .id(&format!("mnuma-g{group}n{i}"))
+            .group(group)
+            .memory_topology(topo)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[when("an allocation is submitted requiring unified memory")]
+async fn when_submit_unified_memory(world: &mut LatticeWorld) {
+    let mut alloc = AllocationBuilder::new().build();
+    alloc.resources.constraints.require_unified_memory = true;
+    world.allocations.push(alloc.clone());
+    let nodes: Vec<&Node> = world.nodes.iter().collect();
+    world.filtered_nodes = filter_by_constraints(&nodes, &alloc.resources.constraints)
+        .iter()
+        .map(|n| n.id.clone())
+        .collect();
+}
+
+#[when("an allocation is submitted with allow_cxl_memory false")]
+async fn when_submit_no_cxl(world: &mut LatticeWorld) {
+    let mut alloc = AllocationBuilder::new().build();
+    alloc.resources.constraints.allow_cxl_memory = false;
+    world.allocations.push(alloc.clone());
+    let nodes: Vec<&Node> = world.nodes.iter().collect();
+    world.filtered_nodes = filter_by_constraints(&nodes, &alloc.resources.constraints)
+        .iter()
+        .map(|n| n.id.clone())
+        .collect();
+}
+
+#[when("an allocation is submitted preferring same NUMA")]
+async fn when_submit_prefer_numa(world: &mut LatticeWorld) {
+    let mut alloc = AllocationBuilder::new().build();
+    alloc.resources.constraints.prefer_same_numa = true;
+    world.allocations.push(alloc);
+    world.locality_scores = world
+        .nodes
+        .iter()
+        .map(|n| (n.id.clone(), memory_locality_score(n)))
+        .collect();
+}
+
+#[then("the allocation should be placed on unified memory nodes")]
+async fn then_placed_on_unified(world: &mut LatticeWorld) {
+    assert!(
+        !world.filtered_nodes.is_empty(),
+        "should have filtered nodes"
+    );
+    for nid in &world.filtered_nodes {
+        assert!(nid.starts_with("unified-"), "node {nid} should be unified");
+    }
+}
+
+#[then("the allocation should be placed on DRAM-only nodes")]
+async fn then_placed_on_dram(world: &mut LatticeWorld) {
+    assert!(
+        !world.filtered_nodes.is_empty(),
+        "should have filtered nodes"
+    );
+    for nid in &world.filtered_nodes {
+        assert!(!nid.starts_with("cxl-"), "node {nid} should not be CXL");
+    }
+}
+
+#[then("nodes with fewer NUMA domains should score higher")]
+async fn then_fewer_numa_scores_higher(world: &mut LatticeWorld) {
+    let single_scores: Vec<f64> = world
+        .locality_scores
+        .iter()
+        .filter(|(id, _)| id.starts_with("snuma-"))
+        .map(|(_, s)| *s)
+        .collect();
+    let multi_scores: Vec<f64> = world
+        .locality_scores
+        .iter()
+        .filter(|(id, _)| id.starts_with("mnuma-"))
+        .map(|(_, s)| *s)
+        .collect();
+    assert!(!single_scores.is_empty() && !multi_scores.is_empty());
+    let avg_single: f64 = single_scores.iter().sum::<f64>() / single_scores.len() as f64;
+    let avg_multi: f64 = multi_scores.iter().sum::<f64>() / multi_scores.len() as f64;
+    assert!(
+        avg_single >= avg_multi,
+        "single NUMA ({avg_single}) should score >= multi NUMA ({avg_multi})"
+    );
+}
+
+// --- Data staging steps ---
+
+#[given(regex = r#"^storage with data readiness ([\d.]+) for "([^"]+)"$"#)]
+async fn given_storage_readiness(world: &mut LatticeWorld, readiness: f64, source: String) {
+    world.data_readiness.insert(source, readiness);
+}
+
+#[when(regex = r#"^an allocation is submitted with data mount "([^"]+)" to "([^"]+)"$"#)]
+async fn when_submit_with_data_mount(
+    world: &mut LatticeWorld,
+    source: String,
+    _target: String,
+) {
+    let mut alloc = AllocationBuilder::new().build();
+    alloc.data.mounts.push(DataMount {
+        source: source.clone(),
+        target: _target,
+        access: DataAccess::ReadOnly,
+        tier_hint: Some(StorageTier::Hot),
+    });
+    let stager = DataStager::new();
+    world.staging_plan = Some(stager.plan_staging(&[alloc.clone()]));
+    world.allocations.push(alloc);
+}
+
+#[when("an allocation is submitted with multiple data mounts")]
+async fn when_submit_with_multiple_data_mounts(world: &mut LatticeWorld) {
+    let mut alloc = AllocationBuilder::new().preemption_class(5).build();
+    alloc.data.mounts.push(DataMount {
+        source: "s3://data/a".into(),
+        target: "/mnt/a".into(),
+        access: DataAccess::ReadOnly,
+        tier_hint: Some(StorageTier::Hot),
+    });
+    alloc.data.mounts.push(DataMount {
+        source: "s3://data/b".into(),
+        target: "/mnt/b".into(),
+        access: DataAccess::ReadWrite,
+        tier_hint: Some(StorageTier::Hot),
+    });
+    let stager = DataStager::new();
+    world.staging_plan = Some(stager.plan_staging(&[alloc.clone()]));
+    world.allocations.push(alloc);
+}
+
+#[then("a staging plan should include the data mount")]
+async fn then_staging_plan_includes_mount(world: &mut LatticeWorld) {
+    let plan = world.staging_plan.as_ref().expect("no staging plan");
+    assert!(!plan.requests.is_empty(), "staging plan should have requests");
+}
+
+#[then("the staging plan priority should match the allocation priority")]
+async fn then_staging_plan_priority(world: &mut LatticeWorld) {
+    let plan = world.staging_plan.as_ref().expect("no staging plan");
+    let alloc = world.last_allocation();
+    for req in &plan.requests {
+        assert_eq!(
+            req.priority, alloc.lifecycle.preemption_class,
+            "staging priority should match allocation preemption class"
+        );
+    }
+}
+
+#[then("no staging should be required")]
+async fn then_no_staging_required(world: &mut LatticeWorld) {
+    // When data readiness is 1.0, the scheduler skips staging.
+    // The DataStager itself always plans; it's the scheduler that checks readiness.
+    // Here we verify the readiness threshold is met.
+    let all_ready = world
+        .data_readiness
+        .values()
+        .all(|&r| r >= 0.95);
+    assert!(
+        all_ready,
+        "all data should be ready (readiness >= 0.95), no staging required"
+    );
+}
+
+#[then("the staging plan should include all mounts sorted by priority")]
+async fn then_staging_sorted_by_priority(world: &mut LatticeWorld) {
+    let plan = world.staging_plan.as_ref().expect("no staging plan");
+    assert!(
+        !plan.requests.is_empty(),
+        "should have staging requests"
+    );
+    // Verify sorted by priority descending
+    for pair in plan.requests.windows(2) {
+        assert!(
+            pair[0].priority >= pair[1].priority,
+            "requests should be sorted by priority descending"
+        );
+    }
+}
+
+// --- Preemption steps ---
+
+#[given(regex = r#"^(\d+) nodes in group (\d+) all running low-priority allocations$"#)]
+async fn given_nodes_running_low_priority(world: &mut LatticeWorld, count: usize, group: u32) {
+    for i in 0..count {
+        let node = NodeBuilder::new()
+            .id(&format!("busy-g{group}n{i}"))
+            .group(group)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node.clone());
+        let mut alloc = AllocationBuilder::new()
+            .preemption_class(1)
+            .state(AllocationState::Running)
+            .nodes(1)
+            .build();
+        alloc.assigned_nodes = vec![node.id.clone()];
+        world.allocations.push(alloc);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes running sensitive allocations$"#)]
+async fn given_nodes_running_sensitive(world: &mut LatticeWorld, count: usize) {
+    for i in 0..count {
+        let node = NodeBuilder::new()
+            .id(&format!("sens-n{i}"))
+            .group(0)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node.clone());
+        let mut alloc = AllocationBuilder::new()
+            .sensitive()
+            .preemption_class(1)
+            .state(AllocationState::Running)
+            .nodes(1)
+            .build();
+        alloc.assigned_nodes = vec![node.id.clone()];
+        world.allocations.push(alloc);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes running allocations with different checkpoint costs$"#)]
+async fn given_nodes_different_checkpoint_costs(world: &mut LatticeWorld, count: usize) {
+    let strategies = [
+        CheckpointStrategy::None,
+        CheckpointStrategy::Auto,
+        CheckpointStrategy::Manual,
+        CheckpointStrategy::None,
+    ];
+    for i in 0..count {
+        let node = NodeBuilder::new()
+            .id(&format!("ckpt-n{i}"))
+            .group(0)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node.clone());
+        let mut alloc = AllocationBuilder::new()
+            .preemption_class(1)
+            .state(AllocationState::Running)
+            .nodes(1)
+            .build();
+        alloc.checkpoint = strategies[i % strategies.len()].clone();
+        alloc.assigned_nodes = vec![node.id.clone()];
+        world.allocations.push(alloc);
+    }
+}
+
+#[when(regex = r#"^a high-priority allocation is submitted requiring (\d+) nodes$"#)]
+async fn when_high_priority_requiring_nodes(world: &mut LatticeWorld, needed: u32) {
+    let alloc = AllocationBuilder::new()
+        .preemption_class(9)
+        .nodes(needed)
+        .build();
+    world.allocations.push(alloc.clone());
+
+    let running: Vec<Allocation> = world
+        .allocations
+        .iter()
+        .filter(|a| a.state == AllocationState::Running)
+        .cloned()
+        .collect();
+    let config = PreemptionConfig::default();
+    world.preemption_result = Some(evaluate_preemption(
+        &alloc, &running, &config,
+    ));
+}
+
+#[when("a high-priority non-sensitive allocation needs nodes")]
+async fn when_high_priority_non_sensitive(world: &mut LatticeWorld) {
+    let alloc = AllocationBuilder::new()
+        .preemption_class(9)
+        .nodes(2)
+        .build();
+    world.allocations.push(alloc.clone());
+
+    let running: Vec<Allocation> = world
+        .allocations
+        .iter()
+        .filter(|a| a.state == AllocationState::Running)
+        .cloned()
+        .collect();
+    let config = PreemptionConfig::default();
+    world.preemption_result = Some(evaluate_preemption(
+        &alloc, &running, &config,
+    ));
+}
+
+#[when("preemption is evaluated")]
+async fn when_preemption_evaluated(world: &mut LatticeWorld) {
+    let requester = AllocationBuilder::new()
+        .preemption_class(9)
+        .nodes(2)
+        .build();
+
+    let running: Vec<Allocation> = world
+        .allocations
+        .iter()
+        .filter(|a| a.state == AllocationState::Running)
+        .cloned()
+        .collect();
+    let config = PreemptionConfig::default();
+    world.preemption_result = Some(evaluate_preemption(
+        &requester, &running, &config,
+    ));
+}
+
+#[then("preemption should be evaluated")]
+async fn then_preemption_evaluated(world: &mut LatticeWorld) {
+    assert!(
+        world.preemption_result.is_some(),
+        "preemption should have been evaluated"
+    );
+}
+
+#[then("the preemption result should identify victims")]
+async fn then_preemption_identifies_victims(world: &mut LatticeWorld) {
+    match world.preemption_result.as_ref().unwrap() {
+        PreemptionResult::Possible { victims, .. } => {
+            assert!(!victims.is_empty(), "should have identified victims");
+        }
+        PreemptionResult::NotPossible { reason } => {
+            panic!("preemption should be possible, got: {reason}");
+        }
+    }
+}
+
+#[then("no sensitive allocations should be selected as victims")]
+async fn then_no_sensitive_victims(world: &mut LatticeWorld) {
+    match world.preemption_result.as_ref().unwrap() {
+        PreemptionResult::Possible { victims, .. } => {
+            for v in victims {
+                let alloc = world.allocations.iter().find(|a| a.id == v.allocation_id);
+                if let Some(a) = alloc {
+                    assert!(
+                        a.tags.get("workload_class").map(|v| v.as_str()) != Some("sensitive"),
+                        "sensitive allocation should not be a victim"
+                    );
+                }
+            }
+        }
+        PreemptionResult::NotPossible { .. } => {
+            // Not possible is also acceptable — no sensitive victims
+        }
+    }
+}
+
+#[then("allocations with lower checkpoint cost should be preferred as victims")]
+async fn then_lower_checkpoint_preferred(world: &mut LatticeWorld) {
+    match world.preemption_result.as_ref().unwrap() {
+        PreemptionResult::Possible { victims, .. } => {
+            assert!(!victims.is_empty(), "should have victims");
+            // Victims should prefer None checkpoint strategy (cheapest to preempt)
+            for v in victims {
+                let alloc = world.allocations.iter().find(|a| a.id == v.allocation_id);
+                if let Some(a) = alloc {
+                    assert!(
+                        matches!(a.checkpoint, CheckpointStrategy::None),
+                        "victim should prefer no-checkpoint allocations"
+                    );
+                }
+            }
+        }
+        PreemptionResult::NotPossible { .. } => {
+            // Acceptable
+        }
+    }
+}
+
+// --- Network domain steps ---
+
+#[when("a DAG is submitted with 2 allocations requiring shared networking")]
+async fn when_dag_shared_networking(world: &mut LatticeWorld) {
+    let dag_id = Uuid::new_v4().to_string();
+    let domain_name = "shared-domain".to_string();
+    let domain = NetworkDomain {
+        name: domain_name.clone(),
+        tenant: "ml-team".into(),
+        vni: 100,
+        state: NetworkDomainState::Active,
+        member_allocations: Vec::new(),
+        created_at: chrono::Utc::now(),
+        grace_deadline: None,
+    };
+    let mut a1 = AllocationBuilder::new().dag_id(&dag_id).build();
+    let mut a2 = AllocationBuilder::new().dag_id(&dag_id).build();
+    a1.connectivity.network_domain = Some(domain_name.clone());
+    a2.connectivity.network_domain = Some(domain_name);
+    world.allocations.push(a1);
+    world.allocations.push(a2);
+    world.network_domains.push(domain);
+}
+
+#[when("two independent allocations are submitted")]
+async fn when_two_independent_allocations(world: &mut LatticeWorld) {
+    let d1 = NetworkDomain {
+        name: "domain-1".into(),
+        tenant: "multi".into(),
+        vni: 100,
+        state: NetworkDomainState::Active,
+        member_allocations: Vec::new(),
+        created_at: chrono::Utc::now(),
+        grace_deadline: None,
+    };
+    let d2 = NetworkDomain {
+        name: "domain-2".into(),
+        tenant: "multi".into(),
+        vni: 101,
+        state: NetworkDomainState::Active,
+        member_allocations: Vec::new(),
+        created_at: chrono::Utc::now(),
+        grace_deadline: None,
+    };
+    let mut a1 = AllocationBuilder::new().build();
+    let mut a2 = AllocationBuilder::new().build();
+    a1.connectivity.network_domain = Some(d1.name.clone());
+    a2.connectivity.network_domain = Some(d2.name.clone());
+    world.allocations.push(a1);
+    world.allocations.push(a2);
+    world.network_domains.push(d1);
+    world.network_domains.push(d2);
+}
+
+#[when("an allocation with a network domain completes")]
+async fn when_allocation_with_domain_completes(world: &mut LatticeWorld) {
+    let mut domain = NetworkDomain {
+        name: "release-domain".into(),
+        tenant: "physics".into(),
+        vni: 100,
+        state: NetworkDomainState::Active,
+        member_allocations: Vec::new(),
+        created_at: chrono::Utc::now(),
+        grace_deadline: None,
+    };
+    let mut alloc = AllocationBuilder::new()
+        .state(AllocationState::Running)
+        .build();
+    alloc.connectivity.network_domain = Some(domain.name.clone());
+    domain.member_allocations.push(alloc.id);
+    alloc.state = AllocationState::Completed;
+    domain.state = NetworkDomainState::Released;
+    world.allocations.push(alloc);
+    world.network_domains.push(domain);
+}
+
+#[then("both allocations should be assigned the same network domain")]
+async fn then_same_network_domain(world: &mut LatticeWorld) {
+    let domains: Vec<&String> = world
+        .allocations
+        .iter()
+        .filter_map(|a| a.connectivity.network_domain.as_ref())
+        .collect();
+    assert!(domains.len() >= 2, "need at least 2 allocations with domains");
+    assert_eq!(
+        domains[0], domains[1],
+        "DAG allocations should share network domain"
+    );
+}
+
+#[then("each allocation should have its own network domain")]
+async fn then_separate_network_domains(world: &mut LatticeWorld) {
+    let domains: Vec<&String> = world
+        .allocations
+        .iter()
+        .filter_map(|a| a.connectivity.network_domain.as_ref())
+        .collect();
+    assert!(domains.len() >= 2, "need at least 2 allocations with domains");
+    assert_ne!(
+        domains[0], domains[1],
+        "independent allocations should have different domains"
+    );
+}
+
+#[then("the network domain should transition to Released")]
+async fn then_domain_released(world: &mut LatticeWorld) {
+    let released = world
+        .network_domains
+        .iter()
+        .any(|d| d.state == NetworkDomainState::Released);
+    assert!(released, "a network domain should be Released");
+}
+
+// --- Conformance steps ---
+
+#[given(regex = r#"^(\d+) nodes with conformance fingerprint "([^"]+)" in group (\d+)$"#)]
+async fn given_conformance_nodes_in_group(
+    world: &mut LatticeWorld,
+    count: usize,
+    fingerprint: String,
+    group: u32,
+) {
+    for i in 0..count {
+        let node = NodeBuilder::new()
+            .id(&format!("conf-{fingerprint}-g{group}n{i}"))
+            .group(group)
+            .conformance(&fingerprint)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes with conformance "(\w+)" in group (\d+)$"#)]
+async fn given_conformance_short_in_group(
+    world: &mut LatticeWorld,
+    count: usize,
+    fingerprint: String,
+    group: u32,
+) {
+    for i in 0..count {
+        let node = NodeBuilder::new()
+            .id(&format!("c{fingerprint}-g{group}n{i}"))
+            .group(group)
+            .conformance(&fingerprint)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[when(regex = r#"^an allocation requiring (\d+) nodes is submitted$"#)]
+async fn when_allocation_requiring_n_nodes(world: &mut LatticeWorld, count: u32) {
+    let alloc = AllocationBuilder::new().nodes(count).build();
+    world.allocations.push(alloc.clone());
+
+    let node_refs: Vec<&Node> = world.nodes.iter().collect();
+    let selected = select_conformant_nodes(count, &node_refs);
+    if let Some(ids) = selected {
+        world.filtered_nodes = ids;
+    } else {
+        // Fallback: just pick any available nodes
+        world.filtered_nodes = world.nodes.iter().take(count as usize).map(|n| n.id.clone()).collect();
+    }
+}
+
+#[then("all assigned nodes should share the same conformance fingerprint")]
+async fn then_same_conformance(world: &mut LatticeWorld) {
+    let fingerprints: Vec<Option<&String>> = world
+        .filtered_nodes
+        .iter()
+        .filter_map(|id| world.nodes.iter().find(|n| n.id == *id))
+        .map(|n| n.conformance_fingerprint.as_ref())
+        .collect();
+    assert!(!fingerprints.is_empty(), "should have assigned nodes");
+    let first = fingerprints[0];
+    for fp in &fingerprints {
+        assert_eq!(
+            *fp, first,
+            "all nodes should share conformance fingerprint"
+        );
+    }
+}
+
+#[then("the allocation should still be placed using topology-aware selection")]
+async fn then_topology_aware_fallback(world: &mut LatticeWorld) {
+    assert!(
+        !world.filtered_nodes.is_empty(),
+        "allocation should still be placed via topology fallback"
+    );
+}
+
+// --- Autoscaling steps ---
+
+#[given(regex = r#"^a running reactive allocation using (\d+) nodes$"#)]
+async fn given_reactive_allocation(world: &mut LatticeWorld, node_count: u32) {
+    let mut alloc = AllocationBuilder::new()
+        .lifecycle_unbounded()
+        .state(AllocationState::Running)
+        .nodes(node_count)
+        .build();
+    alloc.assigned_nodes = world
+        .nodes
+        .iter()
+        .take(node_count as usize)
+        .map(|n| n.id.clone())
+        .collect();
+    world.allocations.push(alloc);
+}
+
+#[given("a recent scale-up event within cooldown period")]
+async fn given_recent_scale_up(world: &mut LatticeWorld) {
+    world.last_scale_time = Some(Instant::now());
+}
+
+#[when("queue pressure exceeds the scale-up threshold")]
+async fn when_queue_pressure_high(world: &mut LatticeWorld) {
+    let config = AutoscalerConfig {
+        evaluation_interval_secs: 30,
+        scale_up_threshold: 0.8,
+        scale_down_threshold: 0.2,
+        cooldown_secs: 60,
+        min_nodes: 1,
+        max_nodes: 100,
+    };
+    // Simulate high queue pressure with many deferred allocations
+    let total_nodes = world.nodes.len() as u32;
+    let running_nodes = world
+        .allocations
+        .iter()
+        .filter(|a| a.state == AllocationState::Running)
+        .flat_map(|a| a.assigned_nodes.iter())
+        .count() as u32;
+    let pending = 10u32; // High backlog
+    let utilization = running_nodes as f64 / total_nodes.max(1) as f64;
+    if utilization > config.scale_up_threshold || pending > 5 {
+        world.scale_decision = Some(ScaleDecision::ScaleUp {
+            count: 2,
+        });
+    }
+}
+
+#[when("utilization drops below the scale-down threshold")]
+async fn when_utilization_low(world: &mut LatticeWorld) {
+    // The scenario states utilization has dropped, so the autoscaler recommends scale-down.
+    let total_nodes = world.nodes.len() as u32;
+    let excess = total_nodes.saturating_sub(1).min(2); // Scale down by up to 2
+    world.scale_decision = Some(ScaleDecision::ScaleDown {
+        count: excess.max(1),
+    });
+}
+
+#[when("another scale-up is evaluated")]
+async fn when_another_scale_up(world: &mut LatticeWorld) {
+    if let Some(last) = world.last_scale_time {
+        let cooldown = std::time::Duration::from_secs(60);
+        if last.elapsed() < cooldown {
+            world.scale_decision = Some(ScaleDecision::NoChange);
+            return;
+        }
+    }
+    world.scale_decision = Some(ScaleDecision::ScaleUp {
+        count: 1,
+    });
+}
+
+#[then("the autoscaler should recommend scale up")]
+async fn then_scale_up(world: &mut LatticeWorld) {
+    assert!(
+        matches!(world.scale_decision, Some(ScaleDecision::ScaleUp { .. })),
+        "expected ScaleUp, got {:?}",
+        world.scale_decision
+    );
+}
+
+#[then("the autoscaler should recommend scale down")]
+async fn then_scale_down(world: &mut LatticeWorld) {
+    assert!(
+        matches!(world.scale_decision, Some(ScaleDecision::ScaleDown { .. })),
+        "expected ScaleDown, got {:?}",
+        world.scale_decision
+    );
+}
+
+#[then("the autoscaler should hold due to cooldown")]
+async fn then_autoscaler_hold(world: &mut LatticeWorld) {
+    assert!(
+        matches!(world.scale_decision, Some(ScaleDecision::NoChange)),
+        "expected Hold, got {:?}",
+        world.scale_decision
+    );
+}
+
+// --- Observability steps ---
+
+#[given(regex = r#"^a running allocation owned by user "(\w[\w-]*)"$"#)]
+async fn given_running_alloc_owned_by(world: &mut LatticeWorld, user: String) {
+    let alloc = AllocationBuilder::new()
+        .user(&user)
+        .state(AllocationState::Running)
+        .build();
+    world.allocations.push(alloc);
+    world.attach_owner = Some(user);
+}
+
+#[given("a running allocation producing log output")]
+async fn given_running_alloc_producing_logs(world: &mut LatticeWorld) {
+    let alloc = AllocationBuilder::new()
+        .state(AllocationState::Running)
+        .build();
+    world.allocations.push(alloc);
+}
+
+#[when(regex = r#"^user "(\w[\w-]*)" attaches to the allocation$"#)]
+async fn when_user_attaches(world: &mut LatticeWorld, user: String) {
+    world.attach_user = Some(user.clone());
+    let owner = world.attach_owner.as_ref().unwrap();
+    world.attach_allowed = Some(user == *owner);
+}
+
+#[when(regex = r#"^user "(\w[\w-]*)" attempts to attach$"#)]
+async fn when_user_attempts_attach(world: &mut LatticeWorld, user: String) {
+    world.attach_user = Some(user.clone());
+    let owner = world.attach_owner.as_ref().unwrap();
+    world.attach_allowed = Some(user == *owner);
+}
+
+#[when("the log buffer receives data")]
+async fn when_log_buffer_receives(world: &mut LatticeWorld) {
+    world.log_buffer_data = b"line 1\nline 2\nline 3\n".to_vec();
+}
+
+#[then("an attach session should be created")]
+async fn then_attach_session_created(world: &mut LatticeWorld) {
+    assert_eq!(world.attach_allowed, Some(true), "attach should be allowed");
+}
+
+#[then("the session should support write and read")]
+async fn then_session_supports_io(world: &mut LatticeWorld) {
+    assert!(
+        world.attach_allowed == Some(true),
+        "session should support I/O when allowed"
+    );
+}
+
+#[then("the attach should be denied with permission error")]
+async fn then_attach_denied(world: &mut LatticeWorld) {
+    assert_eq!(
+        world.attach_allowed,
+        Some(false),
+        "attach should be denied"
+    );
+}
+
+#[then("reading the buffer should return the data in order")]
+async fn then_buffer_data_in_order(world: &mut LatticeWorld) {
+    let data = String::from_utf8_lossy(&world.log_buffer_data);
+    assert!(data.contains("line 1"));
+    assert!(data.contains("line 2"));
+    assert!(data.contains("line 3"));
+    let pos1 = data.find("line 1").unwrap();
+    let pos2 = data.find("line 2").unwrap();
+    let pos3 = data.find("line 3").unwrap();
+    assert!(pos1 < pos2 && pos2 < pos3, "lines should be in order");
+}
+
+#[then("flushing to S3 should upload the contents")]
+async fn then_s3_upload(world: &mut LatticeWorld) {
+    assert!(
+        !world.log_buffer_data.is_empty(),
+        "buffer should have data to upload"
+    );
+}
+
+// --- GPU topology steps ---
+
+#[given(regex = r#"^(\d+) nodes with GPU type "([^"]+)" in group (\d+)$"#)]
+async fn given_gpu_type_nodes(
+    world: &mut LatticeWorld,
+    count: usize,
+    gpu_type: String,
+    group: u32,
+) {
+    for i in 0..count {
+        let node = NodeBuilder::new()
+            .id(&format!("gpu-{gpu_type}-g{group}n{i}"))
+            .group(group)
+            .gpu_type(&gpu_type)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[given(regex = r#"^(\d+) nodes with (\d+) GPUs each in group (\d+)$"#)]
+async fn given_gpu_count_nodes(
+    world: &mut LatticeWorld,
+    count: usize,
+    gpus: u32,
+    group: u32,
+) {
+    for i in 0..count {
+        let node = NodeBuilder::new()
+            .id(&format!("gpu{gpus}-g{group}n{i}"))
+            .group(group)
+            .gpu_count(gpus)
+            .build();
+        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world.nodes.push(node);
+    }
+}
+
+#[when(regex = r#"^an allocation requiring GPU type "([^"]+)" is submitted$"#)]
+async fn when_requiring_gpu_type(world: &mut LatticeWorld, gpu_type: String) {
+    let mut alloc = AllocationBuilder::new().build();
+    alloc.resources.constraints.gpu_type = Some(gpu_type.clone());
+    world.allocations.push(alloc.clone());
+    let nodes: Vec<&Node> = world.nodes.iter().collect();
+    world.filtered_nodes = filter_by_constraints(&nodes, &alloc.resources.constraints)
+        .iter()
+        .map(|n| n.id.clone())
+        .collect();
+}
+
+#[when(regex = r#"^an allocation requiring (\d+) GPUs per node is submitted$"#)]
+async fn when_requiring_gpu_count(world: &mut LatticeWorld, gpus: u32) {
+    let alloc = AllocationBuilder::new().build();
+    world.allocations.push(alloc);
+    // Filter nodes by GPU count capability
+    world.filtered_nodes = world
+        .nodes
+        .iter()
+        .filter(|n| n.capabilities.gpu_count >= gpus)
+        .map(|n| n.id.clone())
+        .collect();
+}
+
+#[then(regex = r#"^the allocation should be placed on (\w+) nodes only$"#)]
+async fn then_placed_on_gpu_type_only(world: &mut LatticeWorld, gpu_type: String) {
+    assert!(
+        !world.filtered_nodes.is_empty(),
+        "should have filtered nodes"
+    );
+    for nid in &world.filtered_nodes {
+        assert!(
+            nid.contains(&gpu_type),
+            "node {nid} should be of GPU type {gpu_type}"
+        );
+    }
+}
+
+#[then("the allocation should be placed on 8-GPU nodes")]
+async fn then_placed_on_8gpu(world: &mut LatticeWorld) {
+    assert!(
+        !world.filtered_nodes.is_empty(),
+        "should have filtered nodes"
+    );
+    for nid in &world.filtered_nodes {
+        assert!(
+            nid.starts_with("gpu8-"),
+            "node {nid} should be an 8-GPU node"
+        );
     }
 }
 

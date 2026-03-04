@@ -313,3 +313,288 @@ async fn quota_enforcement() {
         "should succeed after cancelling one allocation"
     );
 }
+
+// ─── Test 8: Invalid allocation state transition ─────────────
+// Completed→Running is invalid and should return an error.
+
+#[tokio::test]
+async fn allocation_state_transitions_validated() {
+    let client = create_test_quorum().await.unwrap();
+
+    let alloc = AllocationBuilder::new().tenant("physics").build();
+    let id = alloc.id;
+    client.insert(alloc).await.unwrap();
+
+    // Move Pending → Running → Completed (valid path)
+    client
+        .update_state(&id, AllocationState::Running)
+        .await
+        .unwrap();
+    client
+        .update_state(&id, AllocationState::Completed)
+        .await
+        .unwrap();
+
+    // Verify it's completed
+    let got = client.get(&id).await.unwrap();
+    assert_eq!(got.state, AllocationState::Completed);
+
+    // Completed → Running should fail (invalid transition)
+    let result = client.update_state(&id, AllocationState::Running).await;
+    assert!(
+        result.is_err(),
+        "Completed→Running should be rejected as invalid transition"
+    );
+
+    // Also verify Pending → Completed is invalid (must go through Running first)
+    let alloc2 = AllocationBuilder::new().tenant("physics").build();
+    let id2 = alloc2.id;
+    client.insert(alloc2).await.unwrap();
+
+    let result2 = client.update_state(&id2, AllocationState::Completed).await;
+    assert!(
+        result2.is_err(),
+        "Pending→Completed should be rejected as invalid transition"
+    );
+}
+
+// ─── Test 9: Node registration and heartbeat ─────────────────
+// Register node, verify it appears, then update heartbeat.
+
+#[tokio::test]
+async fn node_registration_and_heartbeat() {
+    let client = create_test_quorum().await.unwrap();
+
+    let node = NodeBuilder::new().id("x2000c0s1b0n0").build();
+    client
+        .propose(commands::Command::RegisterNode(node))
+        .await
+        .unwrap();
+
+    // Verify node is in state
+    let got = client.get_node(&"x2000c0s1b0n0".to_string()).await.unwrap();
+    assert_eq!(got.id, "x2000c0s1b0n0");
+    assert_eq!(got.state, NodeState::Ready);
+    assert!(got.last_heartbeat.is_none(), "no heartbeat yet");
+
+    // Record a heartbeat
+    let hb_time = chrono::Utc::now();
+    client
+        .propose(commands::Command::RecordHeartbeat {
+            id: "x2000c0s1b0n0".into(),
+            timestamp: hb_time,
+        })
+        .await
+        .unwrap();
+
+    // Verify heartbeat was recorded
+    let got = client.get_node(&"x2000c0s1b0n0".to_string()).await.unwrap();
+    assert_eq!(got.last_heartbeat, Some(hb_time));
+
+    // Record a second heartbeat — should update
+    let hb_time2 = chrono::Utc::now();
+    client
+        .propose(commands::Command::RecordHeartbeat {
+            id: "x2000c0s1b0n0".into(),
+            timestamp: hb_time2,
+        })
+        .await
+        .unwrap();
+
+    let got = client.get_node(&"x2000c0s1b0n0".to_string()).await.unwrap();
+    assert_eq!(got.last_heartbeat, Some(hb_time2));
+    assert!(hb_time2 >= hb_time);
+}
+
+// ─── Test 10: Concurrent tenant creation ─────────────────────
+// Create 5 tenants concurrently, verify all exist.
+
+#[tokio::test]
+async fn concurrent_tenant_creation() {
+    let client = create_test_quorum().await.unwrap();
+
+    let mut handles = Vec::new();
+    let tenant_names: Vec<String> = (0..5).map(|i| format!("tenant-{i}")).collect();
+
+    for name in &tenant_names {
+        let tenant = TenantBuilder::new(name)
+            .max_nodes(10)
+            .fair_share(0.2)
+            .build();
+        let c = client.clone();
+        handles.push(tokio::spawn(async move {
+            c.propose(commands::Command::CreateTenant(tenant))
+                .await
+                .unwrap();
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    // Verify all 5 tenants exist
+    let state = client.state().read().await;
+    for name in &tenant_names {
+        assert!(
+            state.tenants.contains_key(name.as_str()),
+            "tenant {name} should exist after concurrent creation"
+        );
+        assert_eq!(state.tenants[name.as_str()].quota.max_nodes, 10);
+    }
+    assert_eq!(state.tenants.len(), 5);
+}
+
+// ─── Test 11: Concurrent node claim conflict ─────────────────
+// Two tasks try to claim the same node simultaneously; exactly one succeeds.
+
+#[tokio::test]
+async fn concurrent_node_claim_conflict() {
+    let client = create_test_quorum().await.unwrap();
+
+    // Register a node first
+    let node = NodeBuilder::new().id("contested-node").build();
+    client
+        .propose(commands::Command::RegisterNode(node))
+        .await
+        .unwrap();
+
+    let c1 = client.clone();
+    let c2 = client.clone();
+
+    let ownership1 = NodeOwnership {
+        tenant: "tenant-a".into(),
+        vcluster: "vc-a".into(),
+        allocation: Uuid::new_v4(),
+        claimed_by: Some("user-alpha".into()),
+        is_borrowed: false,
+    };
+    let ownership2 = NodeOwnership {
+        tenant: "tenant-b".into(),
+        vcluster: "vc-b".into(),
+        allocation: Uuid::new_v4(),
+        claimed_by: Some("user-beta".into()),
+        is_borrowed: false,
+    };
+
+    let h1 = tokio::spawn(async move {
+        c1.claim_node(&"contested-node".to_string(), ownership1)
+            .await
+    });
+    let h2 = tokio::spawn(async move {
+        c2.claim_node(&"contested-node".to_string(), ownership2)
+            .await
+    });
+
+    let r1 = h1.await.unwrap();
+    let r2 = h2.await.unwrap();
+
+    // Exactly one should succeed, one should fail
+    let successes = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
+    let failures = [&r1, &r2].iter().filter(|r| r.is_err()).count();
+    assert_eq!(
+        successes, 1,
+        "exactly one claim should succeed, got {} successes",
+        successes
+    );
+    assert_eq!(
+        failures, 1,
+        "exactly one claim should fail, got {} failures",
+        failures
+    );
+
+    // Verify the node has exactly one owner
+    let got = client.get_node(&"contested-node".to_string()).await.unwrap();
+    assert!(got.owner.is_some(), "node should have an owner");
+    let owner = got.owner.unwrap();
+    assert!(
+        owner.claimed_by == Some("user-alpha".into())
+            || owner.claimed_by == Some("user-beta".into()),
+        "owner should be one of the two claimants"
+    );
+}
+
+// ─── Test 12: Many operations and state consistency ──────────
+// Insert many allocations, verify state is consistent.
+
+#[tokio::test]
+async fn many_operations_trigger_snapshot() {
+    let client = create_test_quorum().await.unwrap();
+
+    // Create a tenant with large quota to allow many allocations
+    let tenant = TenantBuilder::new("bulk-tenant")
+        .max_nodes(10000)
+        .build();
+    client
+        .propose(commands::Command::CreateTenant(tenant))
+        .await
+        .unwrap();
+
+    // Insert 50 allocations (well above any reasonable snapshot threshold)
+    let mut ids = Vec::new();
+    for _ in 0..50 {
+        let alloc = AllocationBuilder::new().tenant("bulk-tenant").build();
+        let id = alloc.id;
+        ids.push(id);
+        client.insert(alloc).await.unwrap();
+    }
+
+    // Move first 25 to Running, then Completed
+    for id in &ids[..25] {
+        client
+            .update_state(id, AllocationState::Running)
+            .await
+            .unwrap();
+        client
+            .update_state(id, AllocationState::Completed)
+            .await
+            .unwrap();
+    }
+
+    // Verify all 50 allocations are present in state
+    let state = client.state().read().await;
+    assert_eq!(
+        state.allocations.len(),
+        50,
+        "all 50 allocations should be in state"
+    );
+
+    // Verify the first 25 are Completed
+    for id in &ids[..25] {
+        let alloc = &state.allocations[id];
+        assert_eq!(
+            alloc.state,
+            AllocationState::Completed,
+            "first 25 should be Completed"
+        );
+        assert!(alloc.completed_at.is_some());
+    }
+
+    // Verify the last 25 are still Pending
+    for id in &ids[25..] {
+        let alloc = &state.allocations[id];
+        assert_eq!(
+            alloc.state,
+            AllocationState::Pending,
+            "last 25 should still be Pending"
+        );
+    }
+
+    // Also register nodes and verify they coexist with allocations
+    for i in 0..10 {
+        let node = NodeBuilder::new().id(&format!("bulk-node-{i}")).build();
+        client
+            .propose(commands::Command::RegisterNode(node))
+            .await
+            .unwrap();
+    }
+
+    let state = client.state().read().await;
+    assert_eq!(state.nodes.len(), 10, "all 10 nodes should be present");
+    assert_eq!(
+        state.allocations.len(),
+        50,
+        "allocations should be unaffected by node registrations"
+    );
+    assert!(state.tenants.contains_key("bulk-tenant"));
+}

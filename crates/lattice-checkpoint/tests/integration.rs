@@ -226,3 +226,295 @@ fn concurrent_evaluations_unique_ids() {
         "all checkpoint IDs across batches must be unique"
     );
 }
+
+// ─── Test 8: Broker with mock NodeAgentPool ──────────────────
+// Create broker with mock pool + store, initiate checkpoint, verify pool was called.
+
+#[tokio::test]
+async fn checkpoint_broker_with_mock_pool() {
+    use async_trait::async_trait;
+    use lattice_checkpoint::{CheckpointProtocol, NodeAgentPool};
+    use lattice_common::error::LatticeError;
+    use lattice_common::traits::CheckpointBroker;
+
+    struct TrackingPool {
+        calls: tokio::sync::Mutex<Vec<(String, uuid::Uuid, CheckpointProtocol)>>,
+    }
+
+    impl TrackingPool {
+        fn new() -> Self {
+            Self {
+                calls: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl NodeAgentPool for TrackingPool {
+        async fn send_checkpoint(
+            &self,
+            node_id: &str,
+            alloc_id: &uuid::Uuid,
+            protocol: &CheckpointProtocol,
+        ) -> Result<(), LatticeError> {
+            self.calls
+                .lock()
+                .await
+                .push((node_id.to_string(), *alloc_id, protocol.clone()));
+            Ok(())
+        }
+    }
+
+    struct SimpleStore {
+        alloc: Allocation,
+    }
+
+    #[async_trait]
+    impl lattice_common::traits::AllocationStore for SimpleStore {
+        async fn insert(&self, _alloc: Allocation) -> Result<(), LatticeError> {
+            Ok(())
+        }
+        async fn get(&self, _id: &uuid::Uuid) -> Result<Allocation, LatticeError> {
+            Ok(self.alloc.clone())
+        }
+        async fn list(
+            &self,
+            _filter: &lattice_common::traits::AllocationFilter,
+        ) -> Result<Vec<Allocation>, LatticeError> {
+            Ok(vec![self.alloc.clone()])
+        }
+        async fn update_state(
+            &self,
+            _id: &uuid::Uuid,
+            _state: AllocationState,
+        ) -> Result<(), LatticeError> {
+            Ok(())
+        }
+        async fn count_running(
+            &self,
+            _tenant: &lattice_common::types::TenantId,
+        ) -> Result<u32, LatticeError> {
+            Ok(0)
+        }
+    }
+
+    let alloc = running_alloc(3);
+    let alloc_id = alloc.id;
+    let pool = Arc::new(TrackingPool::new());
+    let store = Arc::new(SimpleStore {
+        alloc: alloc.clone(),
+    });
+
+    let broker = LatticeCheckpointBroker::new(high_pressure_params())
+        .with_agent_pool(pool.clone())
+        .with_allocation_store(store);
+
+    broker.initiate_checkpoint(&alloc_id).await.unwrap();
+
+    let calls = pool.calls.lock().await;
+    assert_eq!(calls.len(), 3, "pool should be called once per assigned node");
+    for (node_id, called_alloc_id, protocol) in calls.iter() {
+        assert_eq!(*called_alloc_id, alloc_id);
+        assert!(
+            alloc.assigned_nodes.contains(node_id),
+            "called node should be one of the assigned nodes"
+        );
+        assert_eq!(*protocol, CheckpointProtocol::Signal);
+    }
+}
+
+// ─── Test 9: Partial failure handling ────────────────────────
+// Some nodes succeed, some fail → partial success (Ok) if at least one succeeded.
+
+#[tokio::test]
+async fn checkpoint_partial_failure_handling() {
+    use async_trait::async_trait;
+    use lattice_checkpoint::{CheckpointProtocol, NodeAgentPool};
+    use lattice_common::error::LatticeError;
+    use lattice_common::traits::CheckpointBroker;
+
+    struct PartialFailPool {
+        fail_nodes: Vec<String>,
+    }
+
+    #[async_trait]
+    impl NodeAgentPool for PartialFailPool {
+        async fn send_checkpoint(
+            &self,
+            node_id: &str,
+            _alloc_id: &uuid::Uuid,
+            _protocol: &CheckpointProtocol,
+        ) -> Result<(), LatticeError> {
+            if self.fail_nodes.contains(&node_id.to_string()) {
+                Err(LatticeError::Internal(format!(
+                    "node {node_id} unreachable"
+                )))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct SimpleStore2 {
+        alloc: Allocation,
+    }
+
+    #[async_trait]
+    impl lattice_common::traits::AllocationStore for SimpleStore2 {
+        async fn insert(&self, _alloc: Allocation) -> Result<(), LatticeError> {
+            Ok(())
+        }
+        async fn get(&self, _id: &uuid::Uuid) -> Result<Allocation, LatticeError> {
+            Ok(self.alloc.clone())
+        }
+        async fn list(
+            &self,
+            _filter: &lattice_common::traits::AllocationFilter,
+        ) -> Result<Vec<Allocation>, LatticeError> {
+            Ok(vec![self.alloc.clone()])
+        }
+        async fn update_state(
+            &self,
+            _id: &uuid::Uuid,
+            _state: AllocationState,
+        ) -> Result<(), LatticeError> {
+            Ok(())
+        }
+        async fn count_running(
+            &self,
+            _tenant: &lattice_common::types::TenantId,
+        ) -> Result<u32, LatticeError> {
+            Ok(0)
+        }
+    }
+
+    let alloc = running_alloc(4); // nodes: n0, n1, n2, n3
+    let alloc_id = alloc.id;
+
+    // Fail 2 out of 4 nodes — partial success should still be Ok
+    let pool = Arc::new(PartialFailPool {
+        fail_nodes: vec!["n0".to_string(), "n2".to_string()],
+    });
+    let store = Arc::new(SimpleStore2 {
+        alloc: alloc.clone(),
+    });
+
+    let broker = LatticeCheckpointBroker::new(high_pressure_params())
+        .with_agent_pool(pool)
+        .with_allocation_store(store.clone());
+
+    let result = broker.initiate_checkpoint(&alloc_id).await;
+    assert!(
+        result.is_ok(),
+        "partial failure (2/4 succeed) should return Ok"
+    );
+
+    // Now fail ALL nodes — should return error
+    let all_fail_pool = Arc::new(PartialFailPool {
+        fail_nodes: vec![
+            "n0".to_string(),
+            "n1".to_string(),
+            "n2".to_string(),
+            "n3".to_string(),
+        ],
+    });
+
+    let broker_all_fail = LatticeCheckpointBroker::new(high_pressure_params())
+        .with_agent_pool(all_fail_pool)
+        .with_allocation_store(store);
+
+    let result = broker_all_fail.initiate_checkpoint(&alloc_id).await;
+    assert!(
+        result.is_err(),
+        "total failure (0/4 succeed) should return Err"
+    );
+}
+
+// ─── Test 10: Sensitive allocation checkpoint policy ─────────
+// Sensitive workloads get more conservative checkpoint policy (longer intervals).
+
+#[test]
+fn sensitive_allocation_never_preempted_via_checkpoint() {
+    use lattice_checkpoint::policy::evaluate_policy;
+
+    // Build a sensitive allocation
+    let sensitive_alloc = AllocationBuilder::new().sensitive().build();
+    let normal_alloc = AllocationBuilder::new().build();
+
+    let sensitive_policy = evaluate_policy(&sensitive_alloc);
+    let normal_policy = evaluate_policy(&normal_alloc);
+
+    // Sensitive workloads should have a higher min_interval (more conservative)
+    assert!(
+        sensitive_policy.min_interval_secs > normal_policy.min_interval_secs,
+        "sensitive workload min_interval ({}) should be greater than normal ({})",
+        sensitive_policy.min_interval_secs,
+        normal_policy.min_interval_secs
+    );
+
+    // Sensitive workloads should have a longer timeout
+    assert!(
+        sensitive_policy.timeout_secs > normal_policy.timeout_secs,
+        "sensitive workload timeout ({}) should be greater than normal ({})",
+        sensitive_policy.timeout_secs,
+        normal_policy.timeout_secs
+    );
+
+    // Sensitive workloads should have a shorter max_interval (checkpoint more reliably)
+    assert!(
+        sensitive_policy.max_interval_secs < normal_policy.max_interval_secs,
+        "sensitive workload max_interval ({}) should be less than normal ({})",
+        sensitive_policy.max_interval_secs,
+        normal_policy.max_interval_secs
+    );
+}
+
+// ─── Test 11: Checkpoint cost with zero backlog ──────────────
+// When backlog_pressure is 0 and no waiting higher-priority jobs,
+// the checkpoint threshold is higher (harder to trigger).
+
+#[test]
+fn checkpoint_cost_with_zero_backlog() {
+    use lattice_checkpoint::{evaluate_checkpoint, CheckpointParams};
+
+    let alloc = running_alloc(2);
+
+    // Zero backlog: no queue pressure, very low failure probability
+    let zero_backlog = CheckpointParams {
+        backlog_pressure: 0.0,
+        waiting_higher_priority_jobs: 0,
+        failure_probability: 0.001,
+        ..Default::default()
+    };
+
+    // Moderate backlog
+    let moderate_backlog = CheckpointParams {
+        backlog_pressure: 0.5,
+        waiting_higher_priority_jobs: 3,
+        failure_probability: 0.001,
+        ..Default::default()
+    };
+
+    let eval_zero = evaluate_checkpoint(&alloc, &zero_backlog);
+    let eval_moderate = evaluate_checkpoint(&alloc, &moderate_backlog);
+
+    // With zero backlog, value should be lower (no backlog_relief, no preemptability)
+    assert!(
+        eval_zero.value < eval_moderate.value,
+        "zero-backlog value ({}) should be less than moderate-backlog value ({})",
+        eval_zero.value,
+        eval_moderate.value
+    );
+
+    // Zero backlog should NOT trigger checkpoint (cost > value for moderate failure prob)
+    assert!(
+        !eval_zero.should_checkpoint,
+        "zero backlog with low failure probability should not trigger checkpoint"
+    );
+
+    // Moderate backlog SHOULD trigger checkpoint
+    assert!(
+        eval_moderate.should_checkpoint,
+        "moderate backlog with waiting jobs should trigger checkpoint"
+    );
+}

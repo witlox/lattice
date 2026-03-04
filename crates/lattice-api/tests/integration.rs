@@ -1769,3 +1769,564 @@ async fn streaming_query_metrics_without_tsdb_returns_unavailable() {
     let err = result.err().unwrap();
     assert_eq!(err.code(), tonic::Code::Unavailable);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Additional Integration Tests (T2)
+// ═══════════════════════════════════════════════════════════════
+
+use lattice_api::grpc::node_service::LatticeNodeService;
+use lattice_common::proto::lattice::v1::node_service_server::NodeService;
+use lattice_common::types::NodeState;
+
+// ─── Test 36: Admin create + update tenant lifecycle (in-memory) ─────
+#[tokio::test]
+async fn admin_create_update_tenant_lifecycle() {
+    let state = test_state();
+    let admin_svc = LatticeAdminService::new(state.clone());
+
+    // Create tenant
+    let create_resp = admin_svc
+        .create_tenant(Request::new(pb::CreateTenantRequest {
+            name: "research".to_string(),
+            quota: Some(pb::TenantQuotaSpec {
+                max_nodes: 50,
+                fair_share_target: 0.3,
+                gpu_hours_budget: None,
+                max_concurrent_allocations: None,
+            }),
+            isolation_level: "standard".to_string(),
+        }))
+        .await
+        .unwrap();
+    assert_eq!(create_resp.get_ref().name, "research");
+    let quota = create_resp.get_ref().quota.as_ref().unwrap();
+    assert_eq!(quota.max_nodes, 50);
+
+    // Update tenant quota
+    let update_resp = admin_svc
+        .update_tenant(Request::new(pb::UpdateTenantRequest {
+            tenant_id: create_resp.get_ref().tenant_id.clone(),
+            quota: Some(pb::TenantQuotaSpec {
+                max_nodes: 100,
+                fair_share_target: 0.5,
+                gpu_hours_budget: Some(1000.0),
+                max_concurrent_allocations: Some(10),
+            }),
+            isolation_level: Some("strict".to_string()),
+        }))
+        .await
+        .unwrap();
+    let updated_quota = update_resp.get_ref().quota.as_ref().unwrap();
+    assert_eq!(updated_quota.max_nodes, 100);
+    assert_eq!(update_resp.get_ref().isolation_level, "strict");
+}
+
+// ─── Test 37: Admin create + update vCluster lifecycle (in-memory) ───
+#[tokio::test]
+async fn admin_create_update_vcluster_lifecycle() {
+    let state = test_state();
+    let admin_svc = LatticeAdminService::new(state.clone());
+
+    // Create tenant first
+    admin_svc
+        .create_tenant(Request::new(pb::CreateTenantRequest {
+            name: "ml-team".to_string(),
+            quota: Some(pb::TenantQuotaSpec {
+                max_nodes: 100,
+                fair_share_target: 0.5,
+                gpu_hours_budget: None,
+                max_concurrent_allocations: None,
+            }),
+            isolation_level: "standard".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    // Create vCluster
+    let create_resp = admin_svc
+        .create_v_cluster(Request::new(pb::CreateVClusterRequest {
+            name: "train-vc".to_string(),
+            tenant_id: "ml-team".to_string(),
+            scheduler_type: "hpc_backfill".to_string(),
+            cost_weights: None,
+            dedicated_nodes: vec![],
+            allow_borrowing: false,
+            allow_lending: false,
+        }))
+        .await
+        .unwrap();
+    let vc_id = create_resp.get_ref().vcluster_id.clone();
+    assert!(!vc_id.is_empty());
+    assert_eq!(create_resp.get_ref().name, "train-vc");
+
+    // Update vCluster cost weights
+    let update_resp = admin_svc
+        .update_v_cluster(Request::new(pb::UpdateVClusterRequest {
+            vcluster_id: vc_id.clone(),
+            cost_weights: Some(pb::CostWeightsSpec {
+                priority: 2.0,
+                wait_time: 1.5,
+                fair_share: 1.0,
+                topology: 3.0,
+                data_readiness: 0.5,
+                backlog: 1.0,
+                energy: 0.2,
+                checkpoint_efficiency: 0.8,
+                conformance: 1.0,
+            }),
+            allow_borrowing: Some(true),
+            allow_lending: Some(false),
+        }))
+        .await
+        .unwrap();
+    assert_eq!(update_resp.get_ref().vcluster_id, vc_id);
+}
+
+// ─── Test 38: Node disable via gRPC ──────────────────────────
+#[tokio::test]
+async fn node_disable_sets_down_state() {
+    let nodes = lattice_test_harness::fixtures::create_node_batch(3, 0);
+    let state = Arc::new(ApiState {
+        allocations: Arc::new(MockAllocationStore::new()),
+        nodes: Arc::new(MockNodeRegistry::new().with_nodes(nodes.clone())),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+    });
+    let node_svc = LatticeNodeService::new(state.clone());
+
+    let resp = node_svc
+        .disable_node(Request::new(pb::DisableNodeRequest {
+            node_id: nodes[0].id.clone(),
+            reason: "hardware failure".to_string(),
+        }))
+        .await
+        .unwrap();
+    assert!(resp.get_ref().success);
+
+    // Verify node is Down
+    let node = state.nodes.get_node(&nodes[0].id).await.unwrap();
+    assert!(
+        matches!(node.state, NodeState::Down { .. }),
+        "node should be Down, got {:?}",
+        node.state
+    );
+}
+
+// ─── Test 39: Admin backup_verify returns not-implemented ────
+#[tokio::test]
+async fn admin_backup_verify_returns_not_implemented() {
+    let state = test_state();
+    let admin_svc = LatticeAdminService::new(state);
+
+    let resp = admin_svc
+        .backup_verify(Request::new(pb::BackupVerifyRequest {
+            backup_path: "/tmp/test-backup".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    // Without quorum, returns a stub response
+    assert!(!resp.get_ref().valid);
+    assert!(resp.get_ref().message.contains("not yet implemented"));
+}
+
+// ─── Test 39b: Admin backup_verify with empty path → error ───
+#[tokio::test]
+async fn admin_backup_verify_empty_path_returns_error() {
+    let state = test_state();
+    let admin_svc = LatticeAdminService::new(state);
+
+    let result = admin_svc
+        .backup_verify(Request::new(pb::BackupVerifyRequest {
+            backup_path: String::new(),
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().code(),
+        tonic::Code::InvalidArgument
+    );
+}
+
+// ─── Test 40: LaunchTasks RPC returns task ID ────────────────
+#[tokio::test]
+async fn launch_tasks_returns_task_id() {
+    let state = test_state();
+    let svc = LatticeAllocationService::new(state.clone());
+
+    // Submit an allocation first
+    let resp = svc
+        .submit(Request::new(single_submit_request("physics")))
+        .await
+        .unwrap();
+    let alloc_id = &resp.get_ref().allocation_ids[0];
+
+    // Launch tasks
+    let launch_resp = svc
+        .launch_tasks(Request::new(pb::LaunchTasksRequest {
+            allocation_id: alloc_id.clone(),
+            num_tasks: 4,
+            tasks_per_node: 1,
+            entrypoint: "python worker.py".to_string()
+        }))
+        .await
+        .unwrap();
+
+    assert!(
+        !launch_resp.get_ref().task_launch_id.is_empty(),
+        "should receive a task launch ID"
+    );
+    // Verify it's a valid UUID
+    assert!(
+        Uuid::parse_str(&launch_resp.get_ref().task_launch_id).is_ok(),
+        "task_launch_id should be a valid UUID"
+    );
+}
+
+// ─── Test 41: LaunchTasks with invalid ID → error ────────────
+#[tokio::test]
+async fn launch_tasks_invalid_allocation_id_returns_error() {
+    let state = test_state();
+    let svc = LatticeAllocationService::new(state);
+
+    let result = svc
+        .launch_tasks(Request::new(pb::LaunchTasksRequest {
+            allocation_id: "not-a-uuid".to_string(),
+            num_tasks: 1,
+            tasks_per_node: 1,
+            entrypoint: "echo hello".to_string()
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().code(),
+        tonic::Code::InvalidArgument
+    );
+}
+
+// ─── Test 42: CompareMetrics with TSDB data ──────────────────
+#[tokio::test]
+async fn compare_metrics_returns_aligned_series() {
+    let tsdb = Arc::new(MockTsdb::new());
+    tsdb.register("gpu_utilization", vec![(100, 0.5), (200, 0.8)]);
+
+    let state = streaming_test_state_with_tsdb(tsdb);
+    let svc = LatticeAllocationService::new(state.clone());
+
+    // Create two allocations to compare
+    let resp1 = svc
+        .submit(Request::new(single_submit_request("physics")))
+        .await
+        .unwrap();
+    let resp2 = svc
+        .submit(Request::new(single_submit_request("physics")))
+        .await
+        .unwrap();
+    let id1 = &resp1.get_ref().allocation_ids[0];
+    let id2 = &resp2.get_ref().allocation_ids[0];
+
+    let compare_resp = svc
+        .compare_metrics(Request::new(pb::CompareMetricsRequest {
+            allocation_ids: vec![id1.clone(), id2.clone()],
+            metrics: vec!["gpu_utilization".to_string()],
+            relative_time: true,
+        }))
+        .await
+        .unwrap();
+
+    let series = &compare_resp.get_ref().series;
+    assert_eq!(series.len(), 2, "should have series for both allocations");
+    assert_eq!(series[0].allocation_id, *id1);
+    assert_eq!(series[1].allocation_id, *id2);
+}
+
+// ─── Test 43: CompareMetrics without TSDB → UNAVAILABLE ──────
+#[tokio::test]
+async fn compare_metrics_without_tsdb_returns_unavailable() {
+    let state = streaming_test_state();
+    let svc = LatticeAllocationService::new(state);
+
+    let result = svc
+        .compare_metrics(Request::new(pb::CompareMetricsRequest {
+            allocation_ids: vec![Uuid::new_v4().to_string()],
+            metrics: vec!["gpu_utilization".to_string()],
+            relative_time: true,
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), tonic::Code::Unavailable);
+}
+
+// ─── Test 44: REST tenant create and list ────────────────────
+#[tokio::test]
+async fn rest_tenant_create_returns_201_with_correct_data() {
+    let state = rest_test_state();
+
+    // Create tenant
+    let app = rest::router(state.clone());
+    let body = serde_json::json!({
+        "name": "bio",
+        "max_nodes": 30,
+        "fair_share_target": 0.4,
+        "isolation_level": "standard"
+    });
+    let resp = app
+        .oneshot(
+            http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::CREATED);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let tenant: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(tenant["name"], "bio");
+    assert_eq!(tenant["max_nodes"], 30);
+    assert_eq!(tenant["isolation_level"], "standard");
+
+    // List tenants without quorum returns empty (quorum-dependent)
+    let app = rest::router(state.clone());
+    let resp = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/v1/tenants")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+// ─── Test 45: REST vCluster create ───────────────────────────
+#[tokio::test]
+async fn rest_vcluster_create_returns_201_with_correct_data() {
+    let state = rest_test_state();
+
+    // Create vCluster
+    let app = rest::router(state.clone());
+    let body = serde_json::json!({
+        "name": "train-gpu",
+        "tenant_id": "physics",
+        "scheduler_type": "hpc_backfill"
+    });
+    let resp = app
+        .oneshot(
+            http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/vclusters")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::CREATED);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let vc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(vc["name"], "train-gpu");
+    assert_eq!(vc["tenant_id"], "physics");
+    assert_eq!(vc["scheduler_type"], "hpc_backfill");
+    assert!(!vc["id"].as_str().unwrap().is_empty());
+
+    // List vClusters without quorum returns empty (quorum-dependent)
+    let app = rest::router(state.clone());
+    let resp = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/v1/vclusters")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+// ─── Test 46: REST undrain node ──────────────────────────────
+#[tokio::test]
+async fn rest_undrain_node() {
+    let nodes = lattice_test_harness::fixtures::create_node_batch(3, 0);
+    let state = Arc::new(ApiState {
+        allocations: Arc::new(MockAllocationStore::new()),
+        nodes: Arc::new(MockNodeRegistry::new().with_nodes(nodes.clone())),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+    });
+    let node_id = &nodes[0].id;
+
+    // Drain the node first
+    state
+        .nodes
+        .update_node_state(node_id, NodeState::Draining)
+        .await
+        .unwrap();
+    state
+        .nodes
+        .update_node_state(node_id, NodeState::Drained)
+        .await
+        .unwrap();
+
+    // Undrain via REST
+    let app = rest::router(state.clone());
+    let resp = app
+        .oneshot(
+            http::Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/nodes/{node_id}/undrain"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    // Verify node is Ready
+    let node = state.nodes.get_node(node_id).await.unwrap();
+    assert!(
+        matches!(node.state, NodeState::Ready),
+        "node should be Ready after undrain, got {:?}",
+        node.state
+    );
+}
+
+// ─── Test 47: Admin + Node service: drain + submit → only non-drained nodes listed ─
+#[tokio::test]
+async fn admin_drain_and_node_list_filters_correctly() {
+    let nodes = lattice_test_harness::fixtures::create_node_batch(4, 0);
+    let state = Arc::new(ApiState {
+        allocations: Arc::new(MockAllocationStore::new()),
+        nodes: Arc::new(MockNodeRegistry::new().with_nodes(nodes.clone())),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+    });
+    let node_svc = LatticeNodeService::new(state.clone());
+
+    // Drain 2 of 4 nodes
+    for i in 0..2 {
+        node_svc
+            .drain_node(Request::new(pb::DrainNodeRequest {
+                node_id: nodes[i].id.clone(),
+                reason: "test".to_string(),
+            }))
+            .await
+            .unwrap();
+    }
+
+    // List all nodes — should show 4 total
+    let list_resp = node_svc
+        .list_nodes(Request::new(pb::ListNodesRequest::default()))
+        .await
+        .unwrap();
+    assert_eq!(list_resp.get_ref().nodes.len(), 4);
+
+    // Verify exactly 2 are draining
+    let draining_count = list_resp
+        .get_ref()
+        .nodes
+        .iter()
+        .filter(|n| n.state == "draining")
+        .count();
+    assert_eq!(draining_count, 2);
+}
+
+// ─── Test 48: Admin update nonexistent tenant → NOT_FOUND ────
+#[tokio::test]
+async fn admin_update_nonexistent_tenant_returns_not_found() {
+    let state = test_state();
+    let admin_svc = LatticeAdminService::new(state);
+
+    let result = admin_svc
+        .update_tenant(Request::new(pb::UpdateTenantRequest {
+            tenant_id: "nonexistent".to_string(),
+            quota: Some(pb::TenantQuotaSpec {
+                max_nodes: 10,
+                ..Default::default()
+            }),
+            isolation_level: None,
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), tonic::Code::NotFound);
+}
+
+// ─── Test 49: Admin update nonexistent vCluster → NOT_FOUND ──
+#[tokio::test]
+async fn admin_update_nonexistent_vcluster_returns_not_found() {
+    let state = test_state();
+    let admin_svc = LatticeAdminService::new(state);
+
+    let result = admin_svc
+        .update_v_cluster(Request::new(pb::UpdateVClusterRequest {
+            vcluster_id: "nonexistent-id".to_string(),
+            cost_weights: None,
+            allow_borrowing: Some(true),
+            allow_lending: None,
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), tonic::Code::NotFound);
+}
+
+// ─── Test 50: REST accounting usage without service → 503 ────
+#[tokio::test]
+async fn rest_accounting_usage_without_service_returns_ok_with_null_budget() {
+    let state = rest_test_state(); // no accounting service
+    let app = rest::router(state);
+    let resp = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/v1/accounting/usage?tenant=physics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let usage: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(usage["tenant"], "physics");
+    assert!(usage["remaining_budget"].is_null(), "budget should be null without accounting service");
+}

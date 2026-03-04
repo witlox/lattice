@@ -958,3 +958,498 @@ async fn agent_checkpoint_to_signal_delivery() {
         .collect();
     assert_eq!(signal_calls.len(), 1);
 }
+
+// ===============================================================
+// Test 11: Attach session lifecycle -- attach, write, read, resize, detach
+// ===============================================================
+
+#[tokio::test]
+async fn attach_session_lifecycle() {
+    use lattice_node_agent::allocation_runner::AllocationManager;
+    use lattice_node_agent::attach::{AttachManager, MockOwnerLookup};
+    use lattice_node_agent::pty::{MockPtyBackend, TerminalSize};
+
+    let alloc_id = Uuid::new_v4();
+    let user = "alice".to_string();
+
+    // Set up allocation manager with a running allocation.
+    let alloc_mgr = {
+        let mut mgr = AllocationManager::new();
+        mgr.start(alloc_id, "python train.py".to_string()).unwrap();
+        mgr.advance(&alloc_id).unwrap(); // Prologue -> Running
+        Arc::new(Mutex::new(mgr))
+    };
+
+    let owner_lookup = Arc::new(MockOwnerLookup::new());
+    owner_lookup.set_owner(alloc_id, user.clone()).await;
+
+    let pty_backend = Arc::new(MockPtyBackend::new());
+    let attach_mgr = AttachManager::new(pty_backend.clone(), alloc_mgr, owner_lookup);
+
+    // Attach
+    let session = attach_mgr
+        .attach(alloc_id, user.clone(), None, TerminalSize::default())
+        .await
+        .unwrap();
+    assert_eq!(session.alloc_id, alloc_id);
+    assert_eq!(session.user, user);
+    assert_eq!(attach_mgr.active_session_count().await, 1);
+
+    // Write user input
+    attach_mgr.write(&session.id, b"echo hello\n").await.unwrap();
+    let written = pty_backend.written_data(&session.pty_session_id).await;
+    assert_eq!(written, b"echo hello\n");
+
+    // Enqueue process output and read
+    pty_backend
+        .enqueue_read_data(&session.pty_session_id, b"hello\n".to_vec())
+        .await;
+    let output = attach_mgr.read(&session.id).await.unwrap();
+    assert_eq!(output, b"hello\n");
+
+    // Resize terminal
+    let new_size = TerminalSize { rows: 40, cols: 160 };
+    attach_mgr.resize(&session.id, new_size).await.unwrap();
+    let actual_size = pty_backend
+        .current_size(&session.pty_session_id)
+        .await
+        .unwrap();
+    assert_eq!(actual_size, new_size);
+
+    // Detach
+    let exit_code = attach_mgr.detach(&session.id).await.unwrap();
+    assert_eq!(exit_code, None);
+    assert_eq!(attach_mgr.active_session_count().await, 0);
+
+    // Session is gone
+    assert!(attach_mgr.get_session(&session.id).await.is_none());
+}
+
+// ===============================================================
+// Test 12: Attach permission denied for wrong user
+// ===============================================================
+
+#[tokio::test]
+async fn attach_permission_denied() {
+    use lattice_node_agent::allocation_runner::AllocationManager;
+    use lattice_node_agent::attach::{AttachError, AttachManager, MockOwnerLookup};
+    use lattice_node_agent::pty::{MockPtyBackend, TerminalSize};
+
+    let alloc_id = Uuid::new_v4();
+    let owner = "alice".to_string();
+    let intruder = "eve".to_string();
+
+    let alloc_mgr = {
+        let mut mgr = AllocationManager::new();
+        mgr.start(alloc_id, "train.py".to_string()).unwrap();
+        mgr.advance(&alloc_id).unwrap(); // Prologue -> Running
+        Arc::new(Mutex::new(mgr))
+    };
+
+    let owner_lookup = Arc::new(MockOwnerLookup::new());
+    owner_lookup.set_owner(alloc_id, owner.clone()).await;
+
+    let pty_backend = Arc::new(MockPtyBackend::new());
+    let attach_mgr = AttachManager::new(pty_backend, alloc_mgr, owner_lookup);
+
+    // Attempt attach as wrong user
+    let result = attach_mgr
+        .attach(alloc_id, intruder.clone(), None, TerminalSize::default())
+        .await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AttachError::PermissionDenied {
+            user,
+            alloc_id: err_alloc_id,
+            owner: err_owner,
+        } => {
+            assert_eq!(user, "eve");
+            assert_eq!(err_alloc_id, alloc_id);
+            assert_eq!(err_owner, "alice");
+        }
+        other => panic!("expected PermissionDenied, got: {other:?}"),
+    }
+
+    // No session was created
+    assert_eq!(attach_mgr.active_session_count().await, 0);
+}
+
+// ===============================================================
+// Test 13: Telemetry collector multi-mode switching
+// ===============================================================
+
+#[tokio::test]
+async fn telemetry_collector_multi_mode() {
+    use lattice_node_agent::telemetry::{TelemetryCollector, TelemetryMode, TelemetrySample};
+
+    fn make_sample(gpu_util: f64, cpu_util: f64) -> TelemetrySample {
+        TelemetrySample {
+            timestamp: chrono::Utc::now(),
+            gpu_utilization: vec![gpu_util],
+            gpu_memory_used_gb: vec![20.0],
+            cpu_utilization: cpu_util,
+            memory_used_gb: 128.0,
+            network_rx_gbps: 10.0,
+            network_tx_gbps: 5.0,
+            storage_read_mbps: 100.0,
+            storage_write_mbps: 50.0,
+        }
+    }
+
+    let mut collector = TelemetryCollector::new(TelemetryMode::Production);
+    assert_eq!(collector.mode(), TelemetryMode::Production);
+    assert_eq!(TelemetryMode::Production.interval_secs(), 30);
+
+    // Record samples in Production mode.
+    collector.record(make_sample(0.7, 0.4));
+    collector.record(make_sample(0.8, 0.5));
+    assert_eq!(collector.sample_count(), 2);
+
+    // Switch to Debug mode.
+    collector.set_mode(TelemetryMode::Debug);
+    assert_eq!(collector.mode(), TelemetryMode::Debug);
+    assert_eq!(TelemetryMode::Debug.interval_secs(), 1);
+
+    // Samples from previous mode are preserved in the buffer.
+    assert_eq!(collector.sample_count(), 2);
+
+    // Record more samples in Debug mode.
+    collector.record(make_sample(0.9, 0.6));
+    assert_eq!(collector.sample_count(), 3);
+
+    // Switch to Audit mode.
+    collector.set_mode(TelemetryMode::Audit);
+    assert_eq!(collector.mode(), TelemetryMode::Audit);
+    assert_eq!(TelemetryMode::Audit.interval_secs(), 10);
+
+    // Record one more sample in Audit mode.
+    collector.record(make_sample(0.5, 0.3));
+    assert_eq!(collector.sample_count(), 4);
+}
+
+// ===============================================================
+// Test 14: Telemetry collector aggregation
+// ===============================================================
+
+#[tokio::test]
+async fn telemetry_collector_aggregation() {
+    use lattice_node_agent::telemetry::{TelemetryCollector, TelemetryMode, TelemetrySample};
+
+    let mut collector = TelemetryCollector::new(TelemetryMode::Debug);
+
+    // Empty aggregation returns None.
+    assert!(collector.aggregate().is_none());
+
+    let samples = vec![
+        TelemetrySample {
+            timestamp: chrono::Utc::now(),
+            gpu_utilization: vec![0.4, 0.6],
+            gpu_memory_used_gb: vec![10.0, 15.0],
+            cpu_utilization: 0.3,
+            memory_used_gb: 100.0,
+            network_rx_gbps: 8.0,
+            network_tx_gbps: 4.0,
+            storage_read_mbps: 50.0,
+            storage_write_mbps: 25.0,
+        },
+        TelemetrySample {
+            timestamp: chrono::Utc::now(),
+            gpu_utilization: vec![0.8, 0.9],
+            gpu_memory_used_gb: vec![20.0, 25.0],
+            cpu_utilization: 0.7,
+            memory_used_gb: 200.0,
+            network_rx_gbps: 12.0,
+            network_tx_gbps: 6.0,
+            storage_read_mbps: 150.0,
+            storage_write_mbps: 75.0,
+        },
+        TelemetrySample {
+            timestamp: chrono::Utc::now(),
+            gpu_utilization: vec![0.6, 0.6],
+            gpu_memory_used_gb: vec![15.0, 15.0],
+            cpu_utilization: 0.5,
+            memory_used_gb: 150.0,
+            network_rx_gbps: 10.0,
+            network_tx_gbps: 5.0,
+            storage_read_mbps: 100.0,
+            storage_write_mbps: 50.0,
+        },
+    ];
+
+    for s in samples {
+        collector.record(s);
+    }
+
+    let agg = collector.aggregate().unwrap();
+    assert_eq!(agg.sample_count, 3);
+
+    // Sample 1 avg GPU util: (0.4+0.6)/2 = 0.5
+    // Sample 2 avg GPU util: (0.8+0.9)/2 = 0.85
+    // Sample 3 avg GPU util: (0.6+0.6)/2 = 0.6
+    // Overall avg: (0.5+0.85+0.6)/3 = 0.65
+    assert!((agg.avg_gpu_utilization - 0.65).abs() < 0.001);
+
+    // Max GPU util across samples: 0.85
+    assert!((agg.max_gpu_utilization - 0.85).abs() < 0.001);
+
+    // Avg CPU: (0.3+0.7+0.5)/3 = 0.5
+    assert!((agg.avg_cpu_utilization - 0.5).abs() < 0.001);
+
+    // Avg memory: (100+200+150)/3 = 150.0
+    assert!((agg.avg_memory_used_gb - 150.0).abs() < 0.001);
+
+    // Avg rx: (8+12+10)/3 = 10.0
+    assert!((agg.avg_network_rx_gbps - 10.0).abs() < 0.001);
+
+    // Avg tx: (4+6+5)/3 = 5.0
+    assert!((agg.avg_network_tx_gbps - 5.0).abs() < 0.001);
+}
+
+// ===============================================================
+// Test 15: Stub memory discovery -- default DRAM domain
+// ===============================================================
+
+#[tokio::test]
+async fn stub_memory_discovery_default() {
+    use lattice_common::types::MemoryDomainType;
+    use lattice_node_agent::telemetry::memory_discovery::{
+        MemoryDiscoveryProvider, StubMemoryDiscovery,
+    };
+
+    let stub = StubMemoryDiscovery::default();
+    let topo = stub.discover().await.unwrap();
+
+    assert_eq!(topo.domains.len(), 1);
+    assert_eq!(topo.domains[0].domain_type, MemoryDomainType::Dram);
+    assert_eq!(topo.domains[0].id, 0);
+    assert_eq!(topo.domains[0].numa_node, Some(0));
+    assert_eq!(topo.domains[0].attached_cpus, vec![0, 1, 2, 3]);
+    assert!(topo.domains[0].attached_gpus.is_empty());
+    // Default is 512 GB
+    assert_eq!(topo.total_capacity_bytes, 512 * 1024 * 1024 * 1024);
+    assert_eq!(topo.domains[0].capacity_bytes, 512 * 1024 * 1024 * 1024);
+    assert!(topo.interconnects.is_empty());
+}
+
+// ===============================================================
+// Test 16: Stub memory discovery -- unified domain type
+// ===============================================================
+
+#[tokio::test]
+async fn stub_memory_discovery_unified() {
+    use lattice_common::types::MemoryDomainType;
+    use lattice_node_agent::telemetry::memory_discovery::{
+        MemoryDiscoveryProvider, StubMemoryDiscovery,
+    };
+
+    let cap = 256 * 1024 * 1024 * 1024u64;
+    let stub = StubMemoryDiscovery::new(cap).with_type(MemoryDomainType::Unified);
+    let topo = stub.discover().await.unwrap();
+
+    assert_eq!(topo.domains.len(), 1);
+    assert_eq!(topo.domains[0].domain_type, MemoryDomainType::Unified);
+    assert_eq!(topo.total_capacity_bytes, cap);
+    assert_eq!(topo.domains[0].capacity_bytes, cap);
+    assert_eq!(topo.domains[0].numa_node, Some(0));
+}
+
+// ===============================================================
+// Test 17: Log buffer write/read cycle with wrap-around
+// ===============================================================
+
+#[tokio::test]
+async fn log_buffer_write_read_cycle() {
+    let mut buf = LogRingBuffer::with_capacity(16);
+
+    // Write some data within capacity.
+    buf.write(b"AAAA");
+    buf.write(b"BBBB");
+    assert_eq!(buf.len(), 8);
+    assert_eq!(buf.read_all(), b"AAAABBBB");
+
+    // Fill the buffer exactly.
+    buf.write(b"CCCCCCCC");
+    assert_eq!(buf.len(), 16);
+    assert_eq!(buf.read_all(), b"AAAABBBBCCCCCCCC");
+
+    // Write past capacity -- wraps around, overwriting oldest data.
+    buf.write(b"1234");
+    assert_eq!(buf.len(), 16);
+    let data = buf.read_all();
+    // AAAABBBB + CCCCCCCC = 16 bytes, then 1234 overwrites first 4 bytes.
+    // write_pos = 20 % 16 = 4, so oldest starts at 4:
+    // buf[4..16] + buf[0..4] = "BBBBCCCCCCCC" + "1234"
+    assert_eq!(data, b"BBBBCCCCCCCC1234");
+
+    // Write even more to wrap again.
+    buf.write(b"XYZW");
+    let data2 = buf.read_all();
+    // write_pos = 24 % 16 = 8, buf[8..16] + buf[0..8]
+    assert_eq!(data2, b"CCCCCCCC1234XYZW");
+}
+
+// ===============================================================
+// Test 18: Log buffer S3 flush integration
+// ===============================================================
+
+#[tokio::test]
+async fn log_buffer_s3_flush_integration() {
+    let mut buf = LogRingBuffer::with_capacity(1024);
+    buf.write(b"line 1: training epoch 1\n");
+    buf.write(b"line 2: training epoch 2\n");
+    buf.write(b"line 3: evaluation complete\n");
+
+    let (s3, uploads) = MockS3::new();
+    buf.flush_to_s3(&s3, "test-bucket", "logs/alloc-42.log")
+        .await
+        .unwrap();
+
+    let uploads = uploads.lock().await;
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(uploads[0].0, "test-bucket");
+    assert_eq!(uploads[0].1, "logs/alloc-42.log");
+
+    let content = String::from_utf8(uploads[0].2.clone()).unwrap();
+    assert!(content.contains("line 1: training epoch 1"));
+    assert!(content.contains("line 2: training epoch 2"));
+    assert!(content.contains("line 3: evaluation complete"));
+
+    // Verify the data is in order: line 1 before line 2 before line 3.
+    let pos1 = content.find("line 1").unwrap();
+    let pos2 = content.find("line 2").unwrap();
+    let pos3 = content.find("line 3").unwrap();
+    assert!(pos1 < pos2);
+    assert!(pos2 < pos3);
+}
+
+// ===============================================================
+// Test 19: Mock data stage executor records calls
+// ===============================================================
+
+#[tokio::test]
+async fn mock_data_stage_records_calls() {
+    use lattice_common::types::{DataAccess, DataMount, StorageTier};
+    use lattice_node_agent::data_stage::{DataStageExecutor, MockDataStageExecutor};
+
+    let mock = MockDataStageExecutor::new();
+    let alloc_id = Uuid::new_v4();
+    let mounts = vec![
+        DataMount {
+            source: "s3://data/input".to_string(),
+            target: "/mnt/input".to_string(),
+            access: DataAccess::ReadOnly,
+            tier_hint: Some(StorageTier::Hot),
+        },
+        DataMount {
+            source: "nfs://nas/output".to_string(),
+            target: "/mnt/output".to_string(),
+            access: DataAccess::ReadWrite,
+            tier_hint: Some(StorageTier::Hot),
+        },
+    ];
+
+    let result = mock
+        .stage_mounts(alloc_id, &mounts, Some("/scratch"))
+        .await
+        .unwrap();
+    assert_eq!(result.mounts_staged, 2);
+    assert_eq!(result.total_processed, 2);
+
+    // Verify staging calls were recorded.
+    let staged = mock.staged_calls();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].0, alloc_id);
+    assert_eq!(staged[0].1.len(), 2);
+    assert_eq!(staged[0].1[0].source, "s3://data/input");
+    assert_eq!(staged[0].1[1].target, "/mnt/output");
+
+    // Now cleanup.
+    mock.cleanup_mounts(alloc_id, &mounts).await.unwrap();
+    let cleaned = mock.cleaned_calls();
+    assert_eq!(cleaned.len(), 1);
+    assert_eq!(cleaned[0].0, alloc_id);
+    assert_eq!(cleaned[0].1.len(), 2);
+}
+
+// ===============================================================
+// Test 20: Mock data stage executor error injection
+// ===============================================================
+
+#[tokio::test]
+async fn mock_data_stage_error_injection() {
+    use lattice_common::types::{DataAccess, DataMount, StorageTier};
+    use lattice_node_agent::data_stage::{DataStageExecutor, MockDataStageExecutor};
+
+    let mock = MockDataStageExecutor::with_error("disk full");
+    let alloc_id = Uuid::new_v4();
+    let mounts = vec![DataMount {
+        source: "s3://data/large-dataset".to_string(),
+        target: "/mnt/data".to_string(),
+        access: DataAccess::ReadOnly,
+        tier_hint: Some(StorageTier::Hot),
+    }];
+
+    let result = mock.stage_mounts(alloc_id, &mounts, None).await;
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("disk full"),
+        "error should contain injected message, got: {err_msg}"
+    );
+
+    // Staging calls should not have been recorded.
+    assert!(mock.staged_calls().is_empty());
+
+    // Cleanup should still succeed (error only affects staging).
+    mock.cleanup_mounts(alloc_id, &mounts).await.unwrap();
+    assert_eq!(mock.cleaned_calls().len(), 1);
+}
+
+// ===============================================================
+// Test 21: ProcSysCollector lifecycle (attach/collect/detach)
+// ===============================================================
+
+#[tokio::test]
+async fn proc_collector_lifecycle() {
+    use lattice_node_agent::telemetry::ebpf_stubs::{CollectorState, EbpfCollector};
+    use lattice_node_agent::telemetry::proc_collector::ProcSysCollector;
+
+    let mut collector = ProcSysCollector::new();
+
+    // Starts detached.
+    assert_eq!(collector.state(), CollectorState::Detached);
+
+    // Cannot read events while detached.
+    let err = collector.read_events().await;
+    assert!(err.is_err());
+
+    // Attach.
+    collector.attach().await.unwrap();
+    assert_eq!(collector.state(), CollectorState::Attached);
+
+    // Double attach fails.
+    assert!(collector.attach().await.is_err());
+
+    // Collect a snapshot (returns system metrics; on macOS returns defaults).
+    let snapshot = collector.collect().await;
+    // On any platform, the snapshot struct should exist with sane defaults.
+    assert!(snapshot.cpu.idle_percent >= 0.0);
+    assert!(snapshot.cpu.total_percent >= 0.0);
+
+    // Read events while attached returns a JSON-encoded event.
+    let events = collector.read_events().await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "system_snapshot");
+    assert!(!events[0].payload.is_empty());
+
+    // Detach.
+    collector.detach().await.unwrap();
+    assert_eq!(collector.state(), CollectorState::Detached);
+
+    // Double detach fails.
+    assert!(collector.detach().await.is_err());
+
+    // Cannot read events after detach.
+    assert!(collector.read_events().await.is_err());
+}
