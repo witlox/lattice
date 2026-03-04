@@ -48,7 +48,7 @@ const PROGRAM_NAMES: &[&str] = &["sched_events", "blk_io", "mem_events", "net_fl
 pub struct AyaEbpfCollector {
     config: AyaCollectorConfig,
     state: CollectorState,
-    bpf_instances: Vec<aya::Bpf>,
+    bpf_instances: Vec<aya::Ebpf>,
 }
 
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
@@ -67,7 +67,7 @@ impl AyaEbpfCollector {
             std::fs::read(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
 
         let mut bpf =
-            aya::Bpf::load(&data).map_err(|e| format!("failed to load BPF program {name}: {e}"))?;
+            aya::Ebpf::load(&data).map_err(|e| format!("failed to load BPF program {name}: {e}"))?;
 
         // Attach all programs in the object file.
         for (prog_name, prog) in bpf.programs_mut() {
@@ -136,17 +136,24 @@ impl EbpfCollector for AyaEbpfCollector {
 
         // Poll perf event arrays from each loaded BPF instance.
         for bpf in &mut self.bpf_instances {
-            for (map_name, map) in bpf.maps() {
-                if map_name != "events" {
-                    continue;
-                }
-                if let Ok(perf_array) = aya::maps::PerfEventArray::try_from(map) {
+            let map_names: Vec<String> = bpf
+                .maps()
+                .filter(|(name, _)| *name == "events")
+                .map(|(name, _)| name.to_string())
+                .collect();
+
+            for map_name in &map_names {
+                let map = match bpf.map_mut(map_name) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                if let Ok(mut perf_array) = aya::maps::PerfEventArray::try_from(map) {
                     // Read available buffers from each CPU.
                     let cpus = aya::util::online_cpus()
-                        .map_err(|e| format!("failed to get online CPUs: {e}"))?;
+                        .map_err(|(msg, e)| format!("failed to get online CPUs: {msg}: {e}"))?;
                     for cpu in cpus {
                         let mut buf = [0u8; 4096];
-                        if let Ok(perf_buf) = perf_array.open(cpu as u32, Some(64)) {
+                        if let Ok(mut perf_buf) = perf_array.open(cpu, Some(64)) {
                             while let Ok(event) = perf_buf.read_events(&mut [&mut buf]) {
                                 if event.read == 0 {
                                     break;

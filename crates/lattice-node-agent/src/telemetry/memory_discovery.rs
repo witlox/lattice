@@ -108,7 +108,7 @@ async fn discover_sysfs() -> Result<MemoryTopology, DiscoveryError> {
 
     // Check for CXL devices
     let cxl_domains = discover_cxl_domains().await;
-    let cxl_interconnects = cxl_domains
+    let cxl_interconnects: Vec<_> = cxl_domains
         .iter()
         .filter_map(|d| {
             // Connect CXL domain to NUMA node 0 by default
