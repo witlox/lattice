@@ -70,7 +70,9 @@ impl GpuDiscoveryProvider for NvidiaDiscovery {
                 let peer = nvml.device_by_index(j);
                 if let Ok(peer_dev) = peer {
                     // Try to determine link type from topology
-                    let link_type = match device.topology_common_ancestor(&peer_dev) {
+                    // topology_common_ancestor is only available on Linux
+                    #[cfg(target_os = "linux")]
+                    let link_type = match device.topology_common_ancestor(peer_dev) {
                         Ok(level) => {
                             let level_val = level as u32;
                             if level_val <= 2 {
@@ -82,6 +84,11 @@ impl GpuDiscoveryProvider for NvidiaDiscovery {
                             }
                         }
                         Err(_) => GpuLinkType::PCIe,
+                    };
+                    #[cfg(not(target_os = "linux"))]
+                    let link_type = {
+                        let _ = peer_dev;
+                        GpuLinkType::PCIe
                     };
 
                     // Estimate bandwidth based on link type
