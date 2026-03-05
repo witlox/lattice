@@ -5,7 +5,9 @@
 //! no GPUs are detected.
 
 use async_trait::async_trait;
-use lattice_common::types::{GpuDevice, GpuLink, GpuLinkType, GpuTopology, GpuVendor};
+use lattice_common::types::GpuTopology;
+#[cfg(any(feature = "nvidia", feature = "rocm"))]
+use lattice_common::types::{GpuDevice, GpuLink, GpuLinkType, GpuVendor};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -135,18 +137,21 @@ impl GpuDiscoveryProvider for NvidiaDiscovery {
     }
 }
 
-// ─── AMD Discovery (rocm-smi CLI) ──────────────────────────────────────────
+// ─── AMD Discovery (rocm-smi CLI, behind feature flag) ─────────────────────
 
+#[cfg(feature = "rocm")]
 /// AMD GPU discovery via rocm-smi CLI parsing.
 #[derive(Default)]
 pub struct AmdDiscovery;
 
+#[cfg(feature = "rocm")]
 impl AmdDiscovery {
     pub fn new() -> Self {
         Self
     }
 }
 
+#[cfg(feature = "rocm")]
 #[async_trait]
 impl GpuDiscoveryProvider for AmdDiscovery {
     async fn discover(&self) -> Result<GpuTopology, DiscoveryError> {
@@ -204,6 +209,7 @@ impl GpuDiscoveryProvider for AmdDiscovery {
     }
 }
 
+#[cfg(feature = "rocm")]
 /// Run rocm-smi with given arguments. Returns None on failure.
 async fn run_rocm_smi(args: &[&str]) -> Option<String> {
     match tokio::process::Command::new("rocm-smi")
@@ -227,6 +233,7 @@ async fn run_rocm_smi(args: &[&str]) -> Option<String> {
     }
 }
 
+#[cfg(feature = "rocm")]
 /// Parse rocm-smi --showmeminfo vram --csv output.
 /// Returns Vec<(index, memory_bytes)>.
 pub fn parse_rocm_meminfo(output: &str) -> Vec<(u32, u64)> {
@@ -273,6 +280,7 @@ pub fn parse_rocm_meminfo(output: &str) -> Vec<(u32, u64)> {
     results
 }
 
+#[cfg(feature = "rocm")]
 /// Parse rocm-smi --showtopo --csv output.
 /// Returns Vec<(src_index, peer_index, link_type, bandwidth_gbps)>.
 pub fn parse_rocm_topo(output: &str) -> Vec<(u32, u32, GpuLinkType, f64)> {
@@ -350,15 +358,18 @@ impl GpuDiscoveryProvider for AutoDiscovery {
             }
         }
 
-        // Try AMD
-        let amd = AmdDiscovery::new();
-        match amd.discover().await {
-            Ok(topo) if !topo.devices.is_empty() => {
-                debug!("using AMD GPU topology");
-                return Ok(topo);
+        // Try AMD (via feature flag)
+        #[cfg(feature = "rocm")]
+        {
+            let amd = AmdDiscovery::new();
+            match amd.discover().await {
+                Ok(topo) if !topo.devices.is_empty() => {
+                    debug!("using AMD GPU topology");
+                    return Ok(topo);
+                }
+                Ok(_) => debug!("AMD discovery returned no devices"),
+                Err(e) => debug!("AMD discovery failed: {e}"),
             }
-            Ok(_) => debug!("AMD discovery returned no devices"),
-            Err(e) => debug!("AMD discovery failed: {e}"),
         }
 
         // No GPUs found
@@ -376,6 +387,7 @@ impl GpuDiscoveryProvider for AutoDiscovery {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "rocm")]
     const SAMPLE_ROCM_TOPO: &str = "\
 GPU,Peer GPU,Link Type,Bandwidth (GB/s)
 0,1,XGMI,200.0
@@ -386,6 +398,7 @@ GPU,Peer GPU,Link Type,Bandwidth (GB/s)
 2,1,PCIe,32.0
 ";
 
+    #[cfg(feature = "rocm")]
     const SAMPLE_ROCM_MEMINFO: &str = "\
 GPU,VRAM Total (B)
 0,68719476736
@@ -393,6 +406,7 @@ GPU,VRAM Total (B)
 2,68719476736
 ";
 
+    #[cfg(feature = "rocm")]
     #[test]
     fn parse_rocm_topo_output() {
         let links = parse_rocm_topo(SAMPLE_ROCM_TOPO);
@@ -411,6 +425,7 @@ GPU,VRAM Total (B)
         assert!((links[3].3 - 32.0).abs() < 0.01);
     }
 
+    #[cfg(feature = "rocm")]
     #[test]
     fn parse_rocm_meminfo_output() {
         let devices = parse_rocm_meminfo(SAMPLE_ROCM_MEMINFO);
@@ -420,18 +435,21 @@ GPU,VRAM Total (B)
         assert_eq!(devices[2].0, 2);
     }
 
+    #[cfg(feature = "rocm")]
     #[test]
     fn empty_topo_output() {
         let links = parse_rocm_topo("");
         assert!(links.is_empty());
     }
 
+    #[cfg(feature = "rocm")]
     #[test]
     fn empty_meminfo_output() {
         let devices = parse_rocm_meminfo("");
         assert!(devices.is_empty());
     }
 
+    #[cfg(feature = "rocm")]
     #[test]
     fn header_only_topo() {
         let links = parse_rocm_topo("GPU,Peer GPU,Link Type,Bandwidth\n");
@@ -447,6 +465,7 @@ GPU,VRAM Total (B)
                                                                       // The important thing is it doesn't error
     }
 
+    #[cfg(feature = "rocm")]
     #[test]
     fn rocm_topo_pcie_fallback() {
         let input = "GPU,Peer GPU,Link Type,BW\n0,1,unknown,0\n";
@@ -455,6 +474,7 @@ GPU,VRAM Total (B)
         assert_eq!(links[0].2, GpuLinkType::PCIe); // fallback
     }
 
+    #[cfg(feature = "rocm")]
     #[test]
     fn rocm_meminfo_mb_conversion() {
         let input = "GPU,VRAM Total (B)\n0,16384\n";

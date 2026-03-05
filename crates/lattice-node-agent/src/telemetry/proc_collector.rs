@@ -301,6 +301,7 @@ pub fn parse_proc_net_dev(content: &str) -> Vec<NetworkMetrics> {
     result
 }
 
+#[cfg(feature = "nvidia")]
 /// Parse CSV output from `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`.
 ///
 /// Expected columns: utilization.gpu, memory.used, memory.total, power.draw, temperature.gpu
@@ -353,6 +354,7 @@ pub fn parse_nvidia_smi(output: &str) -> Vec<GpuMetrics> {
     result
 }
 
+#[cfg(feature = "rocm")]
 /// Parse CSV output from `rocm-smi --showuse --showmemuse --showtemp --csv`.
 ///
 /// Expected header: `device,GPU use (%),GPU memory use (%),Temperature (Sensor edge) (C)`
@@ -617,9 +619,10 @@ impl ProcSysCollector {
 
     // -- GPUs ---------------------------------------------------------------
 
-    /// Try nvidia-smi first, then rocm-smi. Return empty if neither is available.
+    /// Query GPU metrics via nvidia-smi or rocm-smi (gated by feature flags).
     async fn read_gpus(&self) -> Vec<GpuMetrics> {
-        // Try NVIDIA first.
+        // Try NVIDIA (behind feature flag).
+        #[cfg(feature = "nvidia")]
         if let Ok(output) = tokio::process::Command::new("nvidia-smi")
             .args([
                 "--query-gpu=utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu",
@@ -637,7 +640,8 @@ impl ProcSysCollector {
             }
         }
 
-        // Fallback to AMD ROCm.
+        // Try AMD ROCm (behind feature flag).
+        #[cfg(feature = "rocm")]
         if let Ok(output) = tokio::process::Command::new("rocm-smi")
             .args(["--showuse", "--showmemuse", "--showtemp", "--csv"])
             .output()
@@ -825,11 +829,13 @@ Inter-|   Receive                                                |  Transmit
   eth0: 98765432   12345    0    0    0     0          0         0 87654321   11111    0    0    0     0       0          0
 ";
 
+    #[cfg(feature = "nvidia")]
     const SAMPLE_NVIDIA_SMI: &str = "\
 85, 4096, 8192, 250.00, 72
 92, 6144, 8192, 275.50, 78
 ";
 
+    #[cfg(feature = "rocm")]
     const SAMPLE_ROCM_SMI: &str = "\
 device,GPU use (%),GPU memory use (%),Temperature (Sensor edge) (C)
 0,85.0,50.0,72.0
@@ -946,6 +952,7 @@ Inter-|   Receive                                                |  Transmit
 
     // -- parse_nvidia_smi tests ---------------------------------------------
 
+    #[cfg(feature = "nvidia")]
     #[test]
     fn test_parse_nvidia_smi() {
         let gpus = parse_nvidia_smi(SAMPLE_NVIDIA_SMI);
@@ -968,6 +975,7 @@ Inter-|   Receive                                                |  Transmit
 
     // -- parse_rocm_smi tests -----------------------------------------------
 
+    #[cfg(feature = "rocm")]
     #[test]
     fn test_parse_rocm_smi() {
         let gpus = parse_rocm_smi(SAMPLE_ROCM_SMI);
@@ -1000,10 +1008,18 @@ Inter-|   Receive                                                |  Transmit
 
         let nets = parse_proc_net_dev("");
         assert!(nets.is_empty());
+    }
 
+    #[cfg(feature = "nvidia")]
+    #[test]
+    fn test_empty_nvidia_smi() {
         let nvidia = parse_nvidia_smi("");
         assert!(nvidia.is_empty());
+    }
 
+    #[cfg(feature = "rocm")]
+    #[test]
+    fn test_empty_rocm_smi() {
         let rocm = parse_rocm_smi("");
         assert!(rocm.is_empty());
     }
@@ -1014,6 +1030,7 @@ Inter-|   Receive                                                |  Transmit
         assert!((cpu.total_percent - 0.0).abs() < 0.001);
     }
 
+    #[cfg(feature = "nvidia")]
     #[test]
     fn test_nvidia_smi_partial_line_skipped() {
         let output = "85, 4096\n92, 6144, 8192, 275.50, 78\n";

@@ -33,6 +33,7 @@ libc = "0.2"
 [features]
 default = []
 nvidia = ["dep:nvml-wrapper"]
+rocm = []
 ebpf = ["dep:aya", "dep:bytes"]
 
 [dependencies.nvml-wrapper]

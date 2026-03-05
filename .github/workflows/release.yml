@@ -74,9 +74,9 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         if: steps.check_tag.outputs.exists == 'false'
 
-  # ── Build matrix: arch × GPU variant ───────────────────────────
-  build:
-    name: Build (${{ matrix.arch }}, ${{ matrix.gpu }})
+  # ── Build: arch-only binaries (server, CLI, rm-replay) ─────────
+  build-common:
+    name: Build common (${{ matrix.arch }})
     needs: preflight
     if: needs.preflight.outputs.skip == 'false'
     runs-on: ${{ matrix.runner }}
@@ -84,87 +84,119 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86_64 — default (AMD GPU via rocm-smi)
-          - arch: amd64
-            target: x86_64-unknown-linux-gnu
+          - arch: x86_64
             runner: ubuntu-latest
-            gpu: default
-            agent_features: ""
-          # x86_64 — NVIDIA GPU (nvml-wrapper)
-          - arch: amd64
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            gpu: nvidia
-            agent_features: "--features nvidia"
-          # aarch64 — default (AMD GPU via rocm-smi)
           - arch: arm64
-            target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            gpu: default
-            agent_features: ""
-          # aarch64 — NVIDIA GPU (nvml-wrapper, GH200 superchip)
-          - arch: arm64
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            gpu: nvidia
-            agent_features: "--features nvidia"
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}-${{ matrix.gpu }}
+          key: ${{ matrix.arch }}-common
       - uses: arduino/setup-protoc@v3
 
       - name: Set version
         run: ./scripts/set-version.sh
 
-      # Build server, CLI, and rm-replay (no GPU features needed)
-      # Only build once per arch (skip for nvidia variant)
       - name: Build server, CLI, rm-replay
-        if: matrix.gpu == 'default'
         run: |
           cargo build --release -p lattice-api -p lattice-cli
           cargo build --release --manifest-path tools/rm-replay/Cargo.toml
 
-      # Build node agent with GPU-specific features
-      - name: Build node agent (${{ matrix.gpu }})
-        run: cargo build --release -p lattice-node-agent ${{ matrix.agent_features }}
-
-      - name: Package binaries
+      - name: Package
         run: |
           mkdir -p dist
-          SUFFIX="${{ matrix.arch }}"
+          for bin in lattice-server lattice rm-replay; do
+            if [ -f "target/release/$bin" ]; then
+              cp "target/release/$bin" dist/
+              tar czf "dist/${bin}-${{ matrix.arch }}.tar.gz" -C dist "$bin"
+              rm "dist/$bin"
+            fi
+          done
 
-          # Agent is always built (with GPU variant suffix)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: common-${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+  # ── Build: node agent variants (arch × GPU) ────────────────────
+  #
+  # Artifacts:
+  #   lattice-agent-x86_64-cpu.tar.gz     — CPU-only nodes
+  #   lattice-agent-x86_64-nvidia.tar.gz  — NVIDIA H100/A100/etc
+  #   lattice-agent-x86_64-rocm.tar.gz    — AMD MI300X/MI250/etc
+  #   lattice-agent-arm64-cpu.tar.gz      — CPU-only ARM nodes
+  #   lattice-agent-arm64-nvidia.tar.gz   — NVIDIA GH200 superchip
+  #
+  build-agent:
+    name: Build agent (${{ matrix.arch }}-${{ matrix.gpu }})
+    needs: preflight
+    if: needs.preflight.outputs.skip == 'false'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64 — CPU only (no GPU discovery)
+          - arch: x86_64
+            runner: ubuntu-latest
+            gpu: cpu
+            features: ""
+          # x86_64 — NVIDIA (H100, A100, etc.)
+          - arch: x86_64
+            runner: ubuntu-latest
+            gpu: nvidia
+            features: "--features nvidia"
+          # x86_64 — AMD ROCm (MI300X, MI250, etc.)
+          - arch: x86_64
+            runner: ubuntu-latest
+            gpu: rocm
+            features: "--features rocm"
+          # arm64 — CPU only
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            gpu: cpu
+            features: ""
+          # arm64 — NVIDIA (GH200 Grace Hopper superchip)
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            gpu: nvidia
+            features: "--features nvidia"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}-${{ matrix.gpu }}
+      - uses: arduino/setup-protoc@v3
+
+      - name: Set version
+        run: ./scripts/set-version.sh
+
+      - name: Build node agent
+        run: cargo build --release -p lattice-node-agent ${{ matrix.features }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
           cp target/release/lattice-agent dist/
-          tar czf "dist/lattice-agent-${SUFFIX}-${{ matrix.gpu }}.tar.gz" -C dist lattice-agent
+          tar czf "dist/lattice-agent-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz" -C dist lattice-agent
           rm dist/lattice-agent
 
-          # Server, CLI, rm-replay only in default variant
-          if [ "${{ matrix.gpu }}" = "default" ]; then
-            for bin in lattice-server lattice rm-replay; do
-              if [ -f "target/release/$bin" ]; then
-                cp "target/release/$bin" dist/
-                tar czf "dist/${bin}-${SUFFIX}.tar.gz" -C dist "$bin"
-                rm "dist/$bin"
-              fi
-            done
-          fi
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ matrix.arch }}-${{ matrix.gpu }}
+          name: agent-${{ matrix.arch }}-${{ matrix.gpu }}
           path: dist/*.tar.gz
 
   # ── Publish: collect artifacts and create GitHub release ────────
   publish:
     name: Publish Release
-    needs: [preflight, build]
+    needs: [preflight, build-common, build-agent]
     if: needs.preflight.outputs.skip == 'false'
     runs-on: ubuntu-latest
     steps:
