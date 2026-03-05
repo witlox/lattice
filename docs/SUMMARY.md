@@ -4,6 +4,24 @@
 
 ---
 
+# User Guide
+
+- [Getting Started](usage/getting-started.md)
+- [Submitting Workloads](usage/submitting-workloads.md)
+- [Interactive Sessions](usage/interactive-sessions.md)
+- [DAG Workflows](usage/dag-workflows.md)
+- [Monitoring & Observability](usage/monitoring.md)
+- [Python SDK](usage/python-sdk.md)
+- [Slurm Migration](usage/slurm-migration.md)
+
+# Administration
+
+- [Deployment & Configuration](usage/admin-deployment.md)
+- [Cluster Monitoring](usage/admin-monitoring.md)
+- [Sensitive Workloads](usage/admin-sensitive-workloads.md)
+
+---
+
 # Architecture
 
 - [System Architecture](architecture/system-architecture.md)
