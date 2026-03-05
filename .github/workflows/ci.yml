@@ -6,6 +6,9 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+      - "infra/**"
+      - "examples/**"
+      - "config/**"
       - "book.toml"
       - ".github/workflows/docs.yml"
       - "LICENSE"
@@ -15,6 +18,9 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+      - "infra/**"
+      - "examples/**"
+      - "config/**"
       - "book.toml"
       - ".github/workflows/docs.yml"
       - "LICENSE"
