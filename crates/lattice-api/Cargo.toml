@@ -18,6 +18,7 @@ accounting = ["lattice-common/accounting"]
 lattice-common = { path = "../lattice-common" }
 lattice-node-agent = { path = "../lattice-node-agent" }
 lattice-quorum = { path = "../lattice-quorum" }
+lattice-checkpoint = { path = "../lattice-checkpoint" }
 lattice-test-harness = { path = "../lattice-test-harness" }
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }

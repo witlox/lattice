@@ -200,9 +200,17 @@ async fn main() -> Result<()> {
             None
         };
 
+    // ── Checkpoint Broker ──────────────────────────────────────────────
+    let checkpoint_broker = lattice_checkpoint::LatticeCheckpointBroker::new(
+        lattice_checkpoint::CheckpointParams::default(),
+    )
+    .with_allocation_store(quorum.clone() as Arc<dyn lattice_common::traits::AllocationStore>);
+    let checkpoint: Arc<dyn lattice_common::traits::CheckpointBroker> = Arc::new(checkpoint_broker);
+    info!("Checkpoint broker initialized");
+
     // ── PTY Backend ─────────────────────────────────────────────────────
     let pty: Option<Arc<dyn lattice_node_agent::pty::PtyBackend>> =
-        Some(Arc::new(lattice_node_agent::pty::MockPtyBackend::new()));
+        Some(Arc::new(lattice_node_agent::pty::ProcessPtyBackend::new()));
 
     // ── TLS ───────────────────────────────────────────────────────────────
     let tls = lattice_api::server::tls_config_from_api(&config.api);
@@ -211,7 +219,7 @@ async fn main() -> Result<()> {
         allocations: quorum.clone(),
         nodes: quorum.clone(),
         audit: quorum.clone(),
-        checkpoint: Arc::new(lattice_test_harness::mocks::MockCheckpointBroker::new()),
+        checkpoint,
         quorum: Some(quorum),
         events: lattice_api::events::new_event_bus(),
         tsdb,

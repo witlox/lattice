@@ -1796,6 +1796,7 @@ dependencies = [
  "clap",
  "lattice-common",
  "lattice-test-harness",
+ "libc",
  "nvml-wrapper",
  "prost",
  "serde",
