@@ -996,7 +996,10 @@ async fn attach_session_lifecycle() {
     assert_eq!(attach_mgr.active_session_count().await, 1);
 
     // Write user input
-    attach_mgr.write(&session.id, b"echo hello\n").await.unwrap();
+    attach_mgr
+        .write(&session.id, b"echo hello\n")
+        .await
+        .unwrap();
     let written = pty_backend.written_data(&session.pty_session_id).await;
     assert_eq!(written, b"echo hello\n");
 
@@ -1008,7 +1011,10 @@ async fn attach_session_lifecycle() {
     assert_eq!(output, b"hello\n");
 
     // Resize terminal
-    let new_size = TerminalSize { rows: 40, cols: 160 };
+    let new_size = TerminalSize {
+        rows: 40,
+        cols: 160,
+    };
     attach_mgr.resize(&session.id, new_size).await.unwrap();
     let actual_size = pty_backend
         .current_size(&session.pty_session_id)

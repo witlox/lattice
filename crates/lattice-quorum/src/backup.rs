@@ -36,8 +36,7 @@ pub async fn export_backup(
     path: &Path,
 ) -> io::Result<BackupMetadata> {
     let state_guard = state.read().await;
-    let state_json =
-        serde_json::to_vec_pretty(&*state_guard).map_err(io::Error::other)?;
+    let state_json = serde_json::to_vec_pretty(&*state_guard).map_err(io::Error::other)?;
 
     let metadata = BackupMetadata {
         timestamp: Utc::now(),
@@ -48,15 +47,11 @@ pub async fn export_backup(
         tenant_count: state_guard.tenants.len(),
         audit_entry_count: state_guard.audit_log.len(),
     };
-    let metadata_json =
-        serde_json::to_vec_pretty(&metadata).map_err(io::Error::other)?;
+    let metadata_json = serde_json::to_vec_pretty(&metadata).map_err(io::Error::other)?;
 
     drop(state_guard);
 
-    let prefix = format!(
-        "backup-{}",
-        metadata.timestamp.format("%Y%m%dT%H%M%SZ")
-    );
+    let prefix = format!("backup-{}", metadata.timestamp.format("%Y%m%dT%H%M%SZ"));
 
     // Create tar.gz
     let file = std::fs::File::create(path)?;
@@ -201,10 +196,7 @@ pub fn restore_backup(backup_path: &Path, data_dir: &Path) -> io::Result<BackupM
             let current = snapshot_dir.join("current");
             std::fs::write(&current, snap_filename.as_bytes())?;
 
-            debug!(
-                "Restored backup to {}",
-                snap_path.display()
-            );
+            debug!("Restored backup to {}", snap_path.display());
             break;
         }
     }

@@ -10,6 +10,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "accounting")]
+use crate::error::LatticeError;
+#[cfg(feature = "accounting")]
+use crate::traits::AccountingService;
+#[cfg(feature = "accounting")]
+use crate::types::Allocation;
 use crate::types::{AllocId, TenantId};
 
 /// A resource consumption event to report to Waldur.
@@ -250,6 +256,66 @@ impl HttpWaldurClient {
             return Err(format!("Waldur flush failed: {status}: {text}"));
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "accounting")]
+#[async_trait]
+impl AccountingService for HttpWaldurClient {
+    async fn report_start(&self, allocation: &Allocation) -> Result<(), LatticeError> {
+        let event = AccountingEvent {
+            allocation_id: allocation.id,
+            tenant_id: allocation.tenant.clone(),
+            resource_type: "node_hours".to_string(),
+            amount: 0.0,
+            period_start: Utc::now(),
+            period_end: Utc::now(),
+        };
+        self.submit_event(event)
+            .await
+            .map_err(|e| LatticeError::Internal(format!("accounting report_start: {e}")))
+    }
+
+    async fn report_completion(&self, allocation: &Allocation) -> Result<(), LatticeError> {
+        let started = allocation.started_at.unwrap_or_else(Utc::now);
+        let ended = allocation.completed_at.unwrap_or_else(Utc::now);
+        let hours = (ended - started).num_seconds() as f64 / 3600.0;
+        let nodes = allocation.assigned_nodes.len().max(1) as f64;
+
+        let event = AccountingEvent {
+            allocation_id: allocation.id,
+            tenant_id: allocation.tenant.clone(),
+            resource_type: "node_hours".to_string(),
+            amount: hours * nodes,
+            period_start: started,
+            period_end: ended,
+        };
+        self.submit_event(event)
+            .await
+            .map_err(|e| LatticeError::Internal(format!("accounting report_completion: {e}")))?;
+        self.flush()
+            .await
+            .map_err(|e| LatticeError::Internal(format!("accounting flush: {e}")))?;
+        Ok(())
+    }
+
+    async fn remaining_budget(&self, tenant: &TenantId) -> Result<Option<f64>, LatticeError> {
+        let usage = self
+            .query_usage(
+                tenant,
+                "node_hours",
+                Utc::now() - chrono::Duration::days(30),
+                Utc::now(),
+            )
+            .await
+            .map_err(|e| LatticeError::Internal(format!("accounting remaining_budget: {e}")))?;
+        // Waldur returns usage; budget enforcement is on the Waldur side.
+        // Return None (unlimited) if usage is zero, otherwise return the usage as info.
+        if usage <= 0.0 {
+            Ok(None)
+        } else {
+            Ok(Some(usage))
+        }
     }
 }
 

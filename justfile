@@ -21,7 +21,7 @@ fmt-check:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# Run tests (prefers nextest, falls back to cargo test)
+# Run tests (skips tests marked #[ignore], i.e. slow multi-node Raft tests)
 test:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -29,6 +29,27 @@ test:
         cargo nextest run --workspace
     else
         cargo test --workspace
+    fi
+
+# Run the full test suite including slow tests (~5-10 min)
+test-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Running full test suite including slow tests..."
+    if command -v cargo-nextest &>/dev/null; then
+        cargo nextest run --workspace --run-ignored all
+    else
+        cargo test --workspace -- --include-ignored
+    fi
+
+# Run only the slow (ignored) tests
+test-slow:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v cargo-nextest &>/dev/null; then
+        cargo nextest run --workspace --run-ignored ignored-only
+    else
+        cargo test --workspace -- --ignored
     fi
 
 # Run cargo-deny checks
@@ -39,5 +60,8 @@ deny:
 audit:
     cargo deny check advisories
 
-# Run the full CI suite locally
+# Run the full CI suite locally (fast tests)
 all: fmt-check lint test deny
+
+# Run the full CI suite locally (all tests)
+all-full: fmt-check lint test-all deny

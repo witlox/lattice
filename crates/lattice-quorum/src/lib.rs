@@ -370,6 +370,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow: spins up 3-node Raft cluster"]
     async fn three_node_cluster_works() {
         let clients = create_test_cluster(3).await.unwrap();
         let leader = &clients[0];
@@ -454,6 +455,7 @@ mod tests {
     // indirectly. A full integration test requires Docker (see tests/e2e/).
 
     #[tokio::test]
+    #[ignore = "slow: spins up 3-node gRPC Raft cluster"]
     async fn grpc_three_node_cluster_leader_election() {
         let (clients, handles, _addrs) = create_test_grpc_cluster(3).await.unwrap();
 
@@ -477,6 +479,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow: spins up 3-node gRPC Raft cluster"]
     async fn grpc_three_node_cluster_log_replication() {
         let (clients, handles, _addrs) = create_test_grpc_cluster(3).await.unwrap();
 

@@ -1929,20 +1929,20 @@ async fn node_disable_sets_down_state() {
 
 // ─── Test 39: Admin backup_verify returns not-implemented ────
 #[tokio::test]
-async fn admin_backup_verify_returns_not_implemented() {
+async fn admin_backup_verify_returns_invalid_for_nonexistent_path() {
     let state = test_state();
     let admin_svc = LatticeAdminService::new(state);
 
     let resp = admin_svc
         .backup_verify(Request::new(pb::BackupVerifyRequest {
-            backup_path: "/tmp/test-backup".to_string(),
+            backup_path: "/tmp/nonexistent-backup.tar.gz".to_string(),
         }))
         .await
         .unwrap();
 
-    // Without quorum, returns a stub response
+    // Nonexistent path should return invalid
     assert!(!resp.get_ref().valid);
-    assert!(resp.get_ref().message.contains("not yet implemented"));
+    assert!(resp.get_ref().message.contains("failed"));
 }
 
 // ─── Test 39b: Admin backup_verify with empty path → error ───

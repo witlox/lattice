@@ -51,6 +51,13 @@ pub trait SchedulerCommandSink: Send + Sync {
         &self,
         alloc_id: lattice_common::types::AllocId,
     ) -> Result<(), lattice_common::error::LatticeError>;
+    /// Suspend a victim allocation for preemption (checkpoint + release nodes).
+    async fn suspend(
+        &self,
+        _alloc_id: lattice_common::types::AllocId,
+    ) -> Result<(), lattice_common::error::LatticeError> {
+        Ok(())
+    }
     /// Notify of a scale-up decision (default: no-op).
     async fn scale_up(&self, _count: u32) -> Result<(), lattice_common::error::LatticeError> {
         Ok(())
@@ -153,12 +160,34 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                         nodes,
                         victims,
                     } => {
-                        warn!(
+                        info!(
                             alloc_id = %allocation_id,
                             nodes = nodes.len(),
                             victims = victims.len(),
-                            "Preemption needed (not yet implemented)"
+                            "Preempting victims for higher-priority allocation"
                         );
+                        let mut all_suspended = true;
+                        for victim_id in victims {
+                            if let Err(e) = self.sink.suspend(*victim_id).await {
+                                error!(victim_id = %victim_id, error = %e, "Failed to suspend victim");
+                                all_suspended = false;
+                            }
+                        }
+                        if all_suspended {
+                            if let Err(e) =
+                                self.sink.assign_nodes(*allocation_id, nodes.clone()).await
+                            {
+                                error!(alloc_id = %allocation_id, error = %e, "Failed to assign nodes after preemption");
+                                continue;
+                            }
+                            if let Err(e) = self.sink.set_running(*allocation_id).await {
+                                error!(alloc_id = %allocation_id, error = %e, "Failed to set Running after preemption");
+                                continue;
+                            }
+                            placed_count += 1;
+                        } else {
+                            warn!(alloc_id = %allocation_id, "Preemption incomplete, deferring placement");
+                        }
                     }
                     PlacementDecision::Defer {
                         allocation_id,
@@ -336,6 +365,15 @@ impl SchedulerCommandSink for TraitCommandSink {
     ) -> Result<(), lattice_common::error::LatticeError> {
         self.allocations
             .update_state(&alloc_id, AllocationState::Running)
+            .await
+    }
+
+    async fn suspend(
+        &self,
+        alloc_id: lattice_common::types::AllocId,
+    ) -> Result<(), lattice_common::error::LatticeError> {
+        self.allocations
+            .update_state(&alloc_id, AllocationState::Suspended)
             .await
     }
 }

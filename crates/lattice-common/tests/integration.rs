@@ -4,7 +4,9 @@
 //! using only public API surface.
 
 use lattice_common::clients::sovra::{SovraClient, SovraCredential, StubSovraClient};
-use lattice_common::clients::waldur::{AccountingClient, AccountingEvent, InMemoryAccountingClient};
+use lattice_common::clients::waldur::{
+    AccountingClient, AccountingEvent, InMemoryAccountingClient,
+};
 use lattice_common::config::*;
 use lattice_common::error::LatticeError;
 use lattice_common::types::*;
@@ -27,8 +29,7 @@ fn default_lattice_config_has_sane_values() {
 fn config_yaml_roundtrip() {
     let original = LatticeConfig::default();
     let yaml = serde_yaml::to_string(&original).expect("serialize to YAML");
-    let restored: LatticeConfig =
-        serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+    let restored: LatticeConfig = serde_yaml::from_str(&yaml).expect("deserialize from YAML");
 
     assert_eq!(restored.api.grpc_address, original.api.grpc_address);
     assert_eq!(restored.quorum.node_id, original.quorum.node_id);
@@ -114,10 +115,7 @@ fn error_display_ownership_conflict_includes_node_and_owner() {
         owner: "dr.smith".to_string(),
     };
     let msg = err.to_string();
-    assert!(
-        msg.contains("x1000c0s0b0n0"),
-        "missing node in: {msg}"
-    );
+    assert!(msg.contains("x1000c0s0b0n0"), "missing node in: {msg}");
     assert!(msg.contains("dr.smith"), "missing owner in: {msg}");
 }
 
@@ -180,10 +178,7 @@ async fn in_memory_accounting_submit_and_query_usage() {
         )
         .await
         .unwrap();
-    assert!(
-        (total - 15.5).abs() < 0.001,
-        "expected 15.5, got {total}"
-    );
+    assert!((total - 15.5).abs() < 0.001, "expected 15.5, got {total}");
 }
 
 #[tokio::test]

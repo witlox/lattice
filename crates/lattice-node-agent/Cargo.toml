@@ -30,7 +30,7 @@ sha2 = "0.10"
 [features]
 default = []
 nvidia = ["dep:nvml-wrapper"]
-ebpf = ["dep:aya"]
+ebpf = ["dep:aya", "dep:bytes"]
 
 [dependencies.nvml-wrapper]
 workspace = true
@@ -38,6 +38,10 @@ optional = true
 
 [dependencies.aya]
 version = "0.13"
+optional = true
+
+[dependencies.bytes]
+version = "1"
 optional = true
 
 [dev-dependencies]

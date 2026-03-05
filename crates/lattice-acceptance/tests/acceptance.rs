@@ -1937,7 +1937,12 @@ async fn given_unified_memory_nodes(world: &mut LatticeWorld, count: usize, grou
             .group(group)
             .memory_topology(topo)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
@@ -1947,10 +1952,7 @@ async fn given_numa_memory_nodes(world: &mut LatticeWorld, count: usize, group: 
     for i in 0..count {
         let half = 256 * 1024 * 1024 * 1024_u64;
         let topo = MemoryTopology {
-            domains: vec![
-                make_dram_domain(0, half, 0),
-                make_dram_domain(1, half, 1),
-            ],
+            domains: vec![make_dram_domain(0, half, 0), make_dram_domain(1, half, 1)],
             interconnects: Vec::new(),
             total_capacity_bytes: half * 2,
         };
@@ -1959,7 +1961,12 @@ async fn given_numa_memory_nodes(world: &mut LatticeWorld, count: usize, group: 
             .group(group)
             .memory_topology(topo)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
@@ -1985,7 +1992,12 @@ async fn given_cxl_memory_nodes(world: &mut LatticeWorld, count: usize, group: u
             .group(group)
             .memory_topology(topo)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
@@ -2004,7 +2016,12 @@ async fn given_dram_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
             .group(group)
             .memory_topology(topo)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
@@ -2023,7 +2040,12 @@ async fn given_single_numa_nodes(world: &mut LatticeWorld, count: usize, group: 
             .group(group)
             .memory_topology(topo)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
@@ -2050,7 +2072,12 @@ async fn given_multi_numa_nodes(
             .group(group)
             .memory_topology(topo)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
@@ -2144,11 +2171,7 @@ async fn given_storage_readiness(world: &mut LatticeWorld, readiness: f64, sourc
 }
 
 #[when(regex = r#"^an allocation is submitted with data mount "([^"]+)" to "([^"]+)"$"#)]
-async fn when_submit_with_data_mount(
-    world: &mut LatticeWorld,
-    source: String,
-    _target: String,
-) {
+async fn when_submit_with_data_mount(world: &mut LatticeWorld, source: String, _target: String) {
     let mut alloc = AllocationBuilder::new().build();
     alloc.data.mounts.push(DataMount {
         source: source.clone(),
@@ -2184,7 +2207,10 @@ async fn when_submit_with_multiple_data_mounts(world: &mut LatticeWorld) {
 #[then("a staging plan should include the data mount")]
 async fn then_staging_plan_includes_mount(world: &mut LatticeWorld) {
     let plan = world.staging_plan.as_ref().expect("no staging plan");
-    assert!(!plan.requests.is_empty(), "staging plan should have requests");
+    assert!(
+        !plan.requests.is_empty(),
+        "staging plan should have requests"
+    );
 }
 
 #[then("the staging plan priority should match the allocation priority")]
@@ -2204,10 +2230,7 @@ async fn then_no_staging_required(world: &mut LatticeWorld) {
     // When data readiness is 1.0, the scheduler skips staging.
     // The DataStager itself always plans; it's the scheduler that checks readiness.
     // Here we verify the readiness threshold is met.
-    let all_ready = world
-        .data_readiness
-        .values()
-        .all(|&r| r >= 0.95);
+    let all_ready = world.data_readiness.values().all(|&r| r >= 0.95);
     assert!(
         all_ready,
         "all data should be ready (readiness >= 0.95), no staging required"
@@ -2217,10 +2240,7 @@ async fn then_no_staging_required(world: &mut LatticeWorld) {
 #[then("the staging plan should include all mounts sorted by priority")]
 async fn then_staging_sorted_by_priority(world: &mut LatticeWorld) {
     let plan = world.staging_plan.as_ref().expect("no staging plan");
-    assert!(
-        !plan.requests.is_empty(),
-        "should have staging requests"
-    );
+    assert!(!plan.requests.is_empty(), "should have staging requests");
     // Verify sorted by priority descending
     for pair in plan.requests.windows(2) {
         assert!(
@@ -2239,7 +2259,12 @@ async fn given_nodes_running_low_priority(world: &mut LatticeWorld, count: usize
             .id(&format!("busy-g{group}n{i}"))
             .group(group)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node.clone());
         let mut alloc = AllocationBuilder::new()
             .preemption_class(1)
@@ -2258,7 +2283,12 @@ async fn given_nodes_running_sensitive(world: &mut LatticeWorld, count: usize) {
             .id(&format!("sens-n{i}"))
             .group(0)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node.clone());
         let mut alloc = AllocationBuilder::new()
             .sensitive()
@@ -2284,7 +2314,12 @@ async fn given_nodes_different_checkpoint_costs(world: &mut LatticeWorld, count:
             .id(&format!("ckpt-n{i}"))
             .group(0)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node.clone());
         let mut alloc = AllocationBuilder::new()
             .preemption_class(1)
@@ -2312,9 +2347,7 @@ async fn when_high_priority_requiring_nodes(world: &mut LatticeWorld, needed: u3
         .cloned()
         .collect();
     let config = PreemptionConfig::default();
-    world.preemption_result = Some(evaluate_preemption(
-        &alloc, &running, &config,
-    ));
+    world.preemption_result = Some(evaluate_preemption(&alloc, &running, &config));
 }
 
 #[when("a high-priority non-sensitive allocation needs nodes")]
@@ -2332,9 +2365,7 @@ async fn when_high_priority_non_sensitive(world: &mut LatticeWorld) {
         .cloned()
         .collect();
     let config = PreemptionConfig::default();
-    world.preemption_result = Some(evaluate_preemption(
-        &alloc, &running, &config,
-    ));
+    world.preemption_result = Some(evaluate_preemption(&alloc, &running, &config));
 }
 
 #[when("preemption is evaluated")]
@@ -2351,9 +2382,7 @@ async fn when_preemption_evaluated(world: &mut LatticeWorld) {
         .cloned()
         .collect();
     let config = PreemptionConfig::default();
-    world.preemption_result = Some(evaluate_preemption(
-        &requester, &running, &config,
-    ));
+    world.preemption_result = Some(evaluate_preemption(&requester, &running, &config));
 }
 
 #[then("preemption should be evaluated")]
@@ -2501,7 +2530,10 @@ async fn then_same_network_domain(world: &mut LatticeWorld) {
         .iter()
         .filter_map(|a| a.connectivity.network_domain.as_ref())
         .collect();
-    assert!(domains.len() >= 2, "need at least 2 allocations with domains");
+    assert!(
+        domains.len() >= 2,
+        "need at least 2 allocations with domains"
+    );
     assert_eq!(
         domains[0], domains[1],
         "DAG allocations should share network domain"
@@ -2515,7 +2547,10 @@ async fn then_separate_network_domains(world: &mut LatticeWorld) {
         .iter()
         .filter_map(|a| a.connectivity.network_domain.as_ref())
         .collect();
-    assert!(domains.len() >= 2, "need at least 2 allocations with domains");
+    assert!(
+        domains.len() >= 2,
+        "need at least 2 allocations with domains"
+    );
     assert_ne!(
         domains[0], domains[1],
         "independent allocations should have different domains"
@@ -2546,7 +2581,12 @@ async fn given_conformance_nodes_in_group(
             .group(group)
             .conformance(&fingerprint)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
@@ -2564,7 +2604,12 @@ async fn given_conformance_short_in_group(
             .group(group)
             .conformance(&fingerprint)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
@@ -2580,7 +2625,12 @@ async fn when_allocation_requiring_n_nodes(world: &mut LatticeWorld, count: u32)
         world.filtered_nodes = ids;
     } else {
         // Fallback: just pick any available nodes
-        world.filtered_nodes = world.nodes.iter().take(count as usize).map(|n| n.id.clone()).collect();
+        world.filtered_nodes = world
+            .nodes
+            .iter()
+            .take(count as usize)
+            .map(|n| n.id.clone())
+            .collect();
     }
 }
 
@@ -2595,10 +2645,7 @@ async fn then_same_conformance(world: &mut LatticeWorld) {
     assert!(!fingerprints.is_empty(), "should have assigned nodes");
     let first = fingerprints[0];
     for fp in &fingerprints {
-        assert_eq!(
-            *fp, first,
-            "all nodes should share conformance fingerprint"
-        );
+        assert_eq!(*fp, first, "all nodes should share conformance fingerprint");
     }
 }
 
@@ -2654,9 +2701,7 @@ async fn when_queue_pressure_high(world: &mut LatticeWorld) {
     let pending = 10u32; // High backlog
     let utilization = running_nodes as f64 / total_nodes.max(1) as f64;
     if utilization > config.scale_up_threshold || pending > 5 {
-        world.scale_decision = Some(ScaleDecision::ScaleUp {
-            count: 2,
-        });
+        world.scale_decision = Some(ScaleDecision::ScaleUp { count: 2 });
     }
 }
 
@@ -2679,9 +2724,7 @@ async fn when_another_scale_up(world: &mut LatticeWorld) {
             return;
         }
     }
-    world.scale_decision = Some(ScaleDecision::ScaleUp {
-        count: 1,
-    });
+    world.scale_decision = Some(ScaleDecision::ScaleUp { count: 1 });
 }
 
 #[then("the autoscaler should recommend scale up")]
@@ -2765,11 +2808,7 @@ async fn then_session_supports_io(world: &mut LatticeWorld) {
 
 #[then("the attach should be denied with permission error")]
 async fn then_attach_denied(world: &mut LatticeWorld) {
-    assert_eq!(
-        world.attach_allowed,
-        Some(false),
-        "attach should be denied"
-    );
+    assert_eq!(world.attach_allowed, Some(false), "attach should be denied");
 }
 
 #[then("reading the buffer should return the data in order")]
@@ -2807,25 +2846,30 @@ async fn given_gpu_type_nodes(
             .group(group)
             .gpu_type(&gpu_type)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }
 
 #[given(regex = r#"^(\d+) nodes with (\d+) GPUs each in group (\d+)$"#)]
-async fn given_gpu_count_nodes(
-    world: &mut LatticeWorld,
-    count: usize,
-    gpus: u32,
-    group: u32,
-) {
+async fn given_gpu_count_nodes(world: &mut LatticeWorld, count: usize, gpus: u32, group: u32) {
     for i in 0..count {
         let node = NodeBuilder::new()
             .id(&format!("gpu{gpus}-g{group}n{i}"))
             .group(group)
             .gpu_count(gpus)
             .build();
-        world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node.id.clone(), node.clone());
         world.nodes.push(node);
     }
 }

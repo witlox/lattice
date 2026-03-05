@@ -387,9 +387,9 @@ fn merge_cli_overrides_replaces() {
     };
 
     let merged = config.merge_cli_overrides(
-        Some("biology"),       // override tenant
-        Some("gpu-cluster"),   // override vcluster
-        Some("json"),          // override output
+        Some("biology"),     // override tenant
+        Some("gpu-cluster"), // override vcluster
+        Some("json"),        // override output
     );
 
     // CLI values win

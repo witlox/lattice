@@ -62,10 +62,7 @@ impl LatticeStateMachine {
         // Try to load the latest snapshot from disk
         if let Some(ref dir) = sm.snapshot_dir {
             if let Some((meta, global_state)) = load_latest_snapshot(dir)? {
-                debug!(
-                    "Loaded snapshot from disk at {:?}",
-                    meta.last_log_id
-                );
+                debug!("Loaded snapshot from disk at {:?}", meta.last_log_id);
                 let mut state = sm.state.blocking_write();
                 *state = global_state;
                 sm.last_applied = meta.last_log_id;
@@ -98,25 +95,18 @@ struct PersistedSnapshotMeta {
 }
 
 fn snapshot_filename(meta: &SnapshotMeta<TypeConfig>) -> String {
-    let term = meta
-        .last_log_id
-        .map(|l| l.leader_id.term)
-        .unwrap_or(0);
+    let term = meta.last_log_id.map(|l| l.leader_id.term).unwrap_or(0);
     let index = meta.last_log_id.map(|l| l.index).unwrap_or(0);
     format!("snap-{term}-{index}.json")
 }
 
-fn persist_snapshot(
-    dir: &Path,
-    meta: &SnapshotMeta<TypeConfig>,
-    data: &[u8],
-) -> io::Result<()> {
+fn persist_snapshot(dir: &Path, meta: &SnapshotMeta<TypeConfig>, data: &[u8]) -> io::Result<()> {
     let filename = snapshot_filename(meta);
     let path = dir.join(&filename);
 
     // Parse the state to persist it in our format
-    let global_state: GlobalState = serde_json::from_slice(data)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let global_state: GlobalState =
+        serde_json::from_slice(data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let persisted = PersistedSnapshot {
         meta: PersistedSnapshotMeta {
@@ -200,8 +190,8 @@ fn load_latest_snapshot(dir: &Path) -> io::Result<Option<(SnapshotMeta<TypeConfi
     }
 
     let data = std::fs::read_to_string(&snap_path)?;
-    let persisted: PersistedSnapshot = serde_json::from_str(&data)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let persisted: PersistedSnapshot =
+        serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let meta = SnapshotMeta {
         last_log_id: persisted.meta.last_log_id,

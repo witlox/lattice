@@ -1,0 +1,21 @@
+# Nextest configuration for Lattice
+#
+# Profiles:
+#   default  — fast tests only (unit + lib tests), finishes in < 2 min
+#   ci       — full suite including integration & acceptance tests
+#
+# Usage:
+#   just test          # fast (default)
+#   just test-all      # full suite (5-10 min)
+#   cargo nextest run --profile ci --workspace  # full suite (manual)
+
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 2 }
+# Skip integration test binaries and the acceptance crate by default
+default-filter = "not (test(~integration) | package(lattice-acceptance) | package(lattice-quorum))"
+
+[profile.ci]
+# Full suite — all tests, longer timeouts
+default-filter = "all()"
+slow-timeout = { period = "120s", terminate-after = 3 }
+fail-fast = false

@@ -69,6 +69,9 @@ impl Default for LatticeConfig {
             },
             storage: StorageConfig {
                 vast_api_url: None,
+                vast_username: None,
+                vast_password: None,
+                vast_timeout_secs: default_vast_timeout(),
                 s3_endpoint: String::new(),
                 nfs_home_path: "/home".to_string(),
                 local_scratch_path: "/scratch".to_string(),
@@ -169,12 +172,25 @@ pub struct ApiConfig {
 pub struct StorageConfig {
     /// VAST API endpoint (for QoS, catalog, staging)
     pub vast_api_url: Option<String>,
+    /// VAST API username
+    #[serde(default)]
+    pub vast_username: Option<String>,
+    /// VAST API password
+    #[serde(default)]
+    pub vast_password: Option<String>,
+    /// VAST API request timeout in seconds
+    #[serde(default = "default_vast_timeout")]
+    pub vast_timeout_secs: u64,
     /// S3 endpoint for object storage
     pub s3_endpoint: String,
     /// Default NFS mount point for home directories
     pub nfs_home_path: String,
     /// Node-local scratch path
     pub local_scratch_path: String,
+}
+
+fn default_vast_timeout() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

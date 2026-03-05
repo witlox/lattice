@@ -312,7 +312,11 @@ async fn checkpoint_broker_with_mock_pool() {
     broker.initiate_checkpoint(&alloc_id).await.unwrap();
 
     let calls = pool.calls.lock().await;
-    assert_eq!(calls.len(), 3, "pool should be called once per assigned node");
+    assert_eq!(
+        calls.len(),
+        3,
+        "pool should be called once per assigned node"
+    );
     for (node_id, called_alloc_id, protocol) in calls.iter() {
         assert_eq!(*called_alloc_id, alloc_id);
         assert!(

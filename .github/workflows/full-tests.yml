@@ -1,0 +1,20 @@
+name: Full Test Suite
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  test-all:
+    name: All Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - uses: arduino/setup-protoc@v3
+      - run: cargo nextest run --workspace --all-features --profile ci --no-tests=pass

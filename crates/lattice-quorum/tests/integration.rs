@@ -141,6 +141,7 @@ async fn node_claim_release_ownership() {
 // Write on leader, read all 3, verify consistent.
 
 #[tokio::test]
+#[ignore = "slow: spins up 3-node Raft cluster"]
 async fn three_node_cluster_replication() {
     let clients = create_test_cluster(3).await.unwrap();
     let leader = &clients[0];
@@ -504,7 +505,10 @@ async fn concurrent_node_claim_conflict() {
     );
 
     // Verify the node has exactly one owner
-    let got = client.get_node(&"contested-node".to_string()).await.unwrap();
+    let got = client
+        .get_node(&"contested-node".to_string())
+        .await
+        .unwrap();
     assert!(got.owner.is_some(), "node should have an owner");
     let owner = got.owner.unwrap();
     assert!(
@@ -518,13 +522,12 @@ async fn concurrent_node_claim_conflict() {
 // Insert many allocations, verify state is consistent.
 
 #[tokio::test]
+#[ignore = "slow: 100+ Raft operations"]
 async fn many_operations_trigger_snapshot() {
     let client = create_test_quorum().await.unwrap();
 
     // Create a tenant with large quota to allow many allocations
-    let tenant = TenantBuilder::new("bulk-tenant")
-        .max_nodes(10000)
-        .build();
+    let tenant = TenantBuilder::new("bulk-tenant").max_nodes(10000).build();
     client
         .propose(commands::Command::CreateTenant(tenant))
         .await

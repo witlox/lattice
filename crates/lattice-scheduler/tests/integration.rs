@@ -885,11 +885,31 @@ fn knapsack_conformant_nodes_preferred() {
     });
 
     // 3 nodes with fingerprint "fp-a", 2 nodes with "fp-b"
-    let n1 = NodeBuilder::new().id("n1").group(0).conformance("fp-a").build();
-    let n2 = NodeBuilder::new().id("n2").group(0).conformance("fp-a").build();
-    let n3 = NodeBuilder::new().id("n3").group(0).conformance("fp-a").build();
-    let n4 = NodeBuilder::new().id("n4").group(0).conformance("fp-b").build();
-    let n5 = NodeBuilder::new().id("n5").group(0).conformance("fp-b").build();
+    let n1 = NodeBuilder::new()
+        .id("n1")
+        .group(0)
+        .conformance("fp-a")
+        .build();
+    let n2 = NodeBuilder::new()
+        .id("n2")
+        .group(0)
+        .conformance("fp-a")
+        .build();
+    let n3 = NodeBuilder::new()
+        .id("n3")
+        .group(0)
+        .conformance("fp-a")
+        .build();
+    let n4 = NodeBuilder::new()
+        .id("n4")
+        .group(0)
+        .conformance("fp-b")
+        .build();
+    let n5 = NodeBuilder::new()
+        .id("n5")
+        .group(0)
+        .conformance("fp-b")
+        .build();
     let nodes = vec![n1, n2, n3, n4, n5];
 
     let alloc = AllocationBuilder::new().tenant("t1").nodes(2).build();
@@ -1093,14 +1113,10 @@ async fn scheduler_loop_runs_cycle_and_assigns() {
         ) -> Result<Vec<Allocation>, lattice_common::error::LatticeError> {
             Ok(vec![])
         }
-        async fn available_nodes(
-            &self,
-        ) -> Result<Vec<Node>, lattice_common::error::LatticeError> {
+        async fn available_nodes(&self) -> Result<Vec<Node>, lattice_common::error::LatticeError> {
             Ok(self.nodes.clone())
         }
-        async fn tenants(
-            &self,
-        ) -> Result<Vec<Tenant>, lattice_common::error::LatticeError> {
+        async fn tenants(&self) -> Result<Vec<Tenant>, lattice_common::error::LatticeError> {
             Ok(vec![TenantBuilder::new("t1").build()])
         }
         async fn topology(&self) -> TopologyModel {
@@ -1189,14 +1205,10 @@ async fn scheduler_loop_handles_empty_queue() {
         ) -> Result<Vec<Allocation>, lattice_common::error::LatticeError> {
             Ok(vec![])
         }
-        async fn available_nodes(
-            &self,
-        ) -> Result<Vec<Node>, lattice_common::error::LatticeError> {
+        async fn available_nodes(&self) -> Result<Vec<Node>, lattice_common::error::LatticeError> {
             Ok(create_node_batch(4, 0))
         }
-        async fn tenants(
-            &self,
-        ) -> Result<Vec<Tenant>, lattice_common::error::LatticeError> {
+        async fn tenants(&self) -> Result<Vec<Tenant>, lattice_common::error::LatticeError> {
             Ok(vec![])
         }
         async fn topology(&self) -> TopologyModel {
@@ -1327,11 +1339,7 @@ async fn dag_controller_unblocks_ready_successors() {
         allocs: Mutex::new(vec![parent, child_a, child_b]),
     });
     let sink = Arc::new(MockSink::new());
-    let mut ctrl = DagController::new(
-        reader,
-        sink.clone(),
-        DagControllerConfig::default(),
-    );
+    let mut ctrl = DagController::new(reader, sink.clone(), DagControllerConfig::default());
 
     let count = ctrl.run_once().await.unwrap();
     assert_eq!(count, 2, "both children should be unblocked");
@@ -1417,11 +1425,7 @@ async fn dag_controller_cancels_unsatisfiable() {
         allocs: Mutex::new(vec![parent, child]),
     });
     let sink = Arc::new(MockSink::new());
-    let mut ctrl = DagController::new(
-        reader,
-        sink.clone(),
-        DagControllerConfig::default(),
-    );
+    let mut ctrl = DagController::new(reader, sink.clone(), DagControllerConfig::default());
 
     let count = ctrl.run_once().await.unwrap();
     assert_eq!(count, 0, "no allocations should be unblocked");
@@ -1647,7 +1651,10 @@ fn filter_by_constraints_cxl_rejection() {
     // n_plain should pass (no memory topology = allowed)
     assert_eq!(filtered.len(), 2);
     let ids: Vec<&str> = filtered.iter().map(|n| n.id.as_str()).collect();
-    assert!(ids.contains(&"n-mixed"), "mixed node should pass (has DRAM)");
+    assert!(
+        ids.contains(&"n-mixed"),
+        "mixed node should pass (has DRAM)"
+    );
     assert!(
         ids.contains(&"n-plain"),
         "node without memory topology should pass"

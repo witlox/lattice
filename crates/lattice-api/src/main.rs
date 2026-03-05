@@ -123,11 +123,27 @@ async fn main() -> Result<()> {
 
     // ── Waldur ────────────────────────────────────────────────────────────
     #[cfg(feature = "accounting")]
-    if let Some(ref acct) = config.accounting {
-        if acct.enabled {
-            info!("Waldur accounting configured: url={}", acct.waldur_api_url);
-        }
-    }
+    let accounting: Option<Arc<dyn lattice_common::traits::AccountingService>> =
+        if let Some(ref acct) = config.accounting {
+            if acct.enabled && !acct.waldur_api_url.is_empty() {
+                info!("Waldur accounting enabled: url={}", acct.waldur_api_url);
+                let waldur_config = lattice_common::clients::waldur::WaldurConfig {
+                    api_url: acct.waldur_api_url.clone(),
+                    api_token: acct.waldur_token_secret_ref.clone(),
+                    flush_interval_secs: acct.push_interval_seconds,
+                    max_buffer_size: acct.buffer_size as usize,
+                };
+                Some(Arc::new(lattice_common::clients::HttpWaldurClient::new(
+                    waldur_config,
+                ))
+                    as Arc<dyn lattice_common::traits::AccountingService>)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+    #[cfg(not(feature = "accounting"))]
     let accounting: Option<Arc<dyn lattice_common::traits::AccountingService>> = None;
 
     // ── TSDB ──────────────────────────────────────────────────────────────
@@ -144,6 +160,50 @@ async fn main() -> Result<()> {
             )))
         };
 
+    // ── VAST Storage ──────────────────────────────────────────────────────
+    let storage: Option<Arc<dyn lattice_common::traits::StorageService>> =
+        if let Some(ref url) = config.storage.vast_api_url {
+            if !url.is_empty() {
+                info!("VAST storage enabled: url={}", url);
+                let vast_config = lattice_common::clients::vast::VastConfig {
+                    base_url: url.clone(),
+                    username: config.storage.vast_username.clone().unwrap_or_default(),
+                    password: config.storage.vast_password.clone().unwrap_or_default(),
+                    timeout_secs: config.storage.vast_timeout_secs,
+                };
+                match lattice_common::clients::VastClient::new(vast_config) {
+                    Ok(client) => {
+                        Some(Arc::new(client) as Arc<dyn lattice_common::traits::StorageService>)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to create VAST client: {e}; storage disabled");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+    // ── Rate Limiter ────────────────────────────────────────────────────
+    let rate_limiter: Option<Arc<lattice_api::middleware::rate_limit::RateLimiter>> =
+        if config.rate_limit.is_some() {
+            info!("API rate limiting enabled");
+            Some(Arc::new(
+                lattice_api::middleware::rate_limit::RateLimiter::new(
+                    lattice_api::middleware::rate_limit::RateLimitConfig::default(),
+                ),
+            ))
+        } else {
+            None
+        };
+
+    // ── PTY Backend ─────────────────────────────────────────────────────
+    let pty: Option<Arc<dyn lattice_node_agent::pty::PtyBackend>> =
+        Some(Arc::new(lattice_node_agent::pty::MockPtyBackend::new()));
+
     // ── TLS ───────────────────────────────────────────────────────────────
     let tls = lattice_api::server::tls_config_from_api(&config.api);
 
@@ -155,12 +215,12 @@ async fn main() -> Result<()> {
         quorum: Some(quorum),
         events: lattice_api::events::new_event_bus(),
         tsdb,
-        storage: None,
+        storage,
         accounting,
         oidc,
-        rate_limiter: None,
+        rate_limiter,
         sovra,
-        pty: None,
+        pty,
         data_dir: config.quorum.data_dir.clone(),
     });
 
