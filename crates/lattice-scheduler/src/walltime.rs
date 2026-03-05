@@ -57,6 +57,7 @@ struct WalltimeEntry {
 ///
 /// Once an allocation enters the Kill phase and is reported, subsequent calls
 /// will continue reporting it in Kill phase until it is unregistered.
+#[derive(Debug)]
 pub struct WalltimeEnforcer {
     entries: HashMap<AllocId, WalltimeEntry>,
     /// Duration between SIGTERM and SIGKILL.

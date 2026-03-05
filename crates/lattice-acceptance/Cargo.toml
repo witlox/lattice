@@ -17,6 +17,7 @@ lattice-scheduler = { path = "../lattice-scheduler" }
 lattice-checkpoint = { path = "../lattice-checkpoint" }
 lattice-api = { path = "../lattice-api" }
 lattice-node-agent = { path = "../lattice-node-agent" }
+lattice-quorum = { path = "../lattice-quorum" }
 cucumber = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -24,3 +25,6 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
 futures = "0.3"
+tempfile = { workspace = true }
+flate2 = "1"
+tar = "0.4"

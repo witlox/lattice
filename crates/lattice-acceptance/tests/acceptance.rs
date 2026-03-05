@@ -1,6 +1,10 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+
+use chrono::{Duration, Utc};
+use tokio::sync::RwLock;
 
 use cucumber::{given, then, when, World};
 use uuid::Uuid;
@@ -25,6 +29,8 @@ use lattice_node_agent::telemetry::log_buffer::LogRingBuffer;
 
 use lattice_api::events::{AllocationEvent, EventBus, LogStream};
 use lattice_api::middleware::rbac::{Operation, RbacContext, RbacPolicy, Role};
+use lattice_quorum::backup::{export_backup, restore_backup, verify_backup, BackupMetadata};
+use lattice_quorum::global_state::GlobalState;
 use lattice_scheduler::autoscaler::{AutoscalerConfig, ScaleDecision};
 use lattice_scheduler::conformance::{
     filter_by_constraints, memory_locality_score, select_conformant_nodes,
@@ -36,6 +42,7 @@ use lattice_scheduler::federation::{
 };
 use lattice_scheduler::placement::PlacementDecision;
 use lattice_scheduler::preemption::{evaluate_preemption, PreemptionConfig, PreemptionResult};
+use lattice_scheduler::walltime::{ExpiryPhase, WalltimeEnforcer, WalltimeExpiry};
 
 #[derive(Debug, World)]
 #[world(init = Self::new)]
@@ -94,6 +101,21 @@ pub struct LatticeWorld {
     // GPU topology / conformance filtering
     filtered_nodes: Vec<String>,
     locality_scores: Vec<(String, f64)>,
+    // Backup & restore
+    backup_state: Option<Arc<RwLock<GlobalState>>>,
+    backup_path: Option<PathBuf>,
+    backup_metadata: Option<BackupMetadata>,
+    verified_metadata: Option<BackupMetadata>,
+    backup_error: Option<String>,
+    restore_data_dir: Option<PathBuf>,
+    _backup_tempdir: Option<tempfile::TempDir>,
+    // Walltime enforcement
+    walltime_enforcer: Option<WalltimeEnforcer>,
+    walltime_alloc_id: Option<Uuid>,
+    walltime_start: Option<chrono::DateTime<Utc>>,
+    walltime_expired: Vec<WalltimeExpiry>,
+    // Failure modes
+    failed_node_alloc_state: Option<AllocationState>,
 }
 
 impl LatticeWorld {
@@ -140,6 +162,18 @@ impl LatticeWorld {
             last_scale_time: None,
             filtered_nodes: Vec::new(),
             locality_scores: Vec::new(),
+            backup_state: None,
+            backup_path: None,
+            backup_metadata: None,
+            verified_metadata: None,
+            backup_error: None,
+            restore_data_dir: None,
+            _backup_tempdir: None,
+            walltime_enforcer: None,
+            walltime_alloc_id: None,
+            walltime_start: None,
+            walltime_expired: Vec::new(),
+            failed_node_alloc_state: None,
         }
     }
 
@@ -2924,6 +2958,428 @@ async fn then_placed_on_8gpu(world: &mut LatticeWorld) {
             nid.starts_with("gpu8-"),
             "node {nid} should be an 8-GPU node"
         );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Backup & Restore steps
+// ═══════════════════════════════════════════════════════════
+
+#[given(regex = r#"^a quorum with (\d+) nodes and (\d+) allocations$"#)]
+async fn given_quorum_with_state(world: &mut LatticeWorld, node_count: usize, alloc_count: usize) {
+    let mut state = GlobalState::new();
+    for i in 0..node_count {
+        let node = NodeBuilder::new().id(&format!("node-{i}")).build();
+        state.nodes.insert(node.id.clone(), node);
+    }
+    for _ in 0..alloc_count {
+        let alloc = AllocationBuilder::new().tenant("test-tenant").build();
+        state.allocations.insert(alloc.id, alloc);
+    }
+    let tenant = TenantBuilder::new("test-tenant").build();
+    state.tenants.insert(tenant.id.clone(), tenant);
+    world.backup_state = Some(Arc::new(RwLock::new(state)));
+}
+
+#[given("I export a backup")]
+#[when("I export a backup")]
+async fn when_export_backup(world: &mut LatticeWorld) {
+    let state = world.backup_state.as_ref().expect("no quorum state");
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+    let path = tmpdir.path().join("backup.tar.gz");
+    match export_backup(state, &path).await {
+        Ok(meta) => {
+            world.backup_metadata = Some(meta);
+            world.backup_path = Some(path);
+            world._backup_tempdir = Some(tmpdir);
+        }
+        Err(e) => {
+            world.backup_error = Some(e.to_string());
+            world._backup_tempdir = Some(tmpdir);
+        }
+    }
+}
+
+#[given("a corrupt backup file")]
+async fn given_corrupt_backup(world: &mut LatticeWorld) {
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+    let path = tmpdir.path().join("corrupt.tar.gz");
+    std::fs::write(&path, b"not a valid tar.gz").unwrap();
+    world.backup_path = Some(path);
+    world._backup_tempdir = Some(tmpdir);
+}
+
+#[given("a data directory with existing WAL files")]
+async fn given_data_dir_with_wal(world: &mut LatticeWorld) {
+    let tmpdir = world._backup_tempdir.as_ref().expect("no tempdir");
+    let data_dir = tmpdir.path().join("data");
+    let wal_dir = data_dir.join("raft").join("wal");
+    std::fs::create_dir_all(&wal_dir).unwrap();
+    std::fs::write(wal_dir.join("1.json"), b"{}").unwrap();
+    std::fs::write(wal_dir.join("2.json"), b"{}").unwrap();
+    world.restore_data_dir = Some(data_dir);
+}
+
+#[when("I verify the backup")]
+async fn when_verify_backup(world: &mut LatticeWorld) {
+    let path = world.backup_path.as_ref().expect("no backup path");
+    match verify_backup(path) {
+        Ok(meta) => {
+            world.verified_metadata = Some(meta);
+            world.backup_error = None;
+        }
+        Err(e) => {
+            world.backup_error = Some(e.to_string());
+        }
+    }
+}
+
+#[when("I restore the backup to a new data directory")]
+async fn when_restore_to_new_dir(world: &mut LatticeWorld) {
+    let backup_path = world.backup_path.as_ref().expect("no backup path");
+    let tmpdir = world._backup_tempdir.as_ref().expect("no tempdir");
+    let data_dir = tmpdir.path().join("restored-data");
+    match restore_backup(backup_path, &data_dir) {
+        Ok(meta) => {
+            world.verified_metadata = Some(meta);
+            world.restore_data_dir = Some(data_dir);
+        }
+        Err(e) => {
+            world.backup_error = Some(e.to_string());
+        }
+    }
+}
+
+#[when("I restore the backup to that data directory")]
+async fn when_restore_to_existing_dir(world: &mut LatticeWorld) {
+    let backup_path = world.backup_path.as_ref().expect("no backup path");
+    let data_dir = world.restore_data_dir.as_ref().expect("no data dir").clone();
+    match restore_backup(backup_path, &data_dir) {
+        Ok(meta) => {
+            world.verified_metadata = Some(meta);
+        }
+        Err(e) => {
+            world.backup_error = Some(e.to_string());
+        }
+    }
+}
+
+#[then(regex = r#"^the backup metadata should show (\d+) nodes and (\d+) allocations$"#)]
+async fn then_backup_metadata_counts(
+    world: &mut LatticeWorld,
+    nodes: usize,
+    allocs: usize,
+) {
+    let meta = world.backup_metadata.as_ref().expect("no backup metadata");
+    assert_eq!(meta.node_count, nodes, "node count mismatch");
+    assert_eq!(meta.allocation_count, allocs, "allocation count mismatch");
+}
+
+#[then("the backup file should exist on disk")]
+async fn then_backup_file_exists(world: &mut LatticeWorld) {
+    let path = world.backup_path.as_ref().expect("no backup path");
+    assert!(path.exists(), "backup file should exist at {}", path.display());
+    assert!(
+        std::fs::metadata(path).unwrap().len() > 0,
+        "backup file should not be empty"
+    );
+}
+
+#[then("the verification should succeed")]
+async fn then_verify_succeeds(world: &mut LatticeWorld) {
+    assert!(
+        world.backup_error.is_none(),
+        "expected success but got error: {:?}",
+        world.backup_error
+    );
+    assert!(world.verified_metadata.is_some(), "verified metadata should be set");
+}
+
+#[then("the verified metadata should match the export metadata")]
+async fn then_verified_matches_export(world: &mut LatticeWorld) {
+    let export = world.backup_metadata.as_ref().expect("no export metadata");
+    let verify = world.verified_metadata.as_ref().expect("no verified metadata");
+    assert_eq!(export.node_count, verify.node_count);
+    assert_eq!(export.allocation_count, verify.allocation_count);
+    assert_eq!(export.tenant_count, verify.tenant_count);
+}
+
+#[then(regex = r#"^the verification should fail with "(\w+)"$"#)]
+async fn then_verify_fails_with(world: &mut LatticeWorld, _expected: String) {
+    assert!(
+        world.backup_error.is_some(),
+        "expected verification to fail but it succeeded"
+    );
+}
+
+#[then("the snapshot directory should contain a current pointer")]
+async fn then_snapshot_dir_has_current(world: &mut LatticeWorld) {
+    let data_dir = world.restore_data_dir.as_ref().expect("no data dir");
+    let current = data_dir.join("raft").join("snapshots").join("current");
+    assert!(current.exists(), "current pointer should exist at {}", current.display());
+}
+
+#[then("the restored snapshot should be valid JSON")]
+async fn then_restored_snapshot_valid(world: &mut LatticeWorld) {
+    let data_dir = world.restore_data_dir.as_ref().expect("no data dir");
+    let snap_dir = data_dir.join("raft").join("snapshots");
+    let current = std::fs::read_to_string(snap_dir.join("current")).unwrap();
+    let snap_path = snap_dir.join(current.trim());
+    let data = std::fs::read_to_string(&snap_path).unwrap();
+    let _: serde_json::Value = serde_json::from_str(&data).expect("snapshot should be valid JSON");
+}
+
+#[then("the WAL directory should be empty")]
+async fn then_wal_dir_empty(world: &mut LatticeWorld) {
+    let data_dir = world.restore_data_dir.as_ref().expect("no data dir");
+    let wal_dir = data_dir.join("raft").join("wal");
+    if wal_dir.exists() {
+        let entries: Vec<_> = std::fs::read_dir(&wal_dir).unwrap().collect();
+        assert!(entries.is_empty(), "WAL directory should be empty after restore");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Walltime Enforcement steps
+// ═══════════════════════════════════════════════════════════
+
+#[given("a walltime enforcer with default grace period")]
+async fn given_walltime_enforcer_default(world: &mut LatticeWorld) {
+    world.walltime_enforcer = Some(WalltimeEnforcer::new());
+    world.walltime_start = Some(Utc::now());
+}
+
+#[given(regex = r#"^a walltime enforcer with grace period (\d+) seconds$"#)]
+async fn given_walltime_enforcer_custom(world: &mut LatticeWorld, grace_secs: i64) {
+    world.walltime_enforcer = Some(WalltimeEnforcer::with_grace_period(Duration::seconds(grace_secs)));
+    world.walltime_start = Some(Utc::now());
+}
+
+#[given(regex = r#"^a running allocation registered with walltime "(\w+)"$"#)]
+async fn given_alloc_with_walltime(world: &mut LatticeWorld, walltime_str: String) {
+    let duration = parse_duration_str(&walltime_str);
+    let alloc = AllocationBuilder::new().tenant("t1").nodes(1).build();
+    let alloc_id = alloc.id;
+    world.walltime_alloc_id = Some(alloc_id);
+    world.allocations.push(alloc);
+
+    let start = world.walltime_start.expect("no start time");
+    world
+        .walltime_enforcer
+        .as_mut()
+        .expect("no enforcer")
+        .register(alloc_id, duration, start);
+}
+
+#[when(regex = r#"^(\d+) hours? has elapsed$"#)]
+async fn when_hours_elapsed(world: &mut LatticeWorld, hours: i64) {
+    let start = world.walltime_start.expect("no start time");
+    let now = start + Duration::hours(hours);
+    world.walltime_expired = world
+        .walltime_enforcer
+        .as_mut()
+        .expect("no enforcer")
+        .check_expired(now);
+}
+
+#[when(regex = r#"^(\d+) hours? and (\d+) seconds have elapsed$"#)]
+async fn when_hours_and_secs_elapsed(world: &mut LatticeWorld, hours: i64, secs: i64) {
+    let start = world.walltime_start.expect("no start time");
+    let now = start + Duration::hours(hours) + Duration::seconds(secs);
+    world.walltime_expired = world
+        .walltime_enforcer
+        .as_mut()
+        .expect("no enforcer")
+        .check_expired(now);
+}
+
+#[when(regex = r#"^(\d+) minutes? and (\d+) seconds have elapsed$"#)]
+async fn when_mins_and_secs_elapsed(world: &mut LatticeWorld, mins: i64, secs: i64) {
+    let start = world.walltime_start.expect("no start time");
+    let now = start + Duration::minutes(mins) + Duration::seconds(secs);
+    world.walltime_expired = world
+        .walltime_enforcer
+        .as_mut()
+        .expect("no enforcer")
+        .check_expired(now);
+}
+
+#[when(regex = r#"^(\d+) hours have elapsed$"#)]
+async fn when_multiple_hours_elapsed(world: &mut LatticeWorld, hours: i64) {
+    let start = world.walltime_start.expect("no start time");
+    let now = start + Duration::hours(hours);
+    world.walltime_expired = world
+        .walltime_enforcer
+        .as_mut()
+        .expect("no enforcer")
+        .check_expired(now);
+}
+
+#[when("the allocation is unregistered from walltime tracking")]
+async fn when_unregister_walltime(world: &mut LatticeWorld) {
+    let alloc_id = world.walltime_alloc_id.expect("no walltime alloc id");
+    world
+        .walltime_enforcer
+        .as_mut()
+        .expect("no enforcer")
+        .unregister(&alloc_id);
+}
+
+#[then(regex = r#"^the allocation should be in "(\w+)" phase$"#)]
+async fn then_alloc_in_phase(world: &mut LatticeWorld, phase: String) {
+    let alloc_id = world.walltime_alloc_id.expect("no walltime alloc id");
+    let entry = world
+        .walltime_expired
+        .iter()
+        .find(|e| e.allocation_id == alloc_id);
+    let expected_phase = match phase.as_str() {
+        "Terminate" => ExpiryPhase::Terminate,
+        "Kill" => ExpiryPhase::Kill,
+        other => panic!("unknown phase: {other}"),
+    };
+    let entry = entry.unwrap_or_else(|| {
+        panic!(
+            "allocation {alloc_id} not found in expired list ({} entries)",
+            world.walltime_expired.len()
+        )
+    });
+    assert_eq!(
+        entry.phase, expected_phase,
+        "expected phase {phase}, got {:?}",
+        entry.phase
+    );
+}
+
+#[then("no allocations should be expired")]
+async fn then_no_expired(world: &mut LatticeWorld) {
+    assert!(
+        world.walltime_expired.is_empty(),
+        "expected no expired allocations, got {}",
+        world.walltime_expired.len()
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// Failure Mode steps
+// ═══════════════════════════════════════════════════════════
+
+#[given(regex = r#"^a running allocation on node "([^"]+)"$"#)]
+async fn given_running_alloc_on_node(world: &mut LatticeWorld, node_id: String) {
+    let mut alloc = AllocationBuilder::new().tenant("research").nodes(1).build();
+    alloc.state = AllocationState::Running;
+    alloc.assigned_nodes = vec![node_id];
+    world.allocations.push(alloc);
+}
+
+#[when(regex = r#"^node "([^"]+)" transitions to down with reason "([^"]+)"$"#)]
+async fn when_node_goes_down(world: &mut LatticeWorld, node_id: String, reason: String) {
+    if let Some(node) = world.nodes.iter_mut().find(|n| n.id == node_id) {
+        node.state = NodeState::Down {
+            reason: reason.clone(),
+        };
+    }
+    // Mark allocations on this node as Failed
+    for alloc in &mut world.allocations {
+        if alloc.assigned_nodes.contains(&node_id) && alloc.state == AllocationState::Running {
+            alloc.state = AllocationState::Failed;
+            world.failed_node_alloc_state = Some(AllocationState::Failed);
+        }
+    }
+}
+
+#[when(regex = r#"^node "([^"]+)" begins draining$"#)]
+async fn when_node_begins_draining(world: &mut LatticeWorld, node_id: String) {
+    if let Some(node) = world.nodes.iter_mut().find(|n| n.id == node_id) {
+        node.state = NodeState::Draining;
+    }
+}
+
+#[when(regex = r#"^node "([^"]+)" becomes degraded with reason "([^"]+)"$"#)]
+async fn when_node_degraded(world: &mut LatticeWorld, node_id: String, reason: String) {
+    if let Some(node) = world.nodes.iter_mut().find(|n| n.id == node_id) {
+        node.state = NodeState::Degraded {
+            reason: reason.clone(),
+        };
+    }
+}
+
+#[then(regex = r#"^node "([^"]+)" should not be operational$"#)]
+async fn then_node_not_operational(world: &mut LatticeWorld, node_id: String) {
+    let node = world.nodes.iter().find(|n| n.id == node_id).expect("node not found");
+    assert!(
+        !node.state.is_operational(),
+        "node {} should not be operational, state: {:?}",
+        node_id, node.state
+    );
+}
+
+#[then(regex = r#"^the allocation on the failed node should be marked "(\w+)"$"#)]
+async fn then_alloc_marked_state(world: &mut LatticeWorld, expected: String) {
+    let expected_state = match expected.as_str() {
+        "Failed" => AllocationState::Failed,
+        "Completed" => AllocationState::Completed,
+        other => panic!("unexpected state: {other}"),
+    };
+    assert_eq!(
+        world.failed_node_alloc_state,
+        Some(expected_state),
+        "expected allocation to be {expected}"
+    );
+}
+
+#[then(regex = r#"^node "([^"]+)" should be in "(\w+)" state$"#)]
+async fn then_node_in_state(world: &mut LatticeWorld, node_id: String, expected: String) {
+    let node = world.nodes.iter().find(|n| n.id == node_id).expect("node not found");
+    let matches = match expected.as_str() {
+        "Draining" => matches!(node.state, NodeState::Draining),
+        "Drained" => matches!(node.state, NodeState::Drained),
+        "Ready" => matches!(node.state, NodeState::Ready),
+        "Down" => matches!(node.state, NodeState::Down { .. }),
+        "Degraded" => matches!(node.state, NodeState::Degraded { .. }),
+        other => panic!("unexpected state: {other}"),
+    };
+    assert!(matches, "node {node_id} expected to be {expected}, got {:?}", node.state);
+}
+
+#[then(regex = r#"^new allocations should not be placed on "([^"]+)"$"#)]
+async fn then_no_new_allocs_on_node(world: &mut LatticeWorld, node_id: String) {
+    let node = world.nodes.iter().find(|n| n.id == node_id).expect("node not found");
+    assert!(
+        !node.state.is_operational() || matches!(node.state, NodeState::Draining),
+        "node {} should not accept new allocations, state: {:?}",
+        node_id, node.state
+    );
+}
+
+#[then(regex = r#"^node "([^"]+)" should still be operational$"#)]
+async fn then_node_still_operational(world: &mut LatticeWorld, node_id: String) {
+    let node = world.nodes.iter().find(|n| n.id == node_id).expect("node not found");
+    assert!(
+        node.state.is_operational(),
+        "node {} should be operational, state: {:?}",
+        node_id, node.state
+    );
+}
+
+#[then(regex = r#"^the degradation reason should be "([^"]+)"$"#)]
+async fn then_degradation_reason(world: &mut LatticeWorld, expected: String) {
+    let degraded = world.nodes.iter().find(|n| matches!(&n.state, NodeState::Degraded { .. }));
+    let node = degraded.expect("no degraded node found");
+    if let NodeState::Degraded { reason } = &node.state {
+        assert_eq!(reason, &expected);
+    }
+}
+
+/// Parse simple duration strings like "1h", "2h", "10m"
+fn parse_duration_str(s: &str) -> Duration {
+    if let Some(h) = s.strip_suffix('h') {
+        Duration::hours(h.parse::<i64>().unwrap())
+    } else if let Some(m) = s.strip_suffix('m') {
+        Duration::minutes(m.parse::<i64>().unwrap())
+    } else if let Some(sec) = s.strip_suffix('s') {
+        Duration::seconds(sec.parse::<i64>().unwrap())
+    } else {
+        panic!("cannot parse duration: {s}")
     }
 }
 
