@@ -45,7 +45,7 @@ Federation (optional):
 
 | Boundary | Attack | Mitigation |
 |----------|--------|------------|
-| Sensitive actions | User denies accessing patient data | Raft-committed audit log with user identity (from OIDC). Cryptographically signed entries (Sovra keys if available, otherwise site PKI). 7-year retention. Tamper-evident chain. |
+| Sensitive actions | User denies accessing sensitive data | Raft-committed audit log with user identity (from OIDC). Cryptographically signed entries (Sovra keys if available, otherwise site PKI). 7-year retention. Tamper-evident chain. |
 | Allocation submission | User denies submitting allocation | All API requests logged with authenticated user identity. Audit trail in lattice-api access logs. |
 | Node claims | Deny claiming sensitive nodes | Node claim is a Raft-committed operation with user identity. Cannot be repudiated. |
 

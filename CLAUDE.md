@@ -107,10 +107,10 @@ All performance-critical components. Shared protobuf types generated into lattic
 - `lattice-checkpoint`: Checkpoint broker, cost function evaluator, application protocol (signal/shmem/gRPC)
 
 ### Proto (proto/)
-Protobuf definitions are the API contract. Generate Rust (tonic/prost), Python (grpcio), and Go (if needed) bindings.
+Protobuf definitions are the API contract. Generate Rust (tonic/prost) bindings.
 
 ### Python SDK (sdk/python/)
-User-facing SDK for agents and notebooks. Wraps gRPC client with Pythonic interface.
+User-facing SDK for agents and notebooks. Wraps REST API with async httpx client.
 
 ### Infrastructure (infra/)
 - OpenCHAMI integration configs and deployment

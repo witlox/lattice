@@ -9,10 +9,10 @@ Federation is **opt-in** and **sovereignty-first**. The system is fully function
 Federation is compile-time optional via Rust feature flag:
 
 ```toml
-# Cargo.toml
+# Cargo.toml (lattice-api)
 [features]
 default = []
-federation = ["sovra-client", "federation-broker"]
+federation = ["lattice-common/federation"]
 ```
 
 When `federation` feature is disabled:

@@ -111,7 +111,7 @@ docker compose up
 | Observability | Rust | prometheus, eBPF (Linux), nvml-wrapper (NVIDIA) |
 | User SDK | Python | httpx, pytest |
 | Simulator | Rust | Real cost evaluator from lattice-scheduler |
-| Protobuf | buf | Rust (tonic/prost), Python (grpcio) generation |
+| Protobuf | buf | Rust (tonic/prost) generation |
 | Deployment | Docker/systemd | Multi-stage builds, Grafana dashboards |
 
 ## External Integrations

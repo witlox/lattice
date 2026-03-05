@@ -399,7 +399,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = client.wipe_data("/sensitive/patient-123").await;
+        let result = client.wipe_data("/sensitive/subject-123").await;
         assert!(result.is_ok());
     }
 

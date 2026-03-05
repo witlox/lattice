@@ -1,11 +1,11 @@
-# Sensitive, Medical & Regulated Workload Design
+# Sensitive & Regulated Workload Design
 
 ## Threat Model
 
-Sensitive & Sensitive workloads on shared HPC infrastructure face regulatory requirements (Swiss FADP, EU GDPR, potentially HIPAA for international collaboration). The design must be defensible to an auditor.
+Sensitive workloads on shared HPC infrastructure face regulatory requirements (Swiss FADP, EU GDPR, potentially HIPAA for international collaboration). The design must be defensible to an auditor.
 
 **What we must prove:**
-1. Patient data was only accessible to authorized users during processing
+1. Sensitive data was only accessible to authorized users during processing
 2. No other tenant's workload ran on the same physical nodes simultaneously
 3. Data was encrypted at rest and in transit
 4. All access was logged with user identity and timestamp
@@ -130,7 +130,7 @@ The audit log is queryable via a dedicated API endpoint and CLI:
 GET /v1/audit/logs?user=dr-x&since=2026-03-01&until=2026-03-15
 GET /v1/audit/logs?allocation=12345
 GET /v1/audit/logs?node=x1000c0s0b0n0&since=2026-03-01
-GET /v1/audit/logs?data_path=s3://sensitive-data/patient-001/
+GET /v1/audit/logs?data_path=s3://sensitive-data/subject-001/
 ```
 
 **CLI:**
@@ -190,7 +190,7 @@ Every user-facing observability feature has sensitive-specific restrictions. The
 
 ### Metrics
 
-- **Low sensitivity, still scoped.** Metrics (GPU%, CPU%, I/O rates) do not contain patient data, but are still scoped to the claiming user. Tenant admins can view aggregated usage.
+- **Low sensitivity, still scoped.** Metrics (GPU%, CPU%, I/O rates) do not contain sensitive data, but are still scoped to the claiming user. Tenant admins can view aggregated usage.
 - **No cross-tenant visibility.** Even system admins see sensitive allocation metrics only in aggregate (holistic view), not per-allocation detail.
 
 ### Diagnostics

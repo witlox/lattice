@@ -16,7 +16,7 @@ members = [
 version = "2026.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/lattice-scheduler/lattice"
+repository = "https://github.com/witlox/lattice"
 
 [workspace.dependencies]
 # Async runtime
