@@ -154,9 +154,10 @@ impl EbpfCollector for AyaEbpfCollector {
                     let cpus = aya::util::online_cpus()
                         .map_err(|(msg, e)| format!("failed to get online CPUs: {msg}: {e}"))?;
                     for cpu in cpus {
-                        let mut buf = BytesMut::zeroed(4096);
+                        let mut bufs = [BytesMut::zeroed(4096)];
                         if let Ok(mut perf_buf) = perf_array.open(cpu, Some(64)) {
-                            while let Ok(event) = perf_buf.read_events(&mut [&mut buf]) {
+                            while let Ok(event) = perf_buf.read_events(&mut bufs) {
+                                let buf = &bufs[0];
                                 if event.read == 0 {
                                     break;
                                 }
