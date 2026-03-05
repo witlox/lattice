@@ -31,6 +31,7 @@ jobs:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
 
       # Compute the release version from Cargo.toml + commit count
       - name: Compute version
