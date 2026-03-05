@@ -5,6 +5,7 @@
 //! or command-line arguments.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
@@ -12,7 +13,13 @@ use tracing::info;
 
 use lattice_api::{serve, ApiState, ServerConfig};
 use lattice_common::config::LatticeConfig;
+use lattice_common::error::LatticeError;
 use lattice_common::tsdb_client::{VictoriaMetricsClient, VictoriaMetricsConfig};
+use lattice_common::types::{
+    AllocId, Allocation, AllocationState, Node, NodeId, NodeState, Tenant, TopologyModel,
+};
+use lattice_quorum::QuorumClient;
+use lattice_scheduler::{SchedulerCommandSink, SchedulerLoopConfig, SchedulerStateReader};
 
 #[derive(Parser)]
 #[command(
@@ -32,6 +39,97 @@ struct Args {
     /// REST listen address (overrides config)
     #[arg(long)]
     rest_addr: Option<String>,
+}
+
+// ─── Scheduler ↔ Quorum adapters ─────────────────────────────────────────────
+
+/// Reads cluster state from the Raft quorum for the scheduler loop.
+struct QuorumStateReader {
+    quorum: Arc<QuorumClient>,
+}
+
+#[async_trait::async_trait]
+impl SchedulerStateReader for QuorumStateReader {
+    async fn pending_allocations(&self) -> Result<Vec<Allocation>, LatticeError> {
+        let state = self.quorum.state().read().await;
+        Ok(state
+            .allocations
+            .values()
+            .filter(|a| a.state == AllocationState::Pending)
+            .cloned()
+            .collect())
+    }
+
+    async fn running_allocations(&self) -> Result<Vec<Allocation>, LatticeError> {
+        let state = self.quorum.state().read().await;
+        Ok(state
+            .allocations
+            .values()
+            .filter(|a| a.state == AllocationState::Running)
+            .cloned()
+            .collect())
+    }
+
+    async fn available_nodes(&self) -> Result<Vec<Node>, LatticeError> {
+        let state = self.quorum.state().read().await;
+        Ok(state
+            .nodes
+            .values()
+            .filter(|n| n.state == NodeState::Ready)
+            .cloned()
+            .collect())
+    }
+
+    async fn tenants(&self) -> Result<Vec<Tenant>, LatticeError> {
+        let state = self.quorum.state().read().await;
+        Ok(state.tenants.values().cloned().collect())
+    }
+
+    async fn topology(&self) -> TopologyModel {
+        let state = self.quorum.state().read().await;
+        state.topology.clone()
+    }
+}
+
+/// Applies scheduling decisions back to the Raft quorum.
+struct QuorumCommandSink {
+    quorum: Arc<QuorumClient>,
+}
+
+#[async_trait::async_trait]
+impl SchedulerCommandSink for QuorumCommandSink {
+    async fn assign_nodes(
+        &self,
+        alloc_id: AllocId,
+        nodes: Vec<NodeId>,
+    ) -> Result<(), LatticeError> {
+        let resp = self
+            .quorum
+            .propose(lattice_quorum::QuorumCommand::AssignNodes {
+                id: alloc_id,
+                nodes,
+            })
+            .await?;
+        match resp {
+            lattice_quorum::QuorumResponse::Ok => Ok(()),
+            lattice_quorum::QuorumResponse::Error(e) => Err(LatticeError::Internal(e)),
+            _ => Err(LatticeError::Internal("Unexpected response".into())),
+        }
+    }
+
+    async fn set_running(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
+        use lattice_common::traits::AllocationStore;
+        self.quorum
+            .update_state(&alloc_id, AllocationState::Running)
+            .await
+    }
+
+    async fn suspend(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
+        use lattice_common::traits::AllocationStore;
+        self.quorum
+            .update_state(&alloc_id, AllocationState::Suspended)
+            .await
+    }
 }
 
 #[tokio::main]
@@ -220,7 +318,7 @@ async fn main() -> Result<()> {
         nodes: quorum.clone(),
         audit: quorum.clone(),
         checkpoint,
-        quorum: Some(quorum),
+        quorum: Some(quorum.clone()),
         events: lattice_api::events::new_event_bus(),
         tsdb,
         storage,
@@ -238,9 +336,46 @@ async fn main() -> Result<()> {
         tls,
     };
 
-    serve(state, server_config)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // ── Scheduler Loop ────────────────────────────────────────────────────
+    let sched_config = config.scheduling.unwrap_or_default();
+    let scheduler_loop = lattice_scheduler::SchedulerLoop::new(
+        Arc::new(QuorumStateReader {
+            quorum: quorum.clone(),
+        }),
+        Arc::new(QuorumCommandSink {
+            quorum: quorum.clone(),
+        }),
+        SchedulerLoopConfig {
+            tick_interval: Duration::from_secs(sched_config.cycle_interval_seconds),
+            ..Default::default()
+        },
+    );
 
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+    // Graceful shutdown on Ctrl+C
+    let cancel_tx_clone = cancel_tx.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Received SIGINT, shutting down");
+        let _ = cancel_tx_clone.send(true);
+    });
+
+    info!(
+        "Scheduler loop starting (interval={}s)",
+        sched_config.cycle_interval_seconds
+    );
+
+    // Run scheduler loop and API servers concurrently
+    tokio::select! {
+        result = serve(state, server_config) => {
+            result.map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        _ = scheduler_loop.run(cancel_rx) => {
+            info!("Scheduler loop stopped");
+        }
+    }
+
+    drop(cancel_tx);
     Ok(())
 }
