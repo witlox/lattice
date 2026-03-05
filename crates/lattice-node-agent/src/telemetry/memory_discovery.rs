@@ -110,15 +110,15 @@ async fn discover_sysfs() -> Result<MemoryTopology, DiscoveryError> {
     let cxl_domains = discover_cxl_domains().await;
     let cxl_interconnects: Vec<_> = cxl_domains
         .iter()
-        .filter_map(|d| {
+        .map(|d| {
             // Connect CXL domain to NUMA node 0 by default
-            Some(MemoryInterconnect {
+            MemoryInterconnect {
                 domain_a: 0,
                 domain_b: d.id,
                 link_type: MemoryLinkType::CxlSwitch,
                 bandwidth_gbps: 64.0, // CXL 2.0 typical
                 latency_ns: 200,
-            })
+            }
         })
         .collect();
 
