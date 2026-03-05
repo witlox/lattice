@@ -26,7 +26,8 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
     if command -v cargo-nextest &>/dev/null; then
-        cargo nextest run --workspace
+        cargo nextest run --workspace --exclude lattice-acceptance
+        cargo test -p lattice-acceptance
     else
         cargo test --workspace
     fi
@@ -37,7 +38,8 @@ test-all:
     set -euo pipefail
     echo "Running full test suite including slow tests..."
     if command -v cargo-nextest &>/dev/null; then
-        cargo nextest run --workspace --run-ignored all
+        cargo nextest run --workspace --run-ignored all --exclude lattice-acceptance
+        cargo test -p lattice-acceptance
     else
         cargo test --workspace -- --include-ignored
     fi
@@ -47,7 +49,7 @@ test-slow:
     #!/usr/bin/env bash
     set -euo pipefail
     if command -v cargo-nextest &>/dev/null; then
-        cargo nextest run --workspace --run-ignored ignored-only
+        cargo nextest run --workspace --run-ignored ignored-only --exclude lattice-acceptance
     else
         cargo test --workspace -- --ignored
     fi

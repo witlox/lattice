@@ -17,4 +17,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - uses: arduino/setup-protoc@v3
-      - run: cargo nextest run --workspace --all-features --profile ci --no-tests=pass --run-ignored all
+      - name: Run tests (nextest, including slow)
+        run: cargo nextest run --workspace --all-features --profile ci --no-tests=pass --run-ignored all --exclude lattice-acceptance
+      - name: Run acceptance tests (cucumber, custom harness)
+        run: cargo test -p lattice-acceptance --all-features
