@@ -23,19 +23,27 @@ This starts a 3-node quorum with VictoriaMetrics. See `infra/docker/docker-compo
 
 ### Systemd (production)
 
-Install the binaries and unit files:
+Download binaries from [GitHub Releases](https://github.com/witlox/lattice/releases/latest) and install:
 
 ```bash
-# Server (quorum members)
-cp target/release/lattice-server /usr/local/bin/
-cp infra/systemd/lattice-server.service /etc/systemd/system/
-cp config/production.yaml /etc/lattice/config.yaml
-systemctl enable --now lattice-server
+ARCH=$(uname -m | sed 's/aarch64/arm64/')
 
-# Agent (compute nodes)
-cp target/release/lattice-agent /usr/local/bin/
-cp infra/systemd/lattice-agent.service /etc/systemd/system/
-systemctl enable --now lattice-agent
+# Server (quorum members)
+curl -sSfL "https://github.com/witlox/lattice/releases/latest/download/lattice-server-${ARCH}.tar.gz" | tar xz
+sudo mv lattice-server /usr/local/bin/
+sudo cp infra/systemd/lattice-server.service /etc/systemd/system/
+sudo cp config/production.yaml /etc/lattice/config.yaml
+sudo systemctl enable --now lattice-server
+
+# Agent (compute nodes) — pick the variant for your GPU hardware
+#   lattice-agent-${ARCH}-cpu.tar.gz      — CPU-only nodes
+#   lattice-agent-${ARCH}-nvidia.tar.gz   — NVIDIA H100/A100/GH200
+#   lattice-agent-x86_64-rocm.tar.gz      — AMD MI300X/MI250 (x86_64 only)
+GPU=cpu  # or: nvidia, rocm
+curl -sSfL "https://github.com/witlox/lattice/releases/latest/download/lattice-agent-${ARCH}-${GPU}.tar.gz" | tar xz
+sudo mv lattice-agent /usr/local/bin/
+sudo cp infra/systemd/lattice-agent.service /etc/systemd/system/
+sudo systemctl enable --now lattice-agent
 ```
 
 ## Configuration
@@ -176,16 +184,24 @@ api:
 
 Compile-time features control optional integrations:
 
-| Feature | Enables |
-|---------|---------|
-| `oidc` | JWT/OIDC token validation |
-| `accounting` | Waldur billing integration |
-| `federation` | Sovra cross-site federation |
-| `nvidia` | NVIDIA GPU discovery (nvml) |
-| `ebpf` | eBPF kernel telemetry (Linux only) |
+| Feature | Crate | Enables |
+|---------|-------|---------|
+| `oidc` | lattice-api | JWT/OIDC token validation |
+| `accounting` | lattice-api | Waldur billing integration |
+| `federation` | lattice-api | Sovra cross-site federation |
+| `nvidia` | lattice-node-agent | NVIDIA GPU discovery (nvml-wrapper) |
+| `rocm` | lattice-node-agent | AMD GPU discovery (rocm-smi) |
+| `ebpf` | lattice-node-agent | eBPF kernel telemetry (Linux only) |
 
-Build with features:
+Pre-built release binaries include the appropriate GPU features. To build from source:
 
 ```bash
-cargo build --release --features oidc,accounting,nvidia
+# Server (no GPU features needed)
+cargo build --release -p lattice-api --features oidc
+
+# Agent for NVIDIA nodes
+cargo build --release -p lattice-node-agent --features nvidia
+
+# Agent for AMD ROCm nodes
+cargo build --release -p lattice-node-agent --features rocm
 ```

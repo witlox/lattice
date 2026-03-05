@@ -15,13 +15,16 @@ If you're coming from Slurm, most concepts map directly — see the [Slurm migra
 ## Installing the CLI
 
 ```bash
-# From a release binary
-curl -sSfL https://github.com/witlox/lattice/releases/latest/download/lattice-$(uname -s)-$(uname -m) -o lattice
-chmod +x lattice
+# Determine architecture
+ARCH=$(uname -m | sed 's/aarch64/arm64/')
+
+# Download from GitHub Releases
+curl -sSfL "https://github.com/witlox/lattice/releases/latest/download/lattice-${ARCH}.tar.gz" | tar xz
 sudo mv lattice /usr/local/bin/
 
 # Or build from source
-cargo install --path crates/lattice-cli
+cargo build --release -p lattice-cli
+sudo cp target/release/lattice /usr/local/bin/
 ```
 
 ## Configuration
