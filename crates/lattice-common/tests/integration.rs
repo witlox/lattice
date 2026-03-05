@@ -88,7 +88,8 @@ fn error_display_allocation_not_found() {
 
 #[test]
 fn error_display_sensitive_isolation() {
-    let err = LatticeError::SensitiveIsolation("node shared with non-sensitive workload".to_string());
+    let err =
+        LatticeError::SensitiveIsolation("node shared with non-sensitive workload".to_string());
     let msg = err.to_string();
     assert!(msg.contains("Sensitive isolation violation"));
     assert!(msg.contains("non-sensitive workload"));
