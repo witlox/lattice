@@ -1,0 +1,29 @@
+# Lattice — minimal configuration (single-node dev mode)
+#
+# Start with: lattice-server --config config/minimal.yaml
+# All optional sections are omitted (defaults apply).
+
+role: Combined
+
+quorum:
+  node_id: 1
+  peers: []
+  election_timeout_ms: 500
+  heartbeat_interval_ms: 100
+  snapshot_threshold: 10000
+
+api:
+  grpc_address: "0.0.0.0:50051"
+  rest_address: "0.0.0.0:8080"
+  oidc_issuer: ""
+
+storage:
+  s3_endpoint: ""
+  nfs_home_path: "/home"
+  local_scratch_path: "/scratch"
+
+telemetry:
+  default_mode: "prod"
+  tsdb_endpoint: ""
+  prod_interval_seconds: 30
+  ebpf_programs_path: "/opt/lattice/ebpf"

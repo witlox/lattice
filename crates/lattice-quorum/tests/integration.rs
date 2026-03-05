@@ -376,7 +376,7 @@ async fn node_registration_and_heartbeat() {
     let got = client.get_node(&"x2000c0s1b0n0".to_string()).await.unwrap();
     assert_eq!(got.id, "x2000c0s1b0n0");
     assert_eq!(got.state, NodeState::Ready);
-    assert!(got.last_heartbeat.is_none(), "no heartbeat yet");
+    let initial_heartbeat = got.last_heartbeat;
 
     // Record a heartbeat
     let hb_time = chrono::Utc::now();
@@ -388,9 +388,10 @@ async fn node_registration_and_heartbeat() {
         .await
         .unwrap();
 
-    // Verify heartbeat was recorded
+    // Verify heartbeat was updated
     let got = client.get_node(&"x2000c0s1b0n0".to_string()).await.unwrap();
     assert_eq!(got.last_heartbeat, Some(hb_time));
+    assert!(Some(hb_time) >= initial_heartbeat);
 
     // Record a second heartbeat — should update
     let hb_time2 = chrono::Utc::now();

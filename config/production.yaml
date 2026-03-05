@@ -1,0 +1,122 @@
+# Lattice — production reference configuration
+#
+# This file documents every configuration option with sensible production
+# defaults. Copy and adapt for your site. Optional sections can be removed
+# entirely; they default to disabled/off.
+
+role: QuorumMember
+
+# ── Raft Quorum ───────────────────────────────────────────────────────────
+quorum:
+  node_id: 1
+  raft_listen_address: "0.0.0.0:9000"
+  peers:
+    - id: 2
+      address: "lattice-02:9000"
+    - id: 3
+      address: "lattice-03:9000"
+  election_timeout_ms: 500
+  heartbeat_interval_ms: 200
+  snapshot_threshold: 10000
+  # Persistent storage for WAL + snapshots. Required for production.
+  data_dir: /var/lib/lattice/raft
+
+# ── API Server ────────────────────────────────────────────────────────────
+api:
+  grpc_address: "0.0.0.0:50051"
+  rest_address: "0.0.0.0:8080"
+  # OIDC provider for token validation (requires 'oidc' feature).
+  oidc_issuer: "https://auth.example.com/realms/hpc"
+  # TLS — strongly recommended for production.
+  tls_cert: /etc/lattice/tls/server.crt
+  tls_key: /etc/lattice/tls/server.key
+  # mTLS — set tls_ca to require client certificates.
+  # tls_ca: /etc/lattice/tls/ca.crt
+
+# ── Storage Integration ──────────────────────────────────────────────────
+storage:
+  # VAST management API for data staging, QoS, and secure wipe.
+  vast_api_url: "https://vast-mgmt.example.com"
+  vast_username: "lattice-svc"
+  vast_password: "changeme"        # Use a secret manager in production
+  vast_timeout_secs: 30
+  # S3-compatible endpoint for checkpoint and log storage.
+  s3_endpoint: "https://s3.example.com"
+  # Default paths.
+  nfs_home_path: "/home"
+  local_scratch_path: "/scratch"
+
+# ── Telemetry ────────────────────────────────────────────────────────────
+telemetry:
+  # Modes: "prod" (30s aggregation), "debug" (1s raw), "audit" (access logs)
+  default_mode: "prod"
+  # VictoriaMetrics / Prometheus-compatible TSDB endpoint.
+  tsdb_endpoint: "http://victoriametrics:8428"
+  prod_interval_seconds: 30
+  # Pre-compiled eBPF programs (requires 'ebpf' feature on Linux).
+  ebpf_programs_path: "/opt/lattice/ebpf"
+
+# ── Node Agent ───────────────────────────────────────────────────────────
+node_agent:
+  heartbeat_interval_seconds: 10
+  heartbeat_timeout_seconds: 30
+  grace_period_seconds: 120
+  # Sensitive workloads get a longer grace period before marking Down.
+  sensitive_grace_period_seconds: 600
+
+# ── Network (Slingshot VNI pool) ─────────────────────────────────────────
+network:
+  vni_pool_start: 1000
+  vni_pool_end: 4095
+
+# ── Checkpoint Broker ────────────────────────────────────────────────────
+checkpoint:
+  evaluation_interval_seconds: 30
+  checkpoint_timeout_seconds: 300
+  max_deferral_seconds: 60
+
+# ── Scheduling ───────────────────────────────────────────────────────────
+scheduling:
+  cycle_interval_seconds: 5
+  backfill_depth: 100
+
+# ── Accounting (Waldur) ──────────────────────────────────────────────────
+# Requires the 'accounting' feature flag.
+accounting:
+  enabled: true
+  waldur_api_url: "https://waldur.example.com/api"
+  waldur_token_secret_ref: "changeme"
+  push_interval_seconds: 60
+  buffer_size: 1000
+
+# ── API Rate Limiting ────────────────────────────────────────────────────
+# Presence of this section enables per-user rate limiting.
+rate_limit:
+  attach_max_concurrent: 5
+  stream_logs_max_concurrent: 10
+  query_metrics_per_minute: 60
+  stream_metrics_max_concurrent: 5
+  diagnostics_per_minute: 10
+  compare_per_minute: 10
+
+# ── Federation (Sovra) ───────────────────────────────────────────────────
+# Requires the 'federation' feature flag. Remove this section to disable.
+# federation:
+#   sovra_endpoint: "https://sovra.example.com"
+#   workspace_id: "site-alpha"
+#   broker_address: "0.0.0.0:9100"
+#   peers:
+#     - name: "site-beta"
+#       broker_address: "lattice-beta.example.com:9100"
+#       sovra_workspace_id: "site-beta"
+
+# ── Slurm Compatibility ─────────────────────────────────────────────────
+# compat:
+#   set_slurm_env: true
+#   partition_mapping:
+#     gpu: "vcluster-gpu"
+#     cpu: "vcluster-cpu"
+#   qos_mapping:
+#     low: 2
+#     normal: 5
+#     high: 8
