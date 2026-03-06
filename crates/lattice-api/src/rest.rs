@@ -220,6 +220,7 @@ pub struct CreateTenantRequest {
     pub fair_share_target: Option<f64>,
     pub gpu_hours_budget: Option<f64>,
     pub max_concurrent_allocations: Option<u32>,
+    pub burst_allowance: Option<f64>,
     pub isolation_level: Option<String>,
 }
 
@@ -240,6 +241,7 @@ pub struct UpdateTenantRequest {
     pub fair_share_target: Option<f64>,
     pub gpu_hours_budget: Option<f64>,
     pub max_concurrent_allocations: Option<u32>,
+    pub burst_allowance: Option<f64>,
     pub isolation_level: Option<String>,
 }
 
@@ -728,6 +730,7 @@ async fn submit_dag(
     use lattice_common::types::DependencyCondition;
     let dag_id = req.dag_id.clone();
     let mut allocation_ids = Vec::new();
+    let mut inserted_ids: Vec<uuid::Uuid> = Vec::new();
     for dag_alloc in &req.allocations {
         let spec = pb::AllocationSpec {
             tenant: dag_alloc.tenant.clone(),
@@ -751,10 +754,18 @@ async fn submit_dag(
         let mut alloc = match convert::allocation_from_proto(&spec, "rest-user") {
             Ok(a) => a,
             Err(e) => {
+                // Rollback previously inserted DAG allocations
+                for prev_id in &inserted_ids {
+                    let _ = state
+                        .allocations
+                        .update_state(prev_id, AllocationState::Cancelled)
+                        .await;
+                }
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
         };
         alloc.dag_id = Some(dag_id.clone());
+        let alloc_uuid = alloc.id;
         allocation_ids.push(alloc.id.to_string());
         for edge in &req.edges {
             if edge.to == dag_alloc.name {
@@ -770,14 +781,28 @@ async fn submit_dag(
             }
         }
         if let Err(e) = state.allocations.insert(alloc).await {
+            // Rollback previously inserted DAG allocations
+            for prev_id in &inserted_ids {
+                let _ = state
+                    .allocations
+                    .update_state(prev_id, AllocationState::Cancelled)
+                    .await;
+            }
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::CONFLICT,
                 Json(ErrorResponse {
-                    error: e.to_string(),
+                    error: format!(
+                        "DAG submission failed at allocation {}: {}. \
+                         {} previously submitted allocation(s) have been cancelled.",
+                        dag_alloc.name,
+                        e,
+                        inserted_ids.len()
+                    ),
                 }),
             )
                 .into_response();
         }
+        inserted_ids.push(alloc_uuid);
     }
     (
         StatusCode::CREATED,
@@ -964,6 +989,7 @@ async fn create_tenant(
             fair_share_target: req.fair_share_target.unwrap_or(0.1),
             gpu_hours_budget: req.gpu_hours_budget,
             max_concurrent_allocations: req.max_concurrent_allocations,
+            burst_allowance: req.burst_allowance,
         },
         isolation_level: match req.isolation_level.as_deref() {
             Some("strict") => lattice_common::types::IsolationLevel::Strict,
@@ -1108,6 +1134,11 @@ async fn update_tenant(
                     req.max_concurrent_allocations
                 } else {
                     existing.quota.max_concurrent_allocations
+                },
+                burst_allowance: if req.burst_allowance.is_some() {
+                    req.burst_allowance
+                } else {
+                    existing.quota.burst_allowance
                 },
             })
         } else {

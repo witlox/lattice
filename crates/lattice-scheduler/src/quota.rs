@@ -18,6 +18,18 @@ pub fn compute_tenant_usage(
 ) -> HashMap<TenantId, TenantUsage> {
     let mut usage = HashMap::new();
 
+    // Compute system-wide utilization once
+    let total_nodes_in_use: u32 = allocations
+        .iter()
+        .filter(|a| a.state == AllocationState::Running)
+        .map(|a| a.assigned_nodes.len() as u32)
+        .sum();
+    let system_utilization = if total_nodes > 0 {
+        total_nodes_in_use as f64 / total_nodes as f64
+    } else {
+        0.0
+    };
+
     for tenant in tenants {
         let nodes_in_use: u32 = allocations
             .iter()
@@ -36,6 +48,8 @@ pub fn compute_tenant_usage(
             TenantUsage {
                 target_share: tenant.quota.fair_share_target,
                 actual_usage,
+                burst_allowance: tenant.quota.burst_allowance,
+                system_utilization,
             },
         );
     }

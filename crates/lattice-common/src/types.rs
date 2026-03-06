@@ -586,6 +586,11 @@ pub struct TenantQuota {
     pub gpu_hours_budget: Option<f64>,
     /// Maximum concurrent allocations (hard limit per quota-enforcement)
     pub max_concurrent_allocations: Option<u32>,
+    /// Burst allowance multiplier (e.g. 1.5 = allow up to 150% of fair share
+    /// when resources are idle). Burst allocations are first to be preempted.
+    /// None means no bursting beyond fair_share_target.
+    #[serde(default)]
+    pub burst_allowance: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -81,6 +81,7 @@ impl AdminService for LatticeAdminService {
                 fair_share_target: q.fair_share_target,
                 gpu_hours_budget: q.gpu_hours_budget,
                 max_concurrent_allocations: q.max_concurrent_allocations,
+                burst_allowance: None,
             });
 
             let isolation = req.isolation_level.as_ref().map(|l| match l.as_str() {
@@ -128,6 +129,7 @@ impl AdminService for LatticeAdminService {
                     fair_share_target: quota.fair_share_target,
                     gpu_hours_budget: quota.gpu_hours_budget,
                     max_concurrent_allocations: quota.max_concurrent_allocations,
+                    burst_allowance: None,
                 };
             }
 

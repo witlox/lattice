@@ -3,7 +3,11 @@
 //! Implements the victim selection algorithm from
 //! docs/architecture/preemption.md.
 
+use std::collections::HashMap;
+
 use lattice_common::types::*;
+
+use crate::cost::TenantUsage;
 
 /// Preemption cost for a single allocation (lower = cheaper to preempt).
 #[derive(Debug, Clone)]
@@ -20,6 +24,10 @@ pub struct PreemptionConfig {
     pub max_victims: usize,
     /// Threshold for "near completion" (fraction of walltime used).
     pub near_completion_threshold: f64,
+    /// Per-tenant usage info for burst-aware preemption.
+    /// Allocations from tenants above their base target share (in burst territory)
+    /// are cheaper to preempt.
+    pub tenant_usage: HashMap<TenantId, TenantUsage>,
 }
 
 impl Default for PreemptionConfig {
@@ -27,6 +35,7 @@ impl Default for PreemptionConfig {
         Self {
             max_victims: 3,
             near_completion_threshold: 0.9,
+            tenant_usage: HashMap::new(),
         }
     }
 }
@@ -112,6 +121,10 @@ pub fn evaluate_preemption(
 }
 
 /// Compute the cost of preempting an allocation.
+///
+/// Burst-aware: if the tenant is above their base target share (using burst
+/// capacity), preemption cost is halved — burst allocations should be the
+/// first to give back resources when needed.
 fn preemption_cost(alloc: &Allocation, config: &PreemptionConfig) -> f64 {
     let checkpoint_cost = match alloc.checkpoint {
         CheckpointStrategy::Auto => 5.0, // estimated checkpoint minutes
@@ -128,8 +141,17 @@ fn preemption_cost(alloc: &Allocation, config: &PreemptionConfig) -> f64 {
     };
 
     let remaining_value = remaining_walltime_value(alloc, config);
+    let base_cost = checkpoint_cost + remaining_value;
 
-    checkpoint_cost + remaining_value
+    // Apply burst discount: tenants above their base target are using burst capacity
+    let burst_factor = match config.tenant_usage.get(&alloc.tenant) {
+        Some(usage) if usage.burst_allowance.is_some() && usage.actual_usage > usage.target_share => {
+            0.5 // Burst allocations are half as expensive to preempt
+        }
+        _ => 1.0,
+    };
+
+    base_cost * burst_factor
 }
 
 /// Higher cost if the allocation is near completion (let it finish).
@@ -344,5 +366,67 @@ mod tests {
 
         let result = evaluate_preemption(&pending, &[victim], &PreemptionConfig::default());
         assert!(matches!(result, PreemptionResult::NotPossible { .. }));
+    }
+
+    #[test]
+    fn burst_tenant_preempted_before_non_burst() {
+        let pending = AllocationBuilder::new()
+            .nodes(1)
+            .preemption_class(8)
+            .build();
+
+        // v1: non-burst tenant (normal cost)
+        let mut v1 = AllocationBuilder::new()
+            .nodes(1)
+            .preemption_class(1)
+            .tenant("normal")
+            .state(AllocationState::Running)
+            .build();
+        v1.assigned_nodes = vec!["n1".into()];
+        v1.checkpoint = CheckpointStrategy::Auto;
+
+        // v2: burst tenant above target share (cost halved)
+        let mut v2 = AllocationBuilder::new()
+            .nodes(1)
+            .preemption_class(1)
+            .tenant("burst")
+            .state(AllocationState::Running)
+            .build();
+        v2.assigned_nodes = vec!["n2".into()];
+        v2.checkpoint = CheckpointStrategy::Auto;
+
+        let mut tenant_usage = HashMap::new();
+        tenant_usage.insert(
+            "burst".to_string(),
+            TenantUsage {
+                target_share: 0.2,
+                actual_usage: 0.3, // above target → using burst capacity
+                burst_allowance: Some(0.5),
+                system_utilization: 0.5,
+            },
+        );
+        tenant_usage.insert(
+            "normal".to_string(),
+            TenantUsage {
+                target_share: 0.3,
+                actual_usage: 0.2, // below target → not bursting
+                burst_allowance: None,
+                system_utilization: 0.5,
+            },
+        );
+
+        let config = PreemptionConfig {
+            tenant_usage,
+            ..Default::default()
+        };
+
+        let result = evaluate_preemption(&pending, &[v1.clone(), v2.clone()], &config);
+        if let PreemptionResult::Possible { victims, .. } = result {
+            assert_eq!(victims.len(), 1);
+            // Burst tenant should be the victim (cheaper to preempt)
+            assert_eq!(victims[0].allocation_id, v2.id);
+        } else {
+            panic!("Expected Possible");
+        }
     }
 }

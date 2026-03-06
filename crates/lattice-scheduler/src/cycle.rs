@@ -54,6 +54,7 @@ pub fn run_cycle(input: &CycleInput, weights: &CostWeights) -> SchedulingResult 
     // Build cost context
     let ctx = CostContext {
         tenant_usage,
+        budget_utilization: std::collections::HashMap::new(),
         backlog: BacklogMetrics {
             queued_gpu_hours,
             running_gpu_hours,

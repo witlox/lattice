@@ -76,6 +76,21 @@ impl Autoscaler {
         avg_utilization: f64,
         queue_depth: u32,
     ) -> ScaleDecision {
+        self.evaluate_with_tenant_quota(current_node_count, avg_utilization, queue_depth, None)
+    }
+
+    /// Evaluate with an additional tenant-level node cap.
+    ///
+    /// `tenant_remaining_nodes` is the number of additional nodes the tenant's
+    /// quota allows (tenant.max_nodes - tenant's current total usage). If
+    /// provided, scale-up is clamped so the tenant quota is never exceeded.
+    pub fn evaluate_with_tenant_quota(
+        &mut self,
+        current_node_count: u32,
+        avg_utilization: f64,
+        queue_depth: u32,
+        tenant_remaining_nodes: Option<u32>,
+    ) -> ScaleDecision {
         // Honour cooldown window: no action if we scaled too recently.
         if let Some(last) = self.last_scale_at {
             let elapsed = last.elapsed();
@@ -84,9 +99,15 @@ impl Autoscaler {
             }
         }
 
+        // Effective max: the lower of vCluster max and tenant quota headroom.
+        let effective_max = match tenant_remaining_nodes {
+            Some(remaining) => self.config.max_nodes.min(current_node_count + remaining),
+            None => self.config.max_nodes,
+        };
+
         // Scale up when utilization is high or there are queued jobs.
         if avg_utilization >= self.config.scale_up_threshold || queue_depth > 0 {
-            let new_count = (current_node_count + 1).min(self.config.max_nodes);
+            let new_count = (current_node_count + 1).min(effective_max);
             if new_count > current_node_count {
                 self.last_scale_at = Some(Instant::now());
                 return ScaleDecision::ScaleUp {
@@ -292,6 +313,60 @@ mod tests {
         let mut scaler = default_autoscaler();
         let decision = scaler.evaluate(10, 0.99, 5);
         // We add one node per cycle (not a burst).
+        assert_eq!(decision, ScaleDecision::ScaleUp { count: 1 });
+    }
+
+    // ── Tenant quota tests ──────────────────────────────────
+
+    #[test]
+    fn scale_up_clamped_by_tenant_quota() {
+        let mut scaler = default_autoscaler();
+        // Tenant only has 0 remaining nodes → cannot scale up
+        let decision = scaler.evaluate_with_tenant_quota(4, 0.9, 5, Some(0));
+        assert_eq!(decision, ScaleDecision::NoChange);
+    }
+
+    #[test]
+    fn scale_up_allowed_when_tenant_has_headroom() {
+        let mut scaler = default_autoscaler();
+        let decision = scaler.evaluate_with_tenant_quota(4, 0.9, 0, Some(10));
+        assert_eq!(decision, ScaleDecision::ScaleUp { count: 1 });
+    }
+
+    #[test]
+    fn tenant_quota_takes_precedence_over_vcluster_max() {
+        let config = AutoscalerConfig {
+            max_nodes: 100,
+            ..Default::default()
+        };
+        let mut scaler = Autoscaler::new(config);
+        // vCluster allows 100 nodes but tenant only has 1 remaining
+        let decision = scaler.evaluate_with_tenant_quota(4, 0.9, 0, Some(1));
+        assert_eq!(decision, ScaleDecision::ScaleUp { count: 1 });
+
+        // Next attempt (after cooldown bypass)
+        let config2 = AutoscalerConfig {
+            max_nodes: 100,
+            cooldown_secs: 0,
+            ..Default::default()
+        };
+        let mut scaler2 = Autoscaler::new(config2);
+        let decision = scaler2.evaluate_with_tenant_quota(5, 0.9, 0, Some(0));
+        assert_eq!(decision, ScaleDecision::NoChange);
+    }
+
+    #[test]
+    fn scale_down_unaffected_by_tenant_quota() {
+        let mut scaler = default_autoscaler();
+        // Tenant quota doesn't prevent scaling down
+        let decision = scaler.evaluate_with_tenant_quota(4, 0.1, 0, Some(0));
+        assert_eq!(decision, ScaleDecision::ScaleDown { count: 1 });
+    }
+
+    #[test]
+    fn none_tenant_remaining_behaves_like_unlimited() {
+        let mut scaler = default_autoscaler();
+        let decision = scaler.evaluate_with_tenant_quota(4, 0.9, 0, None);
         assert_eq!(decision, ScaleDecision::ScaleUp { count: 1 });
     }
 }

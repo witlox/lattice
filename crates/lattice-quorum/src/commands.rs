@@ -65,6 +65,11 @@ pub enum Command {
     // ── Topology commands ───────────────────────────────────
     UpdateTopology(TopologyModel),
 
+    // ── System config commands ───────────────────────────────
+    /// Set the system-wide sensitive pool size limit.
+    /// None removes the limit.
+    SetSensitivePoolSize(Option<u32>),
+
     // ── Audit commands ──────────────────────────────────────
     RecordAudit(AuditEntry),
 }
@@ -91,6 +96,7 @@ impl fmt::Display for Command {
             Command::CreateVCluster(vc) => write!(f, "CreateVCluster({})", vc.id),
             Command::UpdateVCluster { id, .. } => write!(f, "UpdateVCluster({id})"),
             Command::UpdateTopology(_) => write!(f, "UpdateTopology"),
+            Command::SetSensitivePoolSize(s) => write!(f, "SetSensitivePoolSize({s:?})"),
             Command::RecordAudit(e) => write!(f, "RecordAudit({:?})", e.action),
         }
     }

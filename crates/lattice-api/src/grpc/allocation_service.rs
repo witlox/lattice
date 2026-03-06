@@ -66,18 +66,34 @@ impl AllocationService for LatticeAllocationService {
             Some(pb::submit_request::Submission::Dag(dag)) => {
                 let dag_id = uuid::Uuid::new_v4().to_string();
                 let mut ids = Vec::new();
+                let mut inserted_uuids: Vec<uuid::Uuid> = Vec::new();
 
                 for spec in &dag.allocations {
                     let mut alloc = convert::allocation_from_proto(spec, &user)
                         .map_err(Status::invalid_argument)?;
                     alloc.dag_id = Some(dag_id.clone());
+                    let alloc_uuid = alloc.id;
                     ids.push(alloc.id.to_string());
 
-                    self.state
-                        .allocations
-                        .insert(alloc)
-                        .await
-                        .map_err(|e| Status::internal(e.to_string()))?;
+                    if let Err(e) = self.state.allocations.insert(alloc).await {
+                        // Rollback previously inserted DAG allocations
+                        for prev_id in &inserted_uuids {
+                            let _ = self
+                                .state
+                                .allocations
+                                .update_state(
+                                    prev_id,
+                                    lattice_common::types::AllocationState::Cancelled,
+                                )
+                                .await;
+                        }
+                        return Err(Status::resource_exhausted(format!(
+                            "DAG submission failed: {}. {} allocation(s) rolled back.",
+                            e,
+                            inserted_uuids.len()
+                        )));
+                    }
+                    inserted_uuids.push(alloc_uuid);
                 }
 
                 Ok(Response::new(pb::SubmitResponse {
@@ -91,6 +107,7 @@ impl AllocationService for LatticeAllocationService {
                     .as_ref()
                     .ok_or_else(|| Status::invalid_argument("task group requires a template"))?;
                 let mut ids = Vec::new();
+                let mut inserted_uuids: Vec<uuid::Uuid> = Vec::new();
                 let step = tg.step.max(1);
 
                 let mut i = tg.range_start;
@@ -103,13 +120,27 @@ impl AllocationService for LatticeAllocationService {
                         step,
                         max_concurrent: tg.max_concurrent,
                     };
+                    let alloc_uuid = alloc.id;
                     ids.push(alloc.id.to_string());
 
-                    self.state
-                        .allocations
-                        .insert(alloc)
-                        .await
-                        .map_err(|e| Status::internal(e.to_string()))?;
+                    if let Err(e) = self.state.allocations.insert(alloc).await {
+                        // Rollback previously inserted task group allocations
+                        for prev_id in &inserted_uuids {
+                            let _ = self
+                                .state
+                                .allocations
+                                .update_state(
+                                    prev_id,
+                                    lattice_common::types::AllocationState::Cancelled,
+                                )
+                                .await;
+                        }
+                        return Err(Status::resource_exhausted(format!(
+                            "Task group submission failed at index {}: {}. {} allocation(s) rolled back.",
+                            i, e, inserted_uuids.len()
+                        )));
+                    }
+                    inserted_uuids.push(alloc_uuid);
                     i += step;
                 }
 
