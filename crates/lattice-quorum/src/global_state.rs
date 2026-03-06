@@ -161,9 +161,7 @@ impl GlobalState {
             let other_nodes_in_use: u32 = self
                 .allocations
                 .iter()
-                .filter(|(aid, a)| {
-                    **aid != id && a.tenant == tenant_id && !a.state.is_terminal()
-                })
+                .filter(|(aid, a)| **aid != id && a.tenant == tenant_id && !a.state.is_terminal())
                 .map(|(_, a)| a.assigned_nodes.len() as u32)
                 .sum();
 
@@ -837,7 +835,7 @@ mod tests {
 
     #[test]
     fn submit_with_range_checks_max_not_min() {
-        use lattice_common::types::{NodeCount, ResourceRequest};
+        use lattice_common::types::NodeCount;
         let mut state = GlobalState::new();
         let tenant = TenantBuilder::new("t1").max_nodes(5).build();
         state.apply(Command::CreateTenant(tenant));

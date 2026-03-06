@@ -145,7 +145,9 @@ fn preemption_cost(alloc: &Allocation, config: &PreemptionConfig) -> f64 {
 
     // Apply burst discount: tenants above their base target are using burst capacity
     let burst_factor = match config.tenant_usage.get(&alloc.tenant) {
-        Some(usage) if usage.burst_allowance.is_some() && usage.actual_usage > usage.target_share => {
+        Some(usage)
+            if usage.burst_allowance.is_some() && usage.actual_usage > usage.target_share =>
+        {
             0.5 // Burst allocations are half as expensive to preempt
         }
         _ => 1.0,

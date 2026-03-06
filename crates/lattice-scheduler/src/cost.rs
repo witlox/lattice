@@ -449,7 +449,10 @@ mod tests {
             },
         );
         let score = eval.f3_fair_share(&alloc, &ctx);
-        assert!(score > 0.0, "burst should create positive deficit even at base target");
+        assert!(
+            score > 0.0,
+            "burst should create positive deficit even at base target"
+        );
     }
 
     #[test]
@@ -468,7 +471,10 @@ mod tests {
             },
         );
         let score = eval.f3_fair_share(&alloc, &ctx);
-        assert!((score - 0.0).abs() < f64::EPSILON, "no burst when system is busy");
+        assert!(
+            (score - 0.0).abs() < f64::EPSILON,
+            "no burst when system is busy"
+        );
     }
 
     #[test]
@@ -520,7 +526,10 @@ mod tests {
 
         let score_idle = eval.f3_fair_share(&alloc, &ctx_idle);
         let score_moderate = eval.f3_fair_share(&alloc, &ctx_moderate);
-        assert!(score_idle > score_moderate, "more spare capacity → more burst benefit");
+        assert!(
+            score_idle > score_moderate,
+            "more spare capacity → more burst benefit"
+        );
     }
 
     // ── f₄: topology_fitness ──
@@ -675,12 +684,8 @@ mod tests {
         let eval = CostEvaluator::new(CostWeights::default());
         let alloc = AllocationBuilder::new().tenant("t1").build();
         let mut ctx = default_ctx();
-        ctx.budget_utilization.insert(
-            "t1".into(),
-            BudgetUtilization {
-                fraction_used: 0.5,
-            },
-        );
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 0.5 });
         assert!((eval.budget_penalty(&alloc, &ctx) - 1.0).abs() < f64::EPSILON);
     }
 
@@ -689,12 +694,8 @@ mod tests {
         let eval = CostEvaluator::new(CostWeights::default());
         let alloc = AllocationBuilder::new().tenant("t1").build();
         let mut ctx = default_ctx();
-        ctx.budget_utilization.insert(
-            "t1".into(),
-            BudgetUtilization {
-                fraction_used: 0.8,
-            },
-        );
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 0.8 });
         assert!((eval.budget_penalty(&alloc, &ctx) - 1.0).abs() < f64::EPSILON);
     }
 
@@ -703,12 +704,8 @@ mod tests {
         let eval = CostEvaluator::new(CostWeights::default());
         let alloc = AllocationBuilder::new().tenant("t1").build();
         let mut ctx = default_ctx();
-        ctx.budget_utilization.insert(
-            "t1".into(),
-            BudgetUtilization {
-                fraction_used: 0.9,
-            },
-        );
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 0.9 });
         // 1.0 - 4.0 * (0.9 - 0.8) = 1.0 - 0.4 = 0.6
         assert!((eval.budget_penalty(&alloc, &ctx) - 0.6).abs() < 1e-10);
     }
@@ -718,12 +715,8 @@ mod tests {
         let eval = CostEvaluator::new(CostWeights::default());
         let alloc = AllocationBuilder::new().tenant("t1").build();
         let mut ctx = default_ctx();
-        ctx.budget_utilization.insert(
-            "t1".into(),
-            BudgetUtilization {
-                fraction_used: 1.0,
-            },
-        );
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 1.0 });
         // 1.0 - 4.0 * (1.0 - 0.8) = 1.0 - 0.8 = 0.2
         assert!((eval.budget_penalty(&alloc, &ctx) - 0.2).abs() < 1e-10);
     }
@@ -733,12 +726,8 @@ mod tests {
         let eval = CostEvaluator::new(CostWeights::default());
         let alloc = AllocationBuilder::new().tenant("t1").build();
         let mut ctx = default_ctx();
-        ctx.budget_utilization.insert(
-            "t1".into(),
-            BudgetUtilization {
-                fraction_used: 1.5,
-            },
-        );
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 1.5 });
         assert!((eval.budget_penalty(&alloc, &ctx) - 0.05).abs() < f64::EPSILON);
     }
 
@@ -755,7 +744,10 @@ mod tests {
             checkpoint_efficiency: 0.0,
             conformance: 0.0,
         });
-        let alloc = AllocationBuilder::new().tenant("t1").preemption_class(10).build();
+        let alloc = AllocationBuilder::new()
+            .tenant("t1")
+            .preemption_class(10)
+            .build();
         let mut ctx = CostContext {
             now: alloc.created_at,
             ..default_ctx()
@@ -765,12 +757,8 @@ mod tests {
         let score_no_penalty = eval.score(&alloc, &ctx);
 
         // With penalty (over budget)
-        ctx.budget_utilization.insert(
-            "t1".into(),
-            BudgetUtilization {
-                fraction_used: 1.5,
-            },
-        );
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 1.5 });
         let score_with_penalty = eval.score(&alloc, &ctx);
 
         assert!(score_with_penalty < score_no_penalty);
