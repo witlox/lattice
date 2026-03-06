@@ -123,11 +123,7 @@ impl AllocationStore for QuotaEnforcingAllocationStore {
         self.inner.get(id).await
     }
 
-    async fn update_state(
-        &self,
-        id: &AllocId,
-        state: AllocationState,
-    ) -> Result<(), LatticeError> {
+    async fn update_state(&self, id: &AllocId, state: AllocationState) -> Result<(), LatticeError> {
         self.inner.update_state(id, state).await
     }
 
@@ -188,15 +184,15 @@ mod tests {
         let a3 = AllocationBuilder::new().tenant("t1").nodes(1).build();
         let result = store.insert(a3).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("max_concurrent"));
+        assert!(result.unwrap_err().to_string().contains("max_concurrent"));
     }
 
     #[tokio::test]
     async fn terminal_allocations_not_counted() {
-        let tenant = TenantBuilder::new("t1").max_nodes(4).max_concurrent(2).build();
+        let tenant = TenantBuilder::new("t1")
+            .max_nodes(4)
+            .max_concurrent(2)
+            .build();
         let store = make_store(vec![tenant]);
 
         // Insert two allocations
@@ -220,7 +216,10 @@ mod tests {
         let store = make_store(vec![]);
 
         // Tenant not in the store → no quota check → insert succeeds
-        let alloc = AllocationBuilder::new().tenant("unknown").nodes(100).build();
+        let alloc = AllocationBuilder::new()
+            .tenant("unknown")
+            .nodes(100)
+            .build();
         assert!(store.insert(alloc).await.is_ok());
     }
 
