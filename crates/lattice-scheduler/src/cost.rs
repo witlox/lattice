@@ -16,6 +16,11 @@ pub struct TenantUsage {
     pub target_share: f64,
     /// Actual usage fraction (nodes in use / total available nodes, 0.0-1.0)
     pub actual_usage: f64,
+    /// Burst allowance multiplier (e.g. 0.2 means tenant can burst up to 120% of target).
+    /// When the system has spare capacity, the effective target is expanded by this factor.
+    pub burst_allowance: Option<f64>,
+    /// Fraction of system capacity currently in use (0.0-1.0). Used to gate burst eligibility.
+    pub system_utilization: f64,
 }
 
 /// System-wide backlog metrics.
@@ -34,11 +39,20 @@ impl Default for BacklogMetrics {
     }
 }
 
+/// Per-tenant GPU-hours budget utilization (for soft penalty).
+#[derive(Debug, Clone)]
+pub struct BudgetUtilization {
+    /// Fraction of budget consumed (0.0 = nothing used, 1.0 = 100%, >1.0 = over budget)
+    pub fraction_used: f64,
+}
+
 /// Input context for the cost evaluator.
 #[derive(Debug, Clone)]
 pub struct CostContext {
     /// Per-tenant usage snapshots
     pub tenant_usage: HashMap<TenantId, TenantUsage>,
+    /// Per-tenant GPU-hours budget utilization (for soft penalty curve)
+    pub budget_utilization: HashMap<TenantId, BudgetUtilization>,
     /// System-wide backlog
     pub backlog: BacklogMetrics,
     /// Normalized energy price (0.0 = cheapest, 1.0 = most expensive)
@@ -59,6 +73,7 @@ impl Default for CostContext {
     fn default() -> Self {
         Self {
             tenant_usage: HashMap::new(),
+            budget_utilization: HashMap::new(),
             backlog: BacklogMetrics::default(),
             energy_price: 0.5,
             data_readiness: HashMap::new(),
@@ -86,15 +101,17 @@ impl CostEvaluator {
     pub fn score(&self, alloc: &Allocation, ctx: &CostContext) -> f64 {
         let w = &self.weights;
 
-        w.priority * self.f1_priority(alloc)
+        let base = w.priority * self.f1_priority(alloc)
             + w.wait_time * self.f2_wait_time(alloc, ctx)
             + w.fair_share * self.f3_fair_share(alloc, ctx)
             + w.topology * self.f4_topology(alloc, ctx)
             + w.data_readiness * self.f5_data_readiness(alloc, ctx)
             + w.backlog * self.f6_backlog(ctx)
             + w.energy * self.f7_energy(ctx)
-            + w.checkpoint_efficiency * self.f8_checkpoint(alloc)
+            + w.checkpoint_efficiency * self.f8_checkpoint(alloc);
         // f9 (conformance) is handled during node selection, not scoring
+        // Budget penalty is a multiplier: depleted budgets suppress the score
+        base * self.budget_penalty(alloc, ctx)
     }
 
     /// f₁: priority_class — normalized to [0.0, 1.0]
@@ -109,10 +126,24 @@ impl CostEvaluator {
     }
 
     /// f₃: fair_share_deficit — how far the tenant is from their target share
+    ///
+    /// When burst_allowance is set and the system has spare capacity (utilization < 0.8),
+    /// the effective target is expanded: effective_target = target * (1 + burst_allowance).
+    /// This lets under-utilized tenants with burst allowance receive a positive deficit score
+    /// even when they're above their base target, as long as the system isn't congested.
     pub fn f3_fair_share(&self, alloc: &Allocation, ctx: &CostContext) -> f64 {
         match ctx.tenant_usage.get(&alloc.tenant) {
             Some(usage) if usage.target_share > 0.0 => {
-                ((usage.target_share - usage.actual_usage) / usage.target_share).max(0.0)
+                let effective_target = match usage.burst_allowance {
+                    Some(burst) if usage.system_utilization < 0.8 => {
+                        // Scale burst by how much spare capacity exists:
+                        // at 0% system util → full burst; at 80% → no burst
+                        let spare_factor = (0.8 - usage.system_utilization) / 0.8;
+                        usage.target_share * (1.0 + burst * spare_factor)
+                    }
+                    _ => usage.target_share,
+                };
+                ((effective_target - usage.actual_usage) / effective_target).max(0.0)
             }
             _ => 0.5, // neutral when unknown
         }
@@ -216,6 +247,31 @@ impl CostEvaluator {
     /// f₇: energy_cost — higher when energy is cheaper
     pub fn f7_energy(&self, ctx: &CostContext) -> f64 {
         1.0 - ctx.energy_price.clamp(0.0, 1.0)
+    }
+
+    /// GPU-hours budget penalty — penalizes tenants consuming their budget.
+    ///
+    /// Implements the tiered penalty from quota-enforcement.md:
+    /// - 0-80% used: no penalty (returns 1.0)
+    /// - 80-100% used: linear ramp from 1.0 to 0.2
+    /// - >100% used: very low (0.05, effective starvation)
+    ///
+    /// Returns 1.0 (no penalty) when budget info is unavailable.
+    pub fn budget_penalty(&self, alloc: &Allocation, ctx: &CostContext) -> f64 {
+        match ctx.budget_utilization.get(&alloc.tenant) {
+            Some(bu) => {
+                let u = bu.fraction_used;
+                if u <= 0.8 {
+                    1.0
+                } else if u <= 1.0 {
+                    // Linear ramp: 1.0 at 0.8 → 0.2 at 1.0
+                    1.0 - 4.0 * (u - 0.8)
+                } else {
+                    0.05
+                }
+            }
+            None => 1.0,
+        }
     }
 
     /// f₈: checkpoint_efficiency — fast checkpoint = more attractive
@@ -324,6 +380,8 @@ mod tests {
             TenantUsage {
                 target_share: 0.5,
                 actual_usage: 0.5,
+                burst_allowance: None,
+                system_utilization: 0.5,
             },
         );
         assert!((eval.f3_fair_share(&alloc, &ctx) - 0.0).abs() < f64::EPSILON);
@@ -339,6 +397,8 @@ mod tests {
             TenantUsage {
                 target_share: 0.3,
                 actual_usage: 0.5,
+                burst_allowance: None,
+                system_utilization: 0.5,
             },
         );
         assert!((eval.f3_fair_share(&alloc, &ctx) - 0.0).abs() < f64::EPSILON);
@@ -354,6 +414,8 @@ mod tests {
             TenantUsage {
                 target_share: 0.5,
                 actual_usage: 0.0,
+                burst_allowance: None,
+                system_utilization: 0.5,
             },
         );
         assert!((eval.f3_fair_share(&alloc, &ctx) - 1.0).abs() < f64::EPSILON);
@@ -365,6 +427,109 @@ mod tests {
         let alloc = AllocationBuilder::new().tenant("unknown").build();
         let ctx = default_ctx();
         assert!((eval.f3_fair_share(&alloc, &ctx) - 0.5).abs() < f64::EPSILON);
+    }
+
+    // ── f₃: burst_allowance ──
+
+    #[test]
+    fn f3_burst_expands_target_when_system_idle() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let mut ctx = default_ctx();
+        // Tenant at target (0.3) but has burst_allowance of 0.5 and system is 20% utilized
+        // Effective target = 0.3 * (1 + 0.5 * (0.8-0.2)/0.8) = 0.3 * (1 + 0.375) = 0.4125
+        // Deficit = (0.4125 - 0.3) / 0.4125 ≈ 0.2727
+        ctx.tenant_usage.insert(
+            "t1".into(),
+            TenantUsage {
+                target_share: 0.3,
+                actual_usage: 0.3,
+                burst_allowance: Some(0.5),
+                system_utilization: 0.2,
+            },
+        );
+        let score = eval.f3_fair_share(&alloc, &ctx);
+        assert!(
+            score > 0.0,
+            "burst should create positive deficit even at base target"
+        );
+    }
+
+    #[test]
+    fn f3_burst_disabled_when_system_busy() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let mut ctx = default_ctx();
+        // System at 90% → burst should be disabled (>= 0.8 threshold)
+        ctx.tenant_usage.insert(
+            "t1".into(),
+            TenantUsage {
+                target_share: 0.3,
+                actual_usage: 0.3,
+                burst_allowance: Some(0.5),
+                system_utilization: 0.9,
+            },
+        );
+        let score = eval.f3_fair_share(&alloc, &ctx);
+        assert!(
+            (score - 0.0).abs() < f64::EPSILON,
+            "no burst when system is busy"
+        );
+    }
+
+    #[test]
+    fn f3_no_burst_without_allowance() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let mut ctx = default_ctx();
+        // No burst_allowance → at target means zero deficit
+        ctx.tenant_usage.insert(
+            "t1".into(),
+            TenantUsage {
+                target_share: 0.3,
+                actual_usage: 0.3,
+                burst_allowance: None,
+                system_utilization: 0.2,
+            },
+        );
+        let score = eval.f3_fair_share(&alloc, &ctx);
+        assert!((score - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn f3_burst_scales_with_spare_capacity() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+
+        // More spare capacity → larger burst effect
+        let mut ctx_idle = default_ctx();
+        ctx_idle.tenant_usage.insert(
+            "t1".into(),
+            TenantUsage {
+                target_share: 0.3,
+                actual_usage: 0.3,
+                burst_allowance: Some(0.5),
+                system_utilization: 0.0, // fully idle
+            },
+        );
+
+        let mut ctx_moderate = default_ctx();
+        ctx_moderate.tenant_usage.insert(
+            "t1".into(),
+            TenantUsage {
+                target_share: 0.3,
+                actual_usage: 0.3,
+                burst_allowance: Some(0.5),
+                system_utilization: 0.4, // half used
+            },
+        );
+
+        let score_idle = eval.f3_fair_share(&alloc, &ctx_idle);
+        let score_moderate = eval.f3_fair_share(&alloc, &ctx_moderate);
+        assert!(
+            score_idle > score_moderate,
+            "more spare capacity → more burst benefit"
+        );
     }
 
     // ── f₄: topology_fitness ──
@@ -502,6 +667,102 @@ mod tests {
         let mut manual = AllocationBuilder::new().build();
         manual.checkpoint = CheckpointStrategy::Manual;
         assert!(eval.f8_checkpoint(&auto) > eval.f8_checkpoint(&manual));
+    }
+
+    // ── Budget penalty ──
+
+    #[test]
+    fn budget_penalty_no_usage_returns_one() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let ctx = default_ctx();
+        assert!((eval.budget_penalty(&alloc, &ctx) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn budget_penalty_below_80_percent_no_penalty() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let mut ctx = default_ctx();
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 0.5 });
+        assert!((eval.budget_penalty(&alloc, &ctx) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn budget_penalty_at_80_percent_starts_penalty() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let mut ctx = default_ctx();
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 0.8 });
+        assert!((eval.budget_penalty(&alloc, &ctx) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn budget_penalty_at_90_percent_is_0_6() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let mut ctx = default_ctx();
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 0.9 });
+        // 1.0 - 4.0 * (0.9 - 0.8) = 1.0 - 0.4 = 0.6
+        assert!((eval.budget_penalty(&alloc, &ctx) - 0.6).abs() < 1e-10);
+    }
+
+    #[test]
+    fn budget_penalty_at_100_percent_is_0_2() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let mut ctx = default_ctx();
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 1.0 });
+        // 1.0 - 4.0 * (1.0 - 0.8) = 1.0 - 0.8 = 0.2
+        assert!((eval.budget_penalty(&alloc, &ctx) - 0.2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn budget_penalty_over_100_percent_starvation() {
+        let eval = CostEvaluator::new(CostWeights::default());
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let mut ctx = default_ctx();
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 1.5 });
+        assert!((eval.budget_penalty(&alloc, &ctx) - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn budget_penalty_multiplies_composite_score() {
+        let eval = CostEvaluator::new(CostWeights {
+            priority: 1.0,
+            wait_time: 0.0,
+            fair_share: 0.0,
+            topology: 0.0,
+            data_readiness: 0.0,
+            backlog: 0.0,
+            energy: 0.0,
+            checkpoint_efficiency: 0.0,
+            conformance: 0.0,
+        });
+        let alloc = AllocationBuilder::new()
+            .tenant("t1")
+            .preemption_class(10)
+            .build();
+        let mut ctx = CostContext {
+            now: alloc.created_at,
+            ..default_ctx()
+        };
+
+        // Without penalty
+        let score_no_penalty = eval.score(&alloc, &ctx);
+
+        // With penalty (over budget)
+        ctx.budget_utilization
+            .insert("t1".into(), BudgetUtilization { fraction_used: 1.5 });
+        let score_with_penalty = eval.score(&alloc, &ctx);
+
+        assert!(score_with_penalty < score_no_penalty);
+        assert!((score_with_penalty - score_no_penalty * 0.05).abs() < 1e-10);
     }
 
     // ── Composite score ──

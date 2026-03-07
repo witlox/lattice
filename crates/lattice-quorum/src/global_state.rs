@@ -26,6 +26,9 @@ pub struct GlobalState {
     pub vclusters: HashMap<VClusterId, VCluster>,
     pub topology: TopologyModel,
     pub audit_log: Vec<AuditEntry>,
+    /// System-wide limit on nodes that can be claimed for sensitive use.
+    /// None means unlimited (no sensitive pool cap).
+    pub sensitive_pool_size: Option<u32>,
 }
 
 impl Default for GlobalState {
@@ -37,6 +40,7 @@ impl Default for GlobalState {
             vclusters: HashMap::new(),
             topology: TopologyModel { groups: vec![] },
             audit_log: Vec::new(),
+            sensitive_pool_size: None,
         }
     }
 }
@@ -79,6 +83,10 @@ impl GlobalState {
             } => self.update_vcluster(id, cost_weights, allow_borrowing, allow_lending),
             Command::UpdateTopology(topo) => {
                 self.topology = topo;
+                CommandResponse::Ok
+            }
+            Command::SetSensitivePoolSize(size) => {
+                self.sensitive_pool_size = size;
                 CommandResponse::Ok
             }
             Command::RecordAudit(entry) => {
@@ -142,9 +150,31 @@ impl GlobalState {
     }
 
     fn assign_nodes(&mut self, id: AllocId, nodes: Vec<NodeId>) -> CommandResponse {
-        let Some(alloc) = self.allocations.get_mut(&id) else {
+        let Some(alloc) = self.allocations.get(&id) else {
             return CommandResponse::Error(format!("Allocation not found: {id}"));
         };
+        let tenant_id = alloc.tenant.clone();
+        let new_node_count = nodes.len() as u32;
+
+        // Re-check tenant max_nodes quota before assigning
+        if let Some(tenant) = self.tenants.get(&tenant_id) {
+            let other_nodes_in_use: u32 = self
+                .allocations
+                .iter()
+                .filter(|(aid, a)| **aid != id && a.tenant == tenant_id && !a.state.is_terminal())
+                .map(|(_, a)| a.assigned_nodes.len() as u32)
+                .sum();
+
+            if other_nodes_in_use + new_node_count > tenant.quota.max_nodes {
+                return CommandResponse::Error(format!(
+                    "Quota exceeded for tenant {}: max_nodes ({}) would be exceeded: \
+                     {} in use by other allocations + {} to assign",
+                    tenant_id, tenant.quota.max_nodes, other_nodes_in_use, new_node_count
+                ));
+            }
+        }
+
+        let alloc = self.allocations.get_mut(&id).unwrap();
         alloc.assigned_nodes = nodes;
         CommandResponse::Ok
     }
@@ -180,20 +210,45 @@ impl GlobalState {
     }
 
     fn claim_node(&mut self, id: NodeId, ownership: NodeOwnership) -> CommandResponse {
-        let Some(node) = self.nodes.get_mut(&id) else {
-            return CommandResponse::Error(format!("Node not found: {id}"));
-        };
-
-        // Check for ownership conflict
-        if let Some(ref existing) = node.owner {
-            if existing.claimed_by.is_some() && ownership.claimed_by.is_some() {
-                return CommandResponse::Error(format!(
-                    "Node {id} already claimed by {}",
-                    existing.claimed_by.as_deref().unwrap_or("unknown")
-                ));
+        // Check node exists and ownership conflict (immutable borrows first)
+        {
+            let Some(node) = self.nodes.get(&id) else {
+                return CommandResponse::Error(format!("Node not found: {id}"));
+            };
+            if let Some(ref existing) = node.owner {
+                if existing.claimed_by.is_some() && ownership.claimed_by.is_some() {
+                    return CommandResponse::Error(format!(
+                        "Node {id} already claimed by {}",
+                        existing.claimed_by.as_deref().unwrap_or("unknown")
+                    ));
+                }
             }
         }
 
+        // Check sensitive_pool_size limit if this is a sensitive claim
+        if ownership.claimed_by.is_some() {
+            if let Some(pool_limit) = self.sensitive_pool_size {
+                let currently_claimed = self
+                    .nodes
+                    .values()
+                    .filter(|n| {
+                        n.owner
+                            .as_ref()
+                            .map(|o| o.claimed_by.is_some())
+                            .unwrap_or(false)
+                    })
+                    .count() as u32;
+
+                if currently_claimed >= pool_limit {
+                    return CommandResponse::Error(format!(
+                        "sensitive_pool_size limit ({}) reached: {} nodes already claimed",
+                        pool_limit, currently_claimed
+                    ));
+                }
+            }
+        }
+
+        let node = self.nodes.get_mut(&id).unwrap();
         node.owner = Some(ownership);
         CommandResponse::Ok
     }
@@ -279,10 +334,10 @@ impl GlobalState {
             return Ok(());
         };
 
-        // Check max_nodes quota
+        // Check max_nodes quota using worst-case (max) for ranges
         let requested_nodes = match &alloc.resources.nodes {
             lattice_common::types::NodeCount::Exact(n) => *n,
-            lattice_common::types::NodeCount::Range { min, .. } => *min,
+            lattice_common::types::NodeCount::Range { max, .. } => *max,
         };
         let currently_used: u32 = self
             .allocations
@@ -497,6 +552,85 @@ mod tests {
     }
 
     #[test]
+    fn sensitive_pool_size_limits_claims() {
+        let mut state = GlobalState::new();
+        state.apply(Command::SetSensitivePoolSize(Some(1)));
+        state.apply(Command::RegisterNode(test_node("n1")));
+        state.apply(Command::RegisterNode(test_node("n2")));
+
+        let ownership1 = NodeOwnership {
+            tenant: "t1".into(),
+            vcluster: "vc1".into(),
+            allocation: Uuid::new_v4(),
+            claimed_by: Some("user-1".into()),
+            is_borrowed: false,
+        };
+        let resp = state.apply(Command::ClaimNode {
+            id: "n1".into(),
+            ownership: ownership1,
+        });
+        assert!(matches!(resp, CommandResponse::Ok));
+
+        // Second sensitive claim should be rejected (pool_size=1)
+        let ownership2 = NodeOwnership {
+            tenant: "t2".into(),
+            vcluster: "vc2".into(),
+            allocation: Uuid::new_v4(),
+            claimed_by: Some("user-2".into()),
+            is_borrowed: false,
+        };
+        let resp = state.apply(Command::ClaimNode {
+            id: "n2".into(),
+            ownership: ownership2,
+        });
+        assert!(matches!(resp, CommandResponse::Error(e) if e.contains("sensitive_pool_size")));
+    }
+
+    #[test]
+    fn sensitive_pool_unlimited_by_default() {
+        let mut state = GlobalState::new();
+        // No pool size set → unlimited
+        state.apply(Command::RegisterNode(test_node("n1")));
+        state.apply(Command::RegisterNode(test_node("n2")));
+
+        for (node_id, user) in [("n1", "user-1"), ("n2", "user-2")] {
+            let ownership = NodeOwnership {
+                tenant: "t1".into(),
+                vcluster: "vc1".into(),
+                allocation: Uuid::new_v4(),
+                claimed_by: Some(user.into()),
+                is_borrowed: false,
+            };
+            let resp = state.apply(Command::ClaimNode {
+                id: node_id.into(),
+                ownership,
+            });
+            assert!(matches!(resp, CommandResponse::Ok));
+        }
+    }
+
+    #[test]
+    fn non_sensitive_claim_bypasses_pool_limit() {
+        let mut state = GlobalState::new();
+        state.apply(Command::SetSensitivePoolSize(Some(0)));
+        state.apply(Command::RegisterNode(test_node("n1")));
+
+        // Non-sensitive claim (claimed_by is None) should still work
+        let ownership = NodeOwnership {
+            tenant: "t1".into(),
+            vcluster: "vc1".into(),
+            allocation: Uuid::new_v4(),
+            claimed_by: None,
+            is_borrowed: false,
+        };
+        let resp = state.apply(Command::ClaimNode {
+            id: "n1".into(),
+            ownership,
+        });
+        assert!(matches!(resp, CommandResponse::Ok));
+    }
+
+    #[test]
     fn hard_quota_blocks_over_limit() {
         let mut state = GlobalState::new();
         let tenant = TenantBuilder::new("limited").max_nodes(2).build();
@@ -604,6 +738,7 @@ mod tests {
                 fair_share_target: 0.2,
                 gpu_hours_budget: None,
                 max_concurrent_allocations: None,
+                burst_allowance: None,
             }),
             isolation_level: None,
         });
@@ -668,5 +803,64 @@ mod tests {
         });
 
         assert_eq!(state.allocations[&id].assigned_nodes, vec!["n1", "n2"]);
+    }
+
+    #[test]
+    fn assign_nodes_checks_tenant_quota() {
+        let mut state = GlobalState::new();
+        let tenant = TenantBuilder::new("t1").max_nodes(3).build();
+        state.apply(Command::CreateTenant(tenant));
+
+        // First allocation: assign 2 nodes
+        let alloc1 = AllocationBuilder::new().tenant("t1").build();
+        let id1 = alloc1.id;
+        state.apply(Command::SubmitAllocation(alloc1));
+        state.apply(Command::AssignNodes {
+            id: id1,
+            nodes: vec!["n1".into(), "n2".into()],
+        });
+
+        // Second allocation: assigning 2 more would exceed quota of 3
+        let alloc2 = AllocationBuilder::new().tenant("t1").build();
+        let id2 = alloc2.id;
+        state.apply(Command::SubmitAllocation(alloc2));
+        let resp = state.apply(Command::AssignNodes {
+            id: id2,
+            nodes: vec!["n3".into(), "n4".into()],
+        });
+        assert!(matches!(resp, CommandResponse::Error(e) if e.contains("max_nodes")));
+        // Original assignment unchanged
+        assert!(state.allocations[&id2].assigned_nodes.is_empty());
+    }
+
+    #[test]
+    fn submit_with_range_checks_max_not_min() {
+        use lattice_common::types::NodeCount;
+        let mut state = GlobalState::new();
+        let tenant = TenantBuilder::new("t1").max_nodes(5).build();
+        state.apply(Command::CreateTenant(tenant));
+
+        // Submit with range min=1, max=10 — should be rejected because max(10) > quota(5)
+        let mut alloc = AllocationBuilder::new().tenant("t1").build();
+        alloc.resources.nodes = NodeCount::Range { min: 1, max: 10 };
+        let resp = state.apply(Command::SubmitAllocation(alloc));
+        assert!(matches!(resp, CommandResponse::Error(e) if e.contains("max_nodes")));
+    }
+
+    #[test]
+    fn assign_nodes_within_quota_succeeds() {
+        let mut state = GlobalState::new();
+        let tenant = TenantBuilder::new("t1").max_nodes(5).build();
+        state.apply(Command::CreateTenant(tenant));
+
+        let alloc = AllocationBuilder::new().tenant("t1").build();
+        let id = alloc.id;
+        state.apply(Command::SubmitAllocation(alloc));
+        let resp = state.apply(Command::AssignNodes {
+            id,
+            nodes: vec!["n1".into(), "n2".into(), "n3".into()],
+        });
+        assert!(matches!(resp, CommandResponse::Ok));
+        assert_eq!(state.allocations[&id].assigned_nodes.len(), 3);
     }
 }

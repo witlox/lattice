@@ -375,6 +375,7 @@ impl TenantBuilder {
                 fair_share_target: self.fair_share_target,
                 gpu_hours_budget: self.gpu_hours_budget,
                 max_concurrent_allocations: self.max_concurrent_allocations,
+                burst_allowance: None,
             },
             isolation_level: self.isolation_level,
         }

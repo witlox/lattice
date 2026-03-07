@@ -249,6 +249,8 @@ fn build_cost_context(
             .or_insert_with(|| TenantUsage {
                 target_share: entry.target_share,
                 actual_usage: entry.actual_usage,
+                burst_allowance: None,
+                system_utilization: 0.5,
             });
     }
 
