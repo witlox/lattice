@@ -175,6 +175,7 @@ impl ServerConfig {
 ///
 /// The interceptor inserts metadata extensions so downstream handlers can
 /// retrieve the information without re-parsing.
+#[allow(clippy::result_large_err)]
 pub fn build_interceptor(
     state: Arc<ApiState>,
 ) -> impl Fn(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> + Clone + Send + Sync
