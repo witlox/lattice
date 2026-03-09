@@ -30,7 +30,7 @@ tonic-build = "0.12"
 tokio-stream = "0.1"
 
 # Raft consensus
-openraft = { version = "0.10.0-alpha.14", features = ["serde"] }
+openraft = { version = "0.10.0-alpha.15", features = ["serde"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
