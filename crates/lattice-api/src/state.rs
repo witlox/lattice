@@ -14,6 +14,7 @@ use lattice_node_agent::pty::PtyBackend;
 use crate::events::EventBus;
 use crate::middleware::oidc::OidcValidator;
 use crate::middleware::rate_limit::RateLimiter;
+use crate::mpi::NodeAgentPool;
 
 /// Shared state for the API server, holding trait-object references
 /// to the backing stores and services.
@@ -43,4 +44,6 @@ pub struct ApiState {
     pub sovra: Option<Arc<dyn SovraClient>>,
     /// Optional PTY backend for interactive attach sessions.
     pub pty: Option<Arc<dyn PtyBackend>>,
+    /// Optional node agent pool for MPI launch fan-out.
+    pub agent_pool: Option<Arc<dyn NodeAgentPool>>,
 }

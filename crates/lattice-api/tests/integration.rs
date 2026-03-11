@@ -120,6 +120,7 @@ fn test_state() -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     })
 }
@@ -943,6 +944,7 @@ fn rest_test_state() -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     })
 }
@@ -1401,6 +1403,7 @@ async fn rest_audit_returns_entries() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     });
 
@@ -1515,6 +1518,7 @@ fn streaming_test_state() -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     })
 }
@@ -1534,6 +1538,7 @@ fn streaming_test_state_with_tsdb(tsdb: Arc<MockTsdb>) -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     })
 }
@@ -1905,6 +1910,7 @@ async fn node_disable_sets_down_state() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     });
     let node_svc = LatticeNodeService::new(state.clone());
@@ -1981,6 +1987,9 @@ async fn launch_tasks_returns_task_id() {
             num_tasks: 4,
             tasks_per_node: 1,
             entrypoint: "python worker.py".to_string(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            pmi_mode: String::new(),
         }))
         .await
         .unwrap();
@@ -2008,6 +2017,9 @@ async fn launch_tasks_invalid_allocation_id_returns_error() {
             num_tasks: 1,
             tasks_per_node: 1,
             entrypoint: "echo hello".to_string(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            pmi_mode: String::new(),
         }))
         .await;
 
@@ -2181,6 +2193,7 @@ async fn rest_undrain_node() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     });
     let node_id = &nodes[0].id;
@@ -2238,6 +2251,7 @@ async fn admin_drain_and_node_list_filters_correctly() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     });
     let node_svc = LatticeNodeService::new(state.clone());

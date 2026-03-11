@@ -274,6 +274,9 @@ message LaunchTasksRequest {
   uint32 num_tasks = 2;
   uint32 tasks_per_node = 3;
   string entrypoint = 4;
+  repeated string args = 5;
+  map<string, string> env = 6;
+  string pmi_mode = 7;  // "pmi2" (default) or "pmix"
 }
 
 message LaunchTasksResponse {

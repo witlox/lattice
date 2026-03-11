@@ -11,6 +11,7 @@ pub type TenantId = String;
 pub type VClusterId = String;
 pub type GroupId = u32; // dragonfly group index
 pub type UserId = String; // OIDC subject
+pub type LaunchId = Uuid;
 
 // ─── Allocation ─────────────────────────────────────────────
 
@@ -873,6 +874,93 @@ impl NetworkDomainState {
                 | (NetworkDomainState::Draining, NetworkDomainState::Released)
         )
     }
+}
+
+// ─── MPI Process Management ─────────────────────────────────
+
+/// PMI mode for MPI process launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PmiMode {
+    /// Native PMI-2 wire protocol (default, no external dependencies).
+    #[default]
+    Pmi2,
+    /// OpenPMIx sidecar (requires `pmix` feature on node agent).
+    Pmix,
+}
+
+/// CXI (Cassini eXtended Interface) credentials for Slingshot fabric access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CxiCredentials {
+    pub vni: u32,
+    pub auth_key: Vec<u8>,
+    pub svc_id: u32,
+}
+
+/// Peer node agent info for cross-node MPI coordination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    pub node_id: NodeId,
+    pub grpc_address: String,
+    pub first_rank: u32,
+    pub num_ranks: u32,
+}
+
+/// Assignment of ranks to a single node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeRankAssignment {
+    pub node_id: NodeId,
+    pub first_rank: u32,
+    pub num_ranks: u32,
+}
+
+/// Layout of MPI ranks across nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankLayout {
+    pub total_ranks: u32,
+    pub tasks_per_node: u32,
+    pub node_assignments: Vec<NodeRankAssignment>,
+}
+
+impl RankLayout {
+    /// Compute a rank layout from a node list and tasks-per-node.
+    pub fn compute(nodes: &[NodeId], tasks_per_node: u32) -> Self {
+        let mut assignments = Vec::with_capacity(nodes.len());
+        let mut rank = 0u32;
+        for node_id in nodes {
+            assignments.push(NodeRankAssignment {
+                node_id: node_id.clone(),
+                first_rank: rank,
+                num_ranks: tasks_per_node,
+            });
+            rank += tasks_per_node;
+        }
+        RankLayout {
+            total_ranks: rank,
+            tasks_per_node,
+            node_assignments: assignments,
+        }
+    }
+}
+
+/// Exit status of a single MPI rank.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankExitStatus {
+    pub rank: u32,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+}
+
+/// Full specification for an MPI launch, computed by the API server before fan-out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchSpec {
+    pub launch_id: LaunchId,
+    pub allocation_id: AllocId,
+    pub entrypoint: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub rank_layout: RankLayout,
+    pub pmi_mode: PmiMode,
+    pub cxi_credentials: Option<CxiCredentials>,
 }
 
 // ─── Tests ─────────────────────────────────────────────────

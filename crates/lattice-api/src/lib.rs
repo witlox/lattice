@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod events;
 pub mod grpc;
 pub mod middleware;
+pub mod mpi;
 pub mod rest;
 pub mod server;
 pub mod state;

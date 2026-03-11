@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package lattice.v1;
+
+option go_package = "github.com/lattice-scheduler/lattice/gen/go/lattice/v1";
+
+// ─── MPI Process Management ─────────────────────────────────
+//
+// Messages for multi-node MPI process launch, PMI key-value
+// exchange (fence), and rank lifecycle management.
+
+enum PmiMode {
+  PMI2 = 0;
+  PMIX = 1;
+}
+
+// ─── CXI Credentials (Slingshot) ─────────────────────────────
+
+message CxiCredentials {
+  uint32 vni = 1;
+  bytes auth_key = 2;
+  uint32 svc_id = 3;
+}
+
+// ─── Peer Info ───────────────────────────────────────────────
+
+message PeerInfo {
+  string node_id = 1;
+  string grpc_address = 2;  // node agent gRPC address (management network)
+  uint32 first_rank = 3;    // first global rank on this node
+  uint32 num_ranks = 4;     // number of ranks on this node
+}
+
+// ─── Launch Processes (API server → node agent) ──────────────
+
+message LaunchProcessesRequest {
+  string launch_id = 1;
+  string allocation_id = 2;
+  string entrypoint = 3;
+  repeated string args = 4;
+  uint32 tasks_per_node = 5;
+  uint32 first_rank = 6;        // global rank offset for this node
+  uint32 world_size = 7;        // total ranks across all nodes
+  map<string, string> env = 8;  // additional env vars
+  PmiMode pmi_mode = 9;
+  CxiCredentials cxi_credentials = 10;
+  repeated PeerInfo peers = 11;
+  uint32 head_node_index = 12;  // index into peers for fence coordinator
+}
+
+message LaunchProcessesResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// ─── PMI Fence (node agent ↔ node agent) ─────────────────────
+
+message PmiFenceRequest {
+  string launch_id = 1;
+  // KVS entries from this node's ranks since last fence
+  map<string, string> kvs_entries = 2;
+  uint32 node_index = 3;  // sender's index in the peer list
+}
+
+message PmiFenceResponse {
+  bool success = 1;
+  // Merged KVS from all nodes (returned by head to all peers)
+  map<string, string> merged_kvs = 2;
+}
+
+// ─── Abort Processes ─────────────────────────────────────────
+
+message AbortProcessesRequest {
+  string launch_id = 1;
+  string reason = 2;
+}
+
+message AbortProcessesResponse {
+  bool success = 1;
+}
+
+// ─── Rank Exit Status ────────────────────────────────────────
+
+message RankExitStatus {
+  uint32 rank = 1;
+  int32 exit_code = 2;
+  bool signaled = 3;
+  int32 signal = 4;
+}
+
+message LaunchCompleteNotification {
+  string launch_id = 1;
+  string allocation_id = 2;
+  bool success = 3;           // true if all ranks exited 0
+  repeated RankExitStatus ranks = 4;
+  string error_message = 5;   // set on failure
+}

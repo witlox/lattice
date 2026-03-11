@@ -6,6 +6,7 @@ option go_package = "github.com/lattice-scheduler/lattice/gen/go/lattice/v1";
 
 import "google/protobuf/timestamp.proto";
 import "lattice/v1/allocations.proto";
+import "lattice/v1/mpi.proto";
 
 // ─── Node Agent Service ─────────────────────────────────────
 //
@@ -26,6 +27,17 @@ service NodeAgentService {
 
   // Stream logs from a running allocation on this node (server streaming).
   rpc StreamLogs(LogStreamRequest) returns (stream LogEntry);
+
+  // ─── MPI Process Management ──────────────────────────────
+
+  // Launch MPI ranks on this node (called by API server during fan-out).
+  rpc LaunchProcesses(LaunchProcessesRequest) returns (LaunchProcessesResponse);
+
+  // PMI fence: non-head nodes send local KVS to head node.
+  rpc PmiFence(PmiFenceRequest) returns (PmiFenceResponse);
+
+  // Abort all ranks for a launch (e.g., rank failure on another node).
+  rpc AbortProcesses(AbortProcessesRequest) returns (AbortProcessesResponse);
 }
 
 // ─── RunAllocation ──────────────────────────────────────────

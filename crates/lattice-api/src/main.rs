@@ -327,6 +327,7 @@ async fn main() -> Result<()> {
         rate_limiter,
         sovra,
         pty,
+        agent_pool: None,
         data_dir: config.quorum.data_dir.clone(),
     });
 

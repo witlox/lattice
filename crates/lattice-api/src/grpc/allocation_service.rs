@@ -281,14 +281,63 @@ impl AllocationService for LatticeAllocationService {
         request: Request<pb::LaunchTasksRequest>,
     ) -> Result<Response<pb::LaunchTasksResponse>, Status> {
         let req = request.into_inner();
-        let _id = uuid::Uuid::parse_str(&req.allocation_id)
+        let alloc_id = uuid::Uuid::parse_str(&req.allocation_id)
             .map_err(|e| Status::invalid_argument(format!("invalid allocation id: {e}")))?;
 
-        // Task launching is delegated to the node agent.
-        // Here we just acknowledge the request.
-        Ok(Response::new(pb::LaunchTasksResponse {
-            task_launch_id: uuid::Uuid::new_v4().to_string(),
-        }))
+        // Use MPI orchestrator if agent pool is available
+        if let Some(ref pool) = self.state.agent_pool {
+            // Look up the allocation to get assigned nodes
+            let alloc = self
+                .state
+                .allocations
+                .get(&alloc_id)
+                .await
+                .map_err(|e| Status::not_found(e.to_string()))?;
+
+            let assigned_nodes = alloc.assigned_nodes.clone();
+            if assigned_nodes.is_empty() {
+                return Err(Status::failed_precondition(
+                    "allocation has no assigned nodes",
+                ));
+            }
+
+            // Resolve node addresses (default to node_id:50052)
+            let node_addresses: std::collections::HashMap<String, String> = assigned_nodes
+                .iter()
+                .map(|id: &String| (id.clone(), format!("http://{}:50052", id)))
+                .collect();
+
+            let pmi_mode = match req.pmi_mode.as_str() {
+                "pmix" => lattice_common::types::PmiMode::Pmix,
+                _ => lattice_common::types::PmiMode::Pmi2,
+            };
+
+            let orchestrator = crate::mpi::MpiLaunchOrchestrator::new(pool.clone());
+            match orchestrator
+                .launch(
+                    alloc_id,
+                    &assigned_nodes,
+                    &node_addresses,
+                    &req.entrypoint,
+                    &req.args,
+                    &req.env,
+                    req.num_tasks,
+                    req.tasks_per_node,
+                    pmi_mode,
+                )
+                .await
+            {
+                Ok(launch_id) => Ok(Response::new(pb::LaunchTasksResponse {
+                    task_launch_id: launch_id.to_string(),
+                })),
+                Err(e) => Err(Status::internal(format!("MPI launch failed: {e}"))),
+            }
+        } else {
+            // No agent pool configured — return a stub launch ID
+            Ok(Response::new(pb::LaunchTasksResponse {
+                task_launch_id: uuid::Uuid::new_v4().to_string(),
+            }))
+        }
     }
 
     // ── Streaming RPCs ──────────────────────────────────────
@@ -1200,6 +1249,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            agent_pool: None,
             data_dir: None,
         })
     }
@@ -1219,6 +1269,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: None,
+            agent_pool: None,
             data_dir: None,
         })
     }
@@ -1863,6 +1914,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: Some(pty.clone()),
+            agent_pool: None,
             data_dir: None,
         });
         assert!(state.pty.is_some());
@@ -1901,6 +1953,7 @@ mod tests {
             rate_limiter: None,
             sovra: None,
             pty: Some(pty),
+            agent_pool: None,
             data_dir: None,
         });
         let svc = LatticeAllocationService::new(state.clone());

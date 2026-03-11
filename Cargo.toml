@@ -73,6 +73,9 @@ prometheus = "0.13"
 # GPU discovery (optional)
 nvml-wrapper = "0.10"
 
+# Hex encoding (CXI credentials)
+hex = "0.4"
+
 # Test cert generation
 rcgen = "0.13"
 

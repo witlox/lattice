@@ -50,6 +50,10 @@ struct Args {
     /// TSDB endpoint for pushing metrics
     #[arg(long, env = "LATTICE_TELEMETRY_TSDB_ENDPOINT")]
     tsdb_endpoint: Option<String>,
+
+    /// gRPC listen address for incoming RPCs (LaunchProcesses, PmiFence, etc.)
+    #[arg(long, default_value = "0.0.0.0:50052")]
+    grpc_addr: String,
 }
 
 #[tokio::main]
@@ -166,6 +170,28 @@ async fn main() -> Result<()> {
         info!("TSDB metrics push enabled: {}", tsdb_endpoint);
     }
 
+    // Start the node agent gRPC server (LaunchProcesses, PmiFence, etc.)
+    let grpc_addr: std::net::SocketAddr = args
+        .grpc_addr
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid grpc_addr: {e}"))?;
+    let node_agent_server =
+        lattice_node_agent::grpc_server::NodeAgentServer::new(args.node_id.clone());
+    let grpc_svc =
+        lattice_common::proto::lattice::v1::node_agent_service_server::NodeAgentServiceServer::new(
+            node_agent_server,
+        );
+    tokio::spawn(async move {
+        info!("Node agent gRPC server listening on {}", grpc_addr);
+        if let Err(e) = tonic::transport::Server::builder()
+            .add_service(grpc_svc)
+            .serve(grpc_addr)
+            .await
+        {
+            tracing::error!(error = %e, "node agent gRPC server failed");
+        }
+    });
+
     // Handle Ctrl+C for graceful shutdown
     let cancel_tx_clone = cancel_tx.clone();
     tokio::spawn(async move {
@@ -175,8 +201,8 @@ async fn main() -> Result<()> {
     });
 
     info!(
-        "Agent for {} running (heartbeat every {}s)",
-        args.node_id, args.heartbeat_interval
+        "Agent for {} running (heartbeat every {}s, gRPC on {})",
+        args.node_id, args.heartbeat_interval, args.grpc_addr
     );
 
     agent

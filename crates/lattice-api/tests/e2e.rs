@@ -44,6 +44,7 @@ fn e2e_state() -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     })
 }
@@ -63,6 +64,7 @@ fn e2e_state_with_nodes(nodes: Vec<Node>) -> Arc<ApiState> {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     })
 }
@@ -362,6 +364,7 @@ async fn checkpoint_broker_via_api() {
         rate_limiter: None,
         sovra: None,
         pty: None,
+        agent_pool: None,
         data_dir: None,
     });
 
