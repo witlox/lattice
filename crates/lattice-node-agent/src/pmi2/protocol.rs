@@ -337,4 +337,103 @@ mod tests {
         assert_eq!(fields.get("key").unwrap(), "a");
         assert_eq!(fields.get("value").unwrap(), "b");
     }
+
+    #[test]
+    fn parse_empty_line() {
+        let result = parse_command("");
+        assert!(result.is_err(), "empty line should fail due to missing cmd");
+    }
+
+    #[test]
+    fn parse_no_semicolons() {
+        // "cmd=fullinit" with no trailing semicolon — parse_fields splits on ';',
+        // but the whole string is a single segment "cmd=fullinit" which still parses.
+        let result = parse_command("cmd=fullinit");
+        assert_eq!(
+            result.unwrap(),
+            Pmi2Command::FullInit {
+                pmi_version: 2,
+                pmi_subversion: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_duplicate_keys() {
+        // Duplicate keys: HashMap insert overwrites, so last value wins.
+        let fields = parse_fields("cmd=fullinit;cmd=abort;");
+        // Either "fullinit" or "abort" depending on HashMap iteration, but
+        // since we insert sequentially the last insert wins.
+        assert_eq!(fields.get("cmd").unwrap(), "abort");
+
+        // So parsing "cmd=fullinit;cmd=abort;" gives Abort command
+        let cmd = parse_command("cmd=fullinit;cmd=abort;").unwrap();
+        assert_eq!(
+            cmd,
+            Pmi2Command::Abort {
+                message: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_special_chars_in_value() {
+        // "value=http://10.0.0.1:5000" — the colon and slashes are fine,
+        // but extra semicolons would split the value.
+        // With "cmd=kvsput;key=addr;value=http://10.0.0.1:5000;" the value
+        // is "http://10.0.0.1:5000" because split_once('=') takes everything
+        // after the first '='.
+        let cmd = parse_command("cmd=kvsput;key=addr;value=http://10.0.0.1:5000;\n").unwrap();
+        assert_eq!(
+            cmd,
+            Pmi2Command::KvsPut {
+                key: "addr".into(),
+                value: "http://10.0.0.1:5000".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_special_chars_semicolon_in_value_truncates() {
+        // If the value itself contains a semicolon, it gets split.
+        // "value=a;b" becomes field "value"="a" and leftover "b" (no '=' so ignored).
+        let cmd = parse_command("cmd=kvsput;key=k;value=a;b;\n").unwrap();
+        assert_eq!(
+            cmd,
+            Pmi2Command::KvsPut {
+                key: "k".into(),
+                value: "a".into(), // truncated at semicolon
+            }
+        );
+    }
+
+    #[test]
+    fn format_and_reparse_fullinit() {
+        let resp = Pmi2Response::FullInitResp {
+            rank: 5,
+            size: 32,
+            appnum: 0,
+            pmi_version: 2,
+            pmi_subversion: 0,
+            spawner_jobid: "lattice-abc".into(),
+            rc: 0,
+        };
+        let wire = format_response(&resp);
+        // Verify the wire format contains all expected fields
+        assert!(wire.contains("cmd=fullinit-response"));
+        assert!(wire.contains("rc=0"));
+        assert!(wire.contains("rank=5"));
+        assert!(wire.contains("size=32"));
+        assert!(wire.contains("appnum=0"));
+        assert!(wire.contains("pmi_version=2"));
+        assert!(wire.contains("pmi_subversion=0"));
+        assert!(wire.contains("spawner-jobid=lattice-abc"));
+        assert!(wire.ends_with('\n'));
+
+        // Parse back with parse_fields and verify key fields
+        let fields = parse_fields(wire.trim_end_matches('\n'));
+        assert_eq!(fields.get("cmd").unwrap(), "fullinit-response");
+        assert_eq!(fields.get("rank").unwrap(), "5");
+        assert_eq!(fields.get("size").unwrap(), "32");
+    }
 }

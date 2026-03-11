@@ -13,6 +13,7 @@ use uuid::Uuid;
 use lattice_api::events::{AllocationEvent, EventBus};
 use lattice_api::grpc::allocation_service::LatticeAllocationService;
 use lattice_api::grpc::node_service::LatticeNodeService;
+use lattice_api::mpi::{MpiLaunchOrchestrator, NodeAgentPool, StubNodeAgentPool};
 use lattice_api::state::ApiState;
 
 use lattice_common::proto::lattice::v1 as pb;
@@ -590,4 +591,253 @@ async fn node_drain_undrain_lifecycle_via_grpc() {
         "node should be Ready after undrain, got {:?}",
         node0_after.state
     );
+}
+
+// ─── PartialFailNodeAgentPool for testing ────────────────────
+
+struct PartialFailNodeAgentPool {
+    fail_addresses: Vec<String>,
+}
+
+#[async_trait::async_trait]
+impl NodeAgentPool for PartialFailNodeAgentPool {
+    async fn launch_processes(
+        &self,
+        node_address: &str,
+        _request: pb::LaunchProcessesRequest,
+    ) -> Result<pb::LaunchProcessesResponse, String> {
+        if self.fail_addresses.iter().any(|a| a == node_address) {
+            Ok(pb::LaunchProcessesResponse {
+                accepted: false,
+                message: format!("node {} unavailable", node_address),
+            })
+        } else {
+            Ok(pb::LaunchProcessesResponse {
+                accepted: true,
+                message: "ok".into(),
+            })
+        }
+    }
+}
+
+// ─── Test 9: MPI launch orchestrator fan-out ─────────────────
+// Direct test of MpiLaunchOrchestrator with StubNodeAgentPool across 4 nodes.
+
+#[tokio::test]
+async fn mpi_launch_orchestrator_fan_out() {
+    let pool = Arc::new(StubNodeAgentPool);
+    let orch = MpiLaunchOrchestrator::new(pool);
+
+    let nodes: Vec<String> = (0..4).map(|i| format!("n{i}")).collect();
+    let node_addresses: HashMap<String, String> = nodes
+        .iter()
+        .map(|n| (n.clone(), format!("http://{}:50052", n)))
+        .collect();
+
+    let result = orch
+        .launch(
+            Uuid::new_v4(),
+            &nodes,
+            &node_addresses,
+            "./my_mpi_app",
+            &[],
+            &HashMap::new(),
+            16,
+            4,
+            PmiMode::Pmi2,
+        )
+        .await;
+
+    assert!(result.is_ok(), "fan-out to 4 nodes should succeed");
+    let launch_id = result.unwrap();
+    // Verify it's a valid UUID
+    assert_eq!(launch_id.to_string().len(), 36);
+}
+
+// ─── Test 10: MPI launch orchestrator partial failure ────────
+// Some nodes reject the launch; verify error reports failing nodes.
+
+#[tokio::test]
+async fn mpi_launch_orchestrator_partial_failure() {
+    let pool = Arc::new(PartialFailNodeAgentPool {
+        fail_addresses: vec!["http://n1:50052".to_string(), "http://n3:50052".to_string()],
+    });
+    let orch = MpiLaunchOrchestrator::new(pool);
+
+    let nodes: Vec<String> = (0..4).map(|i| format!("n{i}")).collect();
+    let node_addresses: HashMap<String, String> = nodes
+        .iter()
+        .map(|n| (n.clone(), format!("http://{}:50052", n)))
+        .collect();
+
+    let result = orch
+        .launch(
+            Uuid::new_v4(),
+            &nodes,
+            &node_addresses,
+            "./my_mpi_app",
+            &[],
+            &HashMap::new(),
+            8,
+            2,
+            PmiMode::Pmi2,
+        )
+        .await;
+
+    assert!(result.is_err(), "should fail when some nodes reject");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("2 node(s)"),
+        "error should mention 2 failing nodes, got: {err}"
+    );
+    assert!(
+        err.contains("rejected") || err.contains("unavailable"),
+        "error should mention rejection, got: {err}"
+    );
+}
+
+// ─── Test 11: RankLayout uneven distribution ─────────────────
+// Test RankLayout::compute with 3 nodes and varying tasks_per_node.
+
+#[tokio::test]
+async fn rank_layout_uneven_distribution() {
+    let nodes: Vec<String> = vec!["n0".into(), "n1".into(), "n2".into()];
+
+    // 4 tasks_per_node across 3 nodes = 12 total ranks
+    let layout = RankLayout::compute(&nodes, 4);
+    assert_eq!(layout.total_ranks, 12);
+    assert_eq!(layout.node_assignments.len(), 3);
+    assert_eq!(layout.node_assignments[0].first_rank, 0);
+    assert_eq!(layout.node_assignments[0].num_ranks, 4);
+    assert_eq!(layout.node_assignments[1].first_rank, 4);
+    assert_eq!(layout.node_assignments[1].num_ranks, 4);
+    assert_eq!(layout.node_assignments[2].first_rank, 8);
+    assert_eq!(layout.node_assignments[2].num_ranks, 4);
+
+    // 1 task_per_node across 3 nodes = 3 total ranks
+    let layout_single = RankLayout::compute(&nodes, 1);
+    assert_eq!(layout_single.total_ranks, 3);
+    assert_eq!(layout_single.node_assignments[0].first_rank, 0);
+    assert_eq!(layout_single.node_assignments[0].num_ranks, 1);
+    assert_eq!(layout_single.node_assignments[1].first_rank, 1);
+    assert_eq!(layout_single.node_assignments[2].first_rank, 2);
+
+    // 7 tasks_per_node across 3 nodes = 21 total ranks
+    let layout_large = RankLayout::compute(&nodes, 7);
+    assert_eq!(layout_large.total_ranks, 21);
+    assert_eq!(layout_large.node_assignments[0].num_ranks, 7);
+    assert_eq!(layout_large.node_assignments[1].first_rank, 7);
+    assert_eq!(layout_large.node_assignments[2].first_rank, 14);
+}
+
+// ─── Test 12: Full flow: submit → schedule → launch_tasks ────
+// Submit allocation, run scheduler, allocation gets nodes, launch tasks.
+
+#[tokio::test]
+async fn launch_tasks_e2e_with_scheduling() {
+    let nodes = create_node_batch(4, 0);
+    let alloc_store = Arc::new(MockAllocationStore::new());
+    let node_registry = Arc::new(MockNodeRegistry::new().with_nodes(nodes.clone()));
+
+    let state = Arc::new(ApiState {
+        allocations: alloc_store.clone(),
+        nodes: node_registry.clone(),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+        agent_pool: Some(Arc::new(StubNodeAgentPool)),
+        data_dir: None,
+    });
+
+    let svc = LatticeAllocationService::new(state.clone());
+
+    // Submit an allocation requesting 2 nodes
+    let resp = svc
+        .submit(Request::new(pb::SubmitRequest {
+            submission: Some(pb::submit_request::Submission::Single(pb::AllocationSpec {
+                tenant: "physics".to_string(),
+                project: "test".to_string(),
+                entrypoint: "python train.py".to_string(),
+                resources: Some(pb::ResourceSpec {
+                    min_nodes: 2,
+                    max_nodes: 2,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        }))
+        .await
+        .unwrap();
+    let alloc_id_str = &resp.get_ref().allocation_ids[0];
+    let alloc_id: Uuid = alloc_id_str.parse().unwrap();
+
+    // Run scheduler cycle
+    let all_nodes = state
+        .nodes
+        .list_nodes(&NodeFilter::default())
+        .await
+        .unwrap();
+    let alloc = state.allocations.get(&alloc_id).await.unwrap();
+
+    let topology = create_test_topology(1, 4);
+    let input = CycleInput {
+        pending: vec![alloc],
+        running: vec![],
+        nodes: all_nodes.clone(),
+        tenants: vec![],
+        topology,
+        data_readiness: HashMap::new(),
+        energy_price: 0.5,
+    };
+
+    let result = run_cycle(&input, &CostWeights::default());
+
+    // Apply placement decision
+    let placed = result.decisions.iter().find(|d| {
+        matches!(d, PlacementDecision::Place { allocation_id, .. } if *allocation_id == alloc_id)
+    });
+    assert!(placed.is_some(), "allocation should be placed by scheduler");
+
+    if let Some(PlacementDecision::Place {
+        nodes: placed_nodes,
+        ..
+    }) = placed
+    {
+        // Update allocation with assigned nodes and Running state
+        {
+            let mut allocs = alloc_store.allocations.lock().unwrap();
+            let alloc = allocs.get_mut(&alloc_id).unwrap();
+            alloc.assigned_nodes = placed_nodes.clone();
+            alloc.state = AllocationState::Running;
+        }
+
+        // Now launch tasks on the scheduled nodes
+        let launch_resp = svc
+            .launch_tasks(Request::new(pb::LaunchTasksRequest {
+                allocation_id: alloc_id_str.clone(),
+                num_tasks: 8,
+                tasks_per_node: 4,
+                entrypoint: "python train.py".to_string(),
+                args: vec!["--batch-size".to_string(), "64".to_string()],
+                env: HashMap::new(),
+                pmi_mode: String::new(),
+            }))
+            .await
+            .unwrap();
+
+        let launch_id = &launch_resp.get_ref().task_launch_id;
+        assert!(!launch_id.is_empty(), "should receive a launch ID");
+        assert!(
+            Uuid::parse_str(launch_id).is_ok(),
+            "launch ID should be a valid UUID"
+        );
+    }
 }

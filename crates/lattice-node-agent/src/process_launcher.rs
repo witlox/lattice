@@ -56,6 +56,14 @@ pub struct ProcessLauncher {
     rank_pids: Arc<Mutex<Vec<Option<u32>>>>,
 }
 
+impl std::fmt::Debug for ProcessLauncher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessLauncher")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProcessLauncher {
     pub fn new(config: LaunchConfig, transport: Arc<dyn FenceTransport>) -> Self {
         let pmi_config = Pmi2ServerConfig {

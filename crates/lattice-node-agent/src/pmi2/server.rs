@@ -54,6 +54,15 @@ pub struct Pmi2Server {
     abort_rx: watch::Receiver<bool>,
 }
 
+impl std::fmt::Debug for Pmi2Server {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pmi2Server")
+            .field("config", &self.config)
+            .field("socket_path", &self.socket_path)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Pmi2Server {
     pub fn new(config: Pmi2ServerConfig) -> Self {
         // Use short hex prefix to keep path under SUN_LEN (104 on macOS).
@@ -490,5 +499,130 @@ mod tests {
         send_recv(&mut stream, "cmd=finalize;\n").await;
         drop(stream);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;
+    }
+
+    #[tokio::test]
+    async fn abort_command_terminates_rank() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Pmi2ServerConfig {
+            launch_id: uuid::Uuid::new_v4(),
+            first_rank: 0,
+            world_size: 1,
+            local_rank_count: 1,
+            appnum: 0,
+            socket_dir: tmp.path().to_path_buf(),
+        };
+        let server = Pmi2Server::new(config);
+        let socket_path = server.socket_path().to_path_buf();
+
+        let server_handle = tokio::spawn(async move {
+            // Abort from a rank causes handle_rank to return Err,
+            // which the server logs but continues. With 1 rank,
+            // the server loop finishes after that rank's handler completes.
+            let _ = server.run(|e| async move { Ok(e) }).await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+
+        // fullinit first
+        send_recv(&mut stream, "cmd=fullinit;pmi_version=2;\n").await;
+
+        // Send abort — the server won't send a response for abort,
+        // but the handler returns, so the connection closes.
+        let (_, mut writer) = stream.into_split();
+        writer
+            .write_all(b"cmd=abort;message=test failure;\n")
+            .await
+            .unwrap();
+
+        // Server should complete (not hang)
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;
+        assert!(result.is_ok(), "server should not hang after abort");
+    }
+
+    #[tokio::test]
+    async fn rank_disconnect_before_finalize() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Pmi2ServerConfig {
+            launch_id: uuid::Uuid::new_v4(),
+            first_rank: 0,
+            world_size: 1,
+            local_rank_count: 1,
+            appnum: 0,
+            socket_dir: tmp.path().to_path_buf(),
+        };
+        let server = Pmi2Server::new(config);
+        let socket_path = server.socket_path().to_path_buf();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = server.run(|e| async move { Ok(e) }).await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+
+        // fullinit, then drop without finalize
+        send_recv(&mut stream, "cmd=fullinit;\n").await;
+        drop(stream);
+
+        // Server should handle gracefully and not hang
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;
+        assert!(
+            result.is_ok(),
+            "server should handle early disconnect gracefully"
+        );
+    }
+
+    #[tokio::test]
+    async fn fence_callback_failure_terminates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Pmi2ServerConfig {
+            launch_id: uuid::Uuid::new_v4(),
+            first_rank: 0,
+            world_size: 1,
+            local_rank_count: 1,
+            appnum: 0,
+            socket_dir: tmp.path().to_path_buf(),
+        };
+        let server = Pmi2Server::new(config);
+        let socket_path = server.socket_path().to_path_buf();
+
+        let server_handle = tokio::spawn(async move {
+            // on_all_fenced returns an error
+            server
+                .run(|_entries| async move { Err("simulated fence failure".to_string()) })
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+
+        // fullinit
+        send_recv(&mut stream, "cmd=fullinit;\n").await;
+        // kvsput
+        send_recv(&mut stream, "cmd=kvsput;key=k;value=v;\n").await;
+
+        // kvsfence — the callback will fail, which should cause the
+        // rank handler to return Err. The connection will close.
+        let (reader, mut writer) = stream.into_split();
+        writer.write_all(b"cmd=kvsfence;\n").await.unwrap();
+
+        // The rank handler should exit due to the fence error.
+        // We may or may not get a response before the handler terminates.
+        let mut buf_reader = BufReader::new(reader);
+        let mut buf = String::new();
+        // Read will either get a response or EOF
+        let _ = buf_reader.read_line(&mut buf).await;
+
+        // Server should complete
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle)
+            .await
+            .expect("server should not hang")
+            .expect("server join");
+
+        // The server itself returns Ok(()) because it just logs rank handler errors.
+        // The actual error is in the rank handler task.
+        assert!(result.is_ok());
     }
 }

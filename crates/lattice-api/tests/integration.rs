@@ -2349,3 +2349,238 @@ async fn rest_accounting_usage_without_service_returns_ok_with_null_budget() {
         "budget should be null without accounting service"
     );
 }
+
+// ─── Test: LaunchTasks with agent_pool succeeds ──────────────
+#[tokio::test]
+async fn launch_tasks_with_agent_pool_succeeds() {
+    let alloc_store = Arc::new(MockAllocationStore::new());
+    let state = Arc::new(ApiState {
+        allocations: alloc_store.clone(),
+        nodes: Arc::new(MockNodeRegistry::new()),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+        agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
+        data_dir: None,
+    });
+    let svc = LatticeAllocationService::new(state.clone());
+
+    // Submit an allocation
+    let resp = svc
+        .submit(Request::new(single_submit_request("physics")))
+        .await
+        .unwrap();
+    let alloc_id_str = &resp.get_ref().allocation_ids[0];
+    let alloc_id: Uuid = alloc_id_str.parse().unwrap();
+
+    // Manually set allocated nodes and state to Running
+    {
+        let mut allocs = alloc_store.allocations.lock().unwrap();
+        let alloc = allocs.get_mut(&alloc_id).unwrap();
+        alloc.assigned_nodes = vec!["n0".into(), "n1".into()];
+        alloc.state = lattice_common::types::AllocationState::Running;
+    }
+
+    // Launch tasks — should succeed through MPI orchestrator with StubNodeAgentPool
+    let launch_resp = svc
+        .launch_tasks(Request::new(pb::LaunchTasksRequest {
+            allocation_id: alloc_id_str.clone(),
+            num_tasks: 8,
+            tasks_per_node: 4,
+            entrypoint: "python worker.py".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            pmi_mode: String::new(),
+        }))
+        .await
+        .unwrap();
+
+    let launch_id = &launch_resp.get_ref().task_launch_id;
+    assert!(!launch_id.is_empty(), "should receive a task launch ID");
+    assert!(
+        Uuid::parse_str(launch_id).is_ok(),
+        "task_launch_id should be a valid UUID"
+    );
+}
+
+// ─── Test: LaunchTasks with agent_pool but no assigned nodes ─
+#[tokio::test]
+async fn launch_tasks_with_agent_pool_no_nodes_fails() {
+    let state = Arc::new(ApiState {
+        allocations: Arc::new(MockAllocationStore::new()),
+        nodes: Arc::new(MockNodeRegistry::new()),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+        agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
+        data_dir: None,
+    });
+    let svc = LatticeAllocationService::new(state.clone());
+
+    // Submit an allocation (no assigned_nodes by default)
+    let resp = svc
+        .submit(Request::new(single_submit_request("physics")))
+        .await
+        .unwrap();
+    let alloc_id_str = &resp.get_ref().allocation_ids[0];
+
+    // Launch tasks — should fail with FailedPrecondition
+    let result = svc
+        .launch_tasks(Request::new(pb::LaunchTasksRequest {
+            allocation_id: alloc_id_str.clone(),
+            num_tasks: 4,
+            tasks_per_node: 1,
+            entrypoint: "echo hello".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            pmi_mode: String::new(),
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().code(),
+        tonic::Code::FailedPrecondition
+    );
+}
+
+// ─── Test: LaunchTasks with pmi_mode pmix ────────────────────
+#[tokio::test]
+async fn launch_tasks_pmi_mode_pmix() {
+    let alloc_store = Arc::new(MockAllocationStore::new());
+    let state = Arc::new(ApiState {
+        allocations: alloc_store.clone(),
+        nodes: Arc::new(MockNodeRegistry::new()),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+        agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
+        data_dir: None,
+    });
+    let svc = LatticeAllocationService::new(state.clone());
+
+    let resp = svc
+        .submit(Request::new(single_submit_request("physics")))
+        .await
+        .unwrap();
+    let alloc_id_str = &resp.get_ref().allocation_ids[0];
+    let alloc_id: Uuid = alloc_id_str.parse().unwrap();
+
+    // Set assigned nodes and Running state
+    {
+        let mut allocs = alloc_store.allocations.lock().unwrap();
+        let alloc = allocs.get_mut(&alloc_id).unwrap();
+        alloc.assigned_nodes = vec!["n0".into(), "n1".into()];
+        alloc.state = lattice_common::types::AllocationState::Running;
+    }
+
+    // Launch with pmix mode
+    let launch_resp = svc
+        .launch_tasks(Request::new(pb::LaunchTasksRequest {
+            allocation_id: alloc_id_str.clone(),
+            num_tasks: 4,
+            tasks_per_node: 2,
+            entrypoint: "mpi_app".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            pmi_mode: "pmix".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(
+        Uuid::parse_str(&launch_resp.get_ref().task_launch_id).is_ok(),
+        "pmix launch should return a valid UUID"
+    );
+}
+
+// ─── Test: LaunchTasks with env and args ─────────────────────
+#[tokio::test]
+async fn launch_tasks_with_env_and_args() {
+    let alloc_store = Arc::new(MockAllocationStore::new());
+    let state = Arc::new(ApiState {
+        allocations: alloc_store.clone(),
+        nodes: Arc::new(MockNodeRegistry::new()),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+        agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
+        data_dir: None,
+    });
+    let svc = LatticeAllocationService::new(state.clone());
+
+    let resp = svc
+        .submit(Request::new(single_submit_request("physics")))
+        .await
+        .unwrap();
+    let alloc_id_str = &resp.get_ref().allocation_ids[0];
+    let alloc_id: Uuid = alloc_id_str.parse().unwrap();
+
+    // Set assigned nodes and Running state
+    {
+        let mut allocs = alloc_store.allocations.lock().unwrap();
+        let alloc = allocs.get_mut(&alloc_id).unwrap();
+        alloc.assigned_nodes = vec!["n0".into(), "n1".into(), "n2".into()];
+        alloc.state = lattice_common::types::AllocationState::Running;
+    }
+
+    // Launch with populated args and env
+    let mut env = HashMap::new();
+    env.insert("OMP_NUM_THREADS".to_string(), "8".to_string());
+    env.insert("CUDA_VISIBLE_DEVICES".to_string(), "0,1,2,3".to_string());
+
+    let launch_resp = svc
+        .launch_tasks(Request::new(pb::LaunchTasksRequest {
+            allocation_id: alloc_id_str.clone(),
+            num_tasks: 12,
+            tasks_per_node: 4,
+            entrypoint: "python train.py".to_string(),
+            args: vec![
+                "--epochs".to_string(),
+                "100".to_string(),
+                "--lr".to_string(),
+                "0.001".to_string(),
+            ],
+            env,
+            pmi_mode: String::new(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(
+        Uuid::parse_str(&launch_resp.get_ref().task_launch_id).is_ok(),
+        "launch with args and env should return a valid UUID"
+    );
+}

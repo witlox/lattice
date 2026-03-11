@@ -187,4 +187,68 @@ mod tests {
         assert_eq!(gen, 1);
         kvs.complete_fence(HashMap::new()).await;
     }
+
+    #[tokio::test]
+    async fn concurrent_puts_and_fence() {
+        let kvs = Arc::new(LocalKvs::new(4));
+
+        // Spawn 4 tasks that each put a unique key
+        let mut handles = Vec::new();
+        for i in 0..4u32 {
+            let kvs = kvs.clone();
+            handles.push(tokio::spawn(async move {
+                kvs.put(format!("key{i}"), format!("val{i}")).await;
+                kvs.enter_fence().await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap());
+        }
+
+        // Exactly one of them should have returned all_local=true
+        let all_count = results.iter().filter(|(all, _)| *all).count();
+        assert_eq!(all_count, 1, "exactly one rank should trigger all_local");
+
+        // All 4 keys should be in pending
+        let pending = kvs.drain_pending().await;
+        assert_eq!(pending.len(), 4);
+        for i in 0..4u32 {
+            assert_eq!(pending.get(&format!("key{i}")).unwrap(), &format!("val{i}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn get_returns_merged_over_pending() {
+        let kvs = LocalKvs::new(1);
+
+        // Put key "x" in pending
+        kvs.put("x".into(), "pending_value".into()).await;
+        assert_eq!(kvs.get("x").await, Some("pending_value".to_string()));
+
+        // Complete fence with a different value for "x" in merged
+        let mut merged = HashMap::new();
+        merged.insert("x".into(), "merged_value".into());
+        kvs.complete_fence(merged).await;
+
+        // After complete_fence, pending is drained into merged. The pending
+        // value for "x" overwrites the merged value because pending is
+        // extended into merged after the external merged entries.
+        // Actually, looking at complete_fence: merged.extend(external), then
+        // pending is drained and extended into merged. So pending "x" wins.
+        let val = kvs.get("x").await.unwrap();
+        assert_eq!(
+            val, "pending_value",
+            "pending value should overwrite merged for same key"
+        );
+    }
+
+    #[tokio::test]
+    async fn single_rank_fence_is_immediate() {
+        let kvs = LocalKvs::new(1);
+        let (all_local, gen) = kvs.enter_fence().await;
+        assert!(all_local, "single rank should immediately trigger fence");
+        assert_eq!(gen, 0);
+    }
 }

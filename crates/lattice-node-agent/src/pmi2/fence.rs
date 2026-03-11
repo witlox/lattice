@@ -39,6 +39,16 @@ pub struct FenceCoordinator {
     collected: Arc<Mutex<HeadState>>,
 }
 
+impl std::fmt::Debug for FenceCoordinator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FenceCoordinator")
+            .field("launch_id", &self.launch_id)
+            .field("head_index", &self.head_index)
+            .field("my_index", &self.my_index)
+            .finish_non_exhaustive()
+    }
+}
+
 struct HeadState {
     entries: HashMap<u32, HashMap<String, String>>,
     expected: u32,
@@ -299,5 +309,66 @@ mod tests {
         let entries2 = HashMap::new();
         let result = coord.receive_peer_fence(0, entries2).await;
         assert!(result.is_err()); // Missing peer 1
+    }
+
+    #[tokio::test]
+    async fn transport_failure_propagates_error() {
+        // MockFenceTransport with no response set returns Err("mock: no response set")
+        let transport = Arc::new(MockFenceTransport::new());
+        // Don't set a response — send_fence will return Err
+
+        let coord = FenceCoordinator::new(
+            uuid::Uuid::new_v4(),
+            two_peers(),
+            0, // head is node 0
+            1, // we are node 1 (non-head)
+            transport,
+        );
+
+        let local = HashMap::new();
+        let result = coord.execute_fence(local).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("no response set"),
+            "transport error should propagate"
+        );
+    }
+
+    #[tokio::test]
+    async fn head_with_single_peer() {
+        // Head node (index 0) with only 1 peer (itself).
+        // execute_fence should return local entries directly (single-node fast path).
+        let transport = Arc::new(MockFenceTransport::new());
+        let peers = vec![PeerInfo {
+            node_id: "node0".into(),
+            grpc_address: "http://node0:50052".into(),
+            first_rank: 0,
+            num_ranks: 4,
+        }];
+        let coord = FenceCoordinator::new(uuid::Uuid::new_v4(), peers, 0, 0, transport);
+
+        let mut local = HashMap::new();
+        local.insert("mykey".into(), "myval".into());
+
+        let merged = coord.execute_fence(local.clone()).await.unwrap();
+        assert_eq!(merged, local);
+    }
+
+    #[tokio::test]
+    async fn fence_with_empty_kvs() {
+        // All nodes contribute empty HashMap. Merged result should be empty.
+        let transport = Arc::new(MockFenceTransport::new());
+        let coord = FenceCoordinator::new(uuid::Uuid::new_v4(), two_peers(), 0, 0, transport);
+
+        // Peer 1 sends empty
+        let result = coord.receive_peer_fence(1, HashMap::new()).await;
+        assert!(result.is_err()); // still waiting for peer 0
+
+        // Head (peer 0) sends empty
+        let merged = coord.receive_peer_fence(0, HashMap::new()).await.unwrap();
+        assert!(
+            merged.is_empty(),
+            "merged KVS should be empty when all contribute nothing"
+        );
     }
 }

@@ -371,4 +371,88 @@ mod tests {
             .unwrap();
         assert!(resp.into_inner().success);
     }
+
+    #[tokio::test]
+    async fn launch_processes_valid_request_accepted() {
+        let server = NodeAgentServer::new("test-node".into());
+        let launch_id = uuid::Uuid::new_v4();
+        let alloc_id = uuid::Uuid::new_v4();
+
+        let resp = server
+            .launch_processes(Request::new(pb::LaunchProcessesRequest {
+                launch_id: launch_id.to_string(),
+                allocation_id: alloc_id.to_string(),
+                entrypoint: "/bin/echo".into(),
+                args: vec!["hello".into()],
+                tasks_per_node: 1,
+                first_rank: 0,
+                world_size: 1,
+                env: HashMap::new(),
+                pmi_mode: pb::PmiMode::Pmi2 as i32,
+                cxi_credentials: None,
+                peers: vec![pb::PeerInfo {
+                    node_id: "test-node".into(),
+                    grpc_address: "http://test-node:50052".into(),
+                    first_rank: 0,
+                    num_ranks: 1,
+                }],
+                head_node_index: 0,
+            }))
+            .await
+            .unwrap();
+
+        let inner = resp.into_inner();
+        assert!(inner.accepted);
+        assert!(!inner.message.is_empty());
+    }
+
+    #[tokio::test]
+    async fn launch_processes_invalid_allocation_id() {
+        let server = NodeAgentServer::new("test-node".into());
+        let result = server
+            .launch_processes(Request::new(pb::LaunchProcessesRequest {
+                launch_id: uuid::Uuid::new_v4().to_string(),
+                allocation_id: "not-a-uuid".into(),
+                entrypoint: "echo".into(),
+                args: vec![],
+                tasks_per_node: 1,
+                first_rank: 0,
+                world_size: 1,
+                env: HashMap::new(),
+                pmi_mode: 0,
+                cxi_credentials: None,
+                peers: vec![],
+                head_node_index: 0,
+            }))
+            .await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn abort_processes_invalid_launch_id() {
+        let server = NodeAgentServer::new("test-node".into());
+        let result = server
+            .abort_processes(Request::new(pb::AbortProcessesRequest {
+                launch_id: "not-a-uuid".into(),
+                reason: "test".into(),
+            }))
+            .await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn pmi_fence_invalid_launch_id() {
+        let server = NodeAgentServer::new("test-node".into());
+        let result = server
+            .pmi_fence(Request::new(pb::PmiFenceRequest {
+                launch_id: "not-a-uuid".into(),
+                kvs_entries: HashMap::new(),
+                node_index: 0,
+            }))
+            .await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+    }
 }
