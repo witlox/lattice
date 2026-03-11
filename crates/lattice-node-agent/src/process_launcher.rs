@@ -183,6 +183,7 @@ impl ProcessLauncher {
     #[cfg(target_os = "linux")]
     async fn spawn_ranks_linux(&self, pmi_server: &Pmi2Server) {
         use tokio::process::Command;
+        use tracing::{debug, error};
 
         let socket_path = pmi_server.socket_path().to_string_lossy().to_string();
 
