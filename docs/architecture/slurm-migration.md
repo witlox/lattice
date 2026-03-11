@@ -170,3 +170,4 @@ For users:
 - [cli-design.md](cli-design.md) — Native CLI design and compat aliases
 - [sessions.md](sessions.md) — `salloc` equivalent
 - [dag-scheduling.md](dag-scheduling.md) — DAG dependencies (replace `--dependency`)
+- [mpi-process-management.md](mpi-process-management.md) — MPI launch, PMI-2, srun replacement

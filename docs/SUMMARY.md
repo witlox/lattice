@@ -44,6 +44,7 @@
 - [Autoscaling](architecture/autoscaling.md)
 - [Quota Enforcement](architecture/quota-enforcement.md)
 - [GPU Topology](architecture/gpu-topology.md)
+- [Memory Topology](architecture/memory-topology.md)
 - [Performance Tuning Guide](architecture/tuning-guide.md)
 
 # Infrastructure
@@ -51,6 +52,7 @@
 - [Node Lifecycle](architecture/node-lifecycle.md)
 - [Node Conformance](architecture/conformance.md)
 - [Network Domains](architecture/network-domains.md)
+- [MPI Process Management](architecture/mpi-process-management.md)
 - [Data Plane & Storage](architecture/data-plane.md)
 - [Data Staging & Cache Lifecycle](architecture/data-staging.md)
 - [Federation](architecture/federation.md)
