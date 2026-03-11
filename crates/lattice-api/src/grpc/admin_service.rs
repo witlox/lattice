@@ -308,7 +308,7 @@ impl AdminService for LatticeAdminService {
                 valid: true,
                 message: format!(
                     "Backup valid: {} nodes, {} allocations, {} tenants",
-                    meta.node_count, meta.allocation_count, meta.tenant_count
+                    meta.app.node_count, meta.app.allocation_count, meta.app.tenant_count
                 ),
                 backup_timestamp: Some(prost_types::Timestamp {
                     seconds: meta.timestamp.timestamp(),
@@ -352,10 +352,10 @@ impl AdminService for LatticeAdminService {
                     seconds: meta.timestamp.timestamp(),
                     nanos: meta.timestamp.timestamp_subsec_nanos() as i32,
                 }),
-                node_count: meta.node_count as u64,
-                allocation_count: meta.allocation_count as u64,
-                tenant_count: meta.tenant_count as u64,
-                audit_entry_count: meta.audit_entry_count as u64,
+                node_count: meta.app.node_count as u64,
+                allocation_count: meta.app.allocation_count as u64,
+                tenant_count: meta.app.tenant_count as u64,
+                audit_entry_count: meta.app.audit_entry_count as u64,
             })),
             Err(e) => Ok(Response::new(pb::CreateBackupResponse {
                 success: false,
@@ -392,7 +392,7 @@ impl AdminService for LatticeAdminService {
                 success: true,
                 message: format!(
                     "Backup restored successfully ({} nodes, {} allocations). Restart required.",
-                    meta.node_count, meta.allocation_count
+                    meta.app.node_count, meta.app.allocation_count
                 ),
             })),
             Err(e) => Ok(Response::new(pb::RestoreBackupResponse {

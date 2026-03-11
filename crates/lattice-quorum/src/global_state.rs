@@ -16,6 +16,7 @@ use lattice_common::types::{
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{Command, CommandResponse};
+use crate::TypeConfig;
 
 /// The complete cluster state replicated via Raft.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -377,7 +378,41 @@ impl GlobalState {
 
         Ok(())
     }
+}
 
+impl raft_hpc_core::StateMachineState<TypeConfig> for GlobalState {
+    fn apply(&mut self, cmd: Command) -> CommandResponse {
+        GlobalState::apply(self, cmd)
+    }
+
+    fn blank_response() -> CommandResponse {
+        CommandResponse::Ok
+    }
+}
+
+impl raft_hpc_core::BackupMetadataSource for GlobalState {
+    type Metadata = LatticeBackupMeta;
+
+    fn backup_metadata(&self) -> Self::Metadata {
+        LatticeBackupMeta {
+            node_count: self.nodes.len(),
+            allocation_count: self.allocations.len(),
+            tenant_count: self.tenants.len(),
+            audit_entry_count: self.audit_log.len(),
+        }
+    }
+}
+
+/// Application-specific backup metadata for Lattice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatticeBackupMeta {
+    pub node_count: usize,
+    pub allocation_count: usize,
+    pub tenant_count: usize,
+    pub audit_entry_count: usize,
+}
+
+impl GlobalState {
     // ── Query helpers ───────────────────────────────────────
 
     pub fn query_audit(&self, filter: &AuditFilter) -> Vec<AuditEntry> {

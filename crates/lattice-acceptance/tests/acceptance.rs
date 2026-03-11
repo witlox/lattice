@@ -3118,8 +3118,11 @@ async fn when_restore_to_existing_dir(world: &mut LatticeWorld) {
 #[then(regex = r#"^the backup metadata should show (\d+) nodes and (\d+) allocations$"#)]
 async fn then_backup_metadata_counts(world: &mut LatticeWorld, nodes: usize, allocs: usize) {
     let meta = world.backup_metadata.as_ref().expect("no backup metadata");
-    assert_eq!(meta.node_count, nodes, "node count mismatch");
-    assert_eq!(meta.allocation_count, allocs, "allocation count mismatch");
+    assert_eq!(meta.app.node_count, nodes, "node count mismatch");
+    assert_eq!(
+        meta.app.allocation_count, allocs,
+        "allocation count mismatch"
+    );
 }
 
 #[then("the backup file should exist on disk")]
@@ -3156,9 +3159,9 @@ async fn then_verified_matches_export(world: &mut LatticeWorld) {
         .verified_metadata
         .as_ref()
         .expect("no verified metadata");
-    assert_eq!(export.node_count, verify.node_count);
-    assert_eq!(export.allocation_count, verify.allocation_count);
-    assert_eq!(export.tenant_count, verify.tenant_count);
+    assert_eq!(export.app.node_count, verify.app.node_count);
+    assert_eq!(export.app.allocation_count, verify.app.allocation_count);
+    assert_eq!(export.app.tenant_count, verify.app.tenant_count);
 }
 
 #[then(regex = r#"^the verification should fail with "(\w+)"$"#)]

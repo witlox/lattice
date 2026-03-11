@@ -4,10 +4,9 @@
 //! cluster state: node ownership, allocations, tenants, vClusters, topology,
 //! and the sensitive audit log.
 //!
-//! Built on [openraft](https://docs.rs/openraft) with:
-//! - In-memory log + state machine (suitable for testing / single-process)
-//! - Channel-based in-process networking for testing
-//! - JSON-serialized snapshots
+//! Built on [raft-hpc-core](https://crates.io/crates/raft-hpc-core) for the
+//! generic Raft infrastructure (log stores, state machine, transport, backup),
+//! with Lattice-specific state and commands.
 //!
 //! ## Architecture (per docs/architecture/system-architecture.md)
 //!
@@ -18,21 +17,6 @@ pub mod backup;
 pub mod client;
 pub mod commands;
 pub mod global_state;
-pub mod log_store_variant;
-pub mod network;
-pub mod persistent_store;
-pub mod state_machine;
-pub mod store;
-pub mod transport;
-pub mod transport_server;
-
-/// Generated protobuf types for the Raft transport service.
-pub mod proto {
-    pub mod raft {
-        tonic::include_proto!("lattice.v1.raft");
-    }
-    pub use raft::*;
-}
 
 use std::io::Cursor;
 
@@ -51,17 +35,23 @@ openraft::declare_raft_types!(
 /// Convenience type alias for the Raft instance.
 pub type LatticeRaft = openraft::Raft<TypeConfig>;
 
+/// Type alias for the Lattice state machine backed by raft-hpc-core.
+pub type LatticeStateMachine =
+    raft_hpc_core::HpcStateMachine<TypeConfig, global_state::GlobalState>;
+
+// Re-export raft-hpc-core types parameterized for Lattice's TypeConfig
+pub type MemLogStore = raft_hpc_core::MemLogStore<TypeConfig>;
+pub type FileLogStore = raft_hpc_core::FileLogStore<TypeConfig>;
+pub type LogStoreVariant = raft_hpc_core::LogStoreVariant<TypeConfig>;
+pub type GrpcNetworkFactory = raft_hpc_core::GrpcNetworkFactory;
+pub type MemNetworkFactory = raft_hpc_core::MemNetworkFactory<TypeConfig>;
+pub type RaftTransportServer = raft_hpc_core::RaftTransportServer<TypeConfig>;
+pub type PeerTlsConfig = raft_hpc_core::PeerTlsConfig;
+
 pub use backup::{export_backup, restore_backup, verify_backup, BackupMetadata};
 pub use client::QuorumClient;
 pub use commands::{Command as QuorumCommand, CommandResponse as QuorumResponse};
 pub use global_state::GlobalState;
-pub use log_store_variant::LogStoreVariant;
-pub use network::MemNetworkFactory;
-pub use persistent_store::FileLogStore;
-pub use state_machine::LatticeStateMachine;
-pub use store::MemLogStore;
-pub use transport::GrpcNetworkFactory;
-pub use transport_server::RaftTransportServer;
 
 /// Create a quorum from configuration.
 ///
@@ -139,7 +129,7 @@ pub async fn create_quorum_from_config(
 
     let raft_config = Arc::new(raft_config_builder.validate()?);
 
-    let raft =
+    let raft: LatticeRaft =
         openraft::Raft::new(node_id, raft_config, network_factory.clone(), log_store, sm).await?;
 
     // Start Raft transport server
@@ -148,7 +138,7 @@ pub async fn create_quorum_from_config(
     let handle = tokio::spawn(async move {
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         let _ = tonic::transport::Server::builder()
-            .add_service(proto::raft_service_server::RaftServiceServer::new(server))
+            .add_service(raft_hpc_core::proto::raft_service_server::RaftServiceServer::new(server))
             .serve_with_incoming(incoming)
             .await;
     });
@@ -263,14 +253,17 @@ pub async fn create_test_grpc_cluster(
         let log_store = MemLogStore::new();
         let sm = LatticeStateMachine::new(Arc::clone(&state));
 
-        let raft = openraft::Raft::new(id, config, network_factory.clone(), log_store, sm).await?;
+        let raft: LatticeRaft =
+            openraft::Raft::new(id, config, network_factory.clone(), log_store, sm).await?;
 
         // Start tonic server
         let server = RaftTransportServer::new(raft.clone());
         let handle = tokio::spawn(async move {
             let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
             let _ = tonic::transport::Server::builder()
-                .add_service(proto::raft_service_server::RaftServiceServer::new(server))
+                .add_service(
+                    raft_hpc_core::proto::raft_service_server::RaftServiceServer::new(server),
+                )
                 .serve_with_incoming(incoming)
                 .await;
         });
@@ -351,82 +344,13 @@ pub async fn create_test_cluster(node_count: u64) -> Result<Vec<QuorumClient>, a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_common::traits::{AllocationStore, AuditLog, NodeRegistry};
+    use lattice_common::traits::{AllocationStore, NodeRegistry};
     use lattice_common::types::*;
-    use lattice_test_harness::fixtures::{AllocationBuilder, NodeBuilder, TenantBuilder};
-    use uuid::Uuid;
+    use lattice_test_harness::fixtures::{AllocationBuilder, NodeBuilder};
 
-    #[tokio::test]
-    async fn single_node_quorum_works() {
-        let client = create_test_quorum().await.unwrap();
-
-        let alloc = AllocationBuilder::new().build();
-        let id = alloc.id;
-        client.insert(alloc).await.unwrap();
-
-        let got = client.get(&id).await.unwrap();
-        assert_eq!(got.id, id);
-        assert_eq!(got.state, AllocationState::Pending);
-    }
-
-    #[tokio::test]
-    #[ignore = "slow: spins up 3-node Raft cluster"]
-    async fn three_node_cluster_works() {
-        let clients = create_test_cluster(3).await.unwrap();
-        let leader = &clients[0];
-
-        let alloc = AllocationBuilder::new().build();
-        let id = alloc.id;
-        leader.insert(alloc).await.unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        let got = leader.get(&id).await.unwrap();
-        assert_eq!(got.id, id);
-    }
-
-    #[tokio::test]
-    async fn node_registry_via_quorum() {
-        let client = create_test_quorum().await.unwrap();
-
-        let node = NodeBuilder::new().id("x1000c0s0b0n0").build();
-        client
-            .propose(commands::Command::RegisterNode(node))
-            .await
-            .unwrap();
-
-        let got = client.get_node(&"x1000c0s0b0n0".to_string()).await.unwrap();
-        assert_eq!(got.id, "x1000c0s0b0n0");
-        assert_eq!(got.state, NodeState::Ready);
-    }
-
-    #[tokio::test]
-    async fn audit_log_via_quorum() {
-        use lattice_common::traits::{AuditAction, AuditFilter};
-
-        let client = create_test_quorum().await.unwrap();
-
-        let entry = lattice_common::traits::AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: chrono::Utc::now(),
-            user: "dr-smith".into(),
-            action: AuditAction::NodeClaim,
-            details: serde_json::json!({"node": "x1000c0s0b0n0"}),
-        };
-
-        client.record(entry).await.unwrap();
-
-        let results = client
-            .query(&AuditFilter {
-                user: Some("dr-smith".into()),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].action, AuditAction::NodeClaim);
-    }
+    // Note: single_node_quorum, three_node_cluster, node_registry, audit_log,
+    // and quota_enforcement are covered more thoroughly by tests/integration.rs.
+    // These tests cover factory functions and gRPC clusters only.
 
     #[tokio::test]
     async fn from_config_no_peers() {
@@ -448,19 +372,11 @@ mod tests {
         assert_eq!(got.id, "cfg-test");
     }
 
-    // Note: The multi-node config test is covered by `grpc_three_node_cluster_*`
-    // tests which use the lower-level `create_test_grpc_cluster`. The
-    // `create_quorum_from_config` multi-node path uses the same underlying
-    // mechanisms (GrpcNetworkFactory + RaftTransportServer) so we test it
-    // indirectly. A full integration test requires Docker (see tests/e2e/).
-
     #[tokio::test]
     #[ignore = "slow: spins up 3-node gRPC Raft cluster"]
     async fn grpc_three_node_cluster_leader_election() {
         let (clients, handles, _addrs) = create_test_grpc_cluster(3).await.unwrap();
 
-        // Verify leader elected (already waited during cluster creation)
-        // Write a value to prove the cluster is functional
         let node = NodeBuilder::new().id("grpc-test-node").build();
         clients[0]
             .propose(commands::Command::RegisterNode(node))
@@ -483,15 +399,12 @@ mod tests {
     async fn grpc_three_node_cluster_log_replication() {
         let (clients, handles, _addrs) = create_test_grpc_cluster(3).await.unwrap();
 
-        // Write through leader
         let alloc = AllocationBuilder::new().build();
         let id = alloc.id;
         clients[0].insert(alloc).await.unwrap();
 
-        // Give time for replication
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Read from leader's state
         let got = clients[0].get(&id).await.unwrap();
         assert_eq!(got.id, id);
         assert_eq!(got.state, AllocationState::Pending);
@@ -508,26 +421,5 @@ mod tests {
         for h in handles {
             h.abort();
         }
-    }
-
-    #[tokio::test]
-    async fn quota_enforcement_via_quorum() {
-        let client = create_test_quorum().await.unwrap();
-
-        let tenant = TenantBuilder::new("limited")
-            .max_nodes(1)
-            .max_concurrent(1)
-            .build();
-        client
-            .propose(commands::Command::CreateTenant(tenant))
-            .await
-            .unwrap();
-
-        let alloc1 = AllocationBuilder::new().tenant("limited").build();
-        client.insert(alloc1).await.unwrap();
-
-        let alloc2 = AllocationBuilder::new().tenant("limited").build();
-        let result = client.insert(alloc2).await;
-        assert!(result.is_err());
     }
 }

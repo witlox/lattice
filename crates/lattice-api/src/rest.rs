@@ -1424,7 +1424,7 @@ async fn create_backup(
                 success: true,
                 message: format!(
                     "Backup created: {} nodes, {} allocations",
-                    meta.node_count, meta.allocation_count
+                    meta.app.node_count, meta.app.allocation_count
                 ),
             }),
         )
@@ -1448,9 +1448,9 @@ async fn verify_backup(Json(req): Json<BackupRequest>) -> impl IntoResponse {
             Json(BackupVerifyResponse {
                 valid: true,
                 message: "Backup is valid".to_string(),
-                node_count: Some(meta.node_count),
-                allocation_count: Some(meta.allocation_count),
-                tenant_count: Some(meta.tenant_count),
+                node_count: Some(meta.app.node_count),
+                allocation_count: Some(meta.app.allocation_count),
+                tenant_count: Some(meta.app.tenant_count),
             }),
         )
             .into_response(),
@@ -1494,7 +1494,7 @@ async fn restore_backup(
                 success: true,
                 message: format!(
                     "Restored {} nodes, {} allocations. Restart required.",
-                    meta.node_count, meta.allocation_count
+                    meta.app.node_count, meta.app.allocation_count
                 ),
             }),
         )

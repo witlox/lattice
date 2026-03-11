@@ -1,7 +1,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_root = "../../proto";
 
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
         .compile_protos(
@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format!("{proto_root}/lattice/v1/agent.proto"),
                 format!("{proto_root}/lattice/v1/mpi.proto"),
             ],
-            &[proto_root],
+            &[proto_root.to_string()],
         )?;
 
     Ok(())
