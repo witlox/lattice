@@ -227,3 +227,25 @@ jobs:
           gh release create "$TAG" dist/*.tar.gz \
             --title "Lattice $VERSION" \
             --generate-notes
+
+  # ── Publish hpc-scheduler-core to crates.io ──────────────────
+  publish-crate:
+    name: Publish hpc-scheduler-core
+    needs: [preflight, publish]
+    if: needs.preflight.outputs.skip == 'false' && !inputs.dry_run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set version
+        run: ./scripts/set-version.sh
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p hpc-scheduler-core --no-verify

@@ -12,6 +12,7 @@ use crate::cost::{BacklogMetrics, CostContext};
 use crate::knapsack::KnapsackSolver;
 use crate::placement::SchedulingResult;
 use crate::quota::compute_tenant_usage;
+use crate::resource_timeline::{ResourceTimeline, TimelineConfig};
 
 /// Input to a scheduling cycle.
 #[derive(Debug, Clone)]
@@ -30,6 +31,8 @@ pub struct CycleInput {
     pub data_readiness: HashMap<AllocId, f64>,
     /// Normalized energy price (0.0-1.0)
     pub energy_price: f64,
+    /// Resource timeline configuration
+    pub timeline_config: TimelineConfig,
 }
 
 /// Run a single scheduling cycle.
@@ -67,9 +70,23 @@ pub fn run_cycle(input: &CycleInput, weights: &CostWeights) -> SchedulingResult 
         memory_locality: compute_memory_locality(&input.nodes),
     };
 
+    // Build resource timeline from running allocations
+    let timeline = ResourceTimeline::build(
+        &input.running,
+        &input.nodes,
+        ctx.now,
+        input.timeline_config.look_ahead,
+    );
+
     // Run the knapsack solver
     let solver = KnapsackSolver::new(weights.clone());
-    solver.solve(&input.pending, &input.nodes, &input.topology, &ctx)
+    solver.solve(
+        &input.pending,
+        &input.nodes,
+        &input.topology,
+        &ctx,
+        &timeline,
+    )
 }
 
 /// Compute per-node memory locality scores.
@@ -116,6 +133,7 @@ mod tests {
             topology: create_test_topology(1, 4),
             data_readiness: HashMap::new(),
             energy_price: 0.5,
+            timeline_config: TimelineConfig::default(),
         };
 
         let result = run_cycle(&input, &CostWeights::default());
@@ -134,6 +152,7 @@ mod tests {
             topology: create_test_topology(1, 4),
             data_readiness: HashMap::new(),
             energy_price: 0.5,
+            timeline_config: TimelineConfig::default(),
         };
 
         let result = run_cycle(&input, &CostWeights::default());
@@ -162,6 +181,7 @@ mod tests {
             topology: create_test_topology(1, 2),
             data_readiness: HashMap::new(),
             energy_price: 0.5,
+            timeline_config: TimelineConfig::default(),
         };
 
         let weights = CostWeights {
@@ -193,6 +213,7 @@ mod tests {
             topology: create_test_topology(1, 4),
             data_readiness: HashMap::new(),
             energy_price: 0.5,
+            timeline_config: TimelineConfig::default(),
         };
 
         let result = run_cycle(&input, &CostWeights::default());
@@ -213,5 +234,59 @@ mod tests {
         let hours = compute_gpu_hours(&[a1, a2]);
         // 4*2 + 2*8 = 8 + 16 = 24
         assert!((hours - 24.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cycle_with_running_bounded_builds_timeline() {
+        // Running bounded allocations feed the timeline; verify the cycle
+        // still produces correct greedy placement.
+        let now = chrono::Utc::now();
+        let mut running = AllocationBuilder::new()
+            .tenant("t1")
+            .nodes(2)
+            .lifecycle_bounded(4)
+            .state(AllocationState::Running)
+            .build();
+        running.started_at = Some(now - chrono::Duration::hours(1));
+        running.assigned_nodes = vec!["n1".into(), "n2".into()];
+
+        let pending = AllocationBuilder::new().tenant("t1").nodes(2).build();
+
+        let input = CycleInput {
+            pending: vec![pending.clone()],
+            running: vec![running],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+            data_readiness: HashMap::new(),
+            energy_price: 0.5,
+            timeline_config: TimelineConfig::default(),
+        };
+
+        let result = run_cycle(&input, &CostWeights::default());
+        // Pending job placed via greedy (enough free nodes)
+        assert_eq!(result.placed().len(), 1);
+        assert_eq!(result.placed()[0].allocation_id(), pending.id);
+    }
+
+    #[test]
+    fn cycle_with_no_running_pure_greedy() {
+        // No running allocations → empty timeline → pure greedy
+        let pending = AllocationBuilder::new().tenant("t1").nodes(2).build();
+
+        let input = CycleInput {
+            pending: vec![pending.clone()],
+            running: vec![],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+            data_readiness: HashMap::new(),
+            energy_price: 0.5,
+            timeline_config: TimelineConfig::default(),
+        };
+
+        let result = run_cycle(&input, &CostWeights::default());
+        assert_eq!(result.placed().len(), 1);
+        assert!(!result.decisions.iter().any(|d| d.is_backfill()));
     }
 }

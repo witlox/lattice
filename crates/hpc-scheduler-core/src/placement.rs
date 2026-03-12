@@ -1,41 +1,39 @@
 //! Placement result types.
 //!
-//! A `PlacementDecision` is the output of the scheduling algorithm:
-//! which allocations are placed on which nodes, and which need preemption.
+//! A [`PlacementDecision`] is the output of the scheduling algorithm:
+//! which jobs are placed on which nodes, which need preemption, and
+//! which are backfilled or deferred.
 
 use chrono::{DateTime, Utc};
-use lattice_common::types::*;
+use uuid::Uuid;
 
-/// Result of a single allocation placement decision.
+/// Result of a single job placement decision.
 #[derive(Debug, Clone)]
 pub enum PlacementDecision {
-    /// Allocation can be placed on the specified nodes.
+    /// Job can be placed on the specified nodes.
     Place {
-        allocation_id: AllocId,
-        nodes: Vec<NodeId>,
+        allocation_id: Uuid,
+        nodes: Vec<String>,
     },
-    /// Allocation needs preemption of existing allocations to be placed.
+    /// Job needs preemption of existing jobs to be placed.
     Preempt {
-        allocation_id: AllocId,
-        nodes: Vec<NodeId>,
-        victims: Vec<AllocId>,
+        allocation_id: Uuid,
+        nodes: Vec<String>,
+        victims: Vec<Uuid>,
     },
-    /// Allocation placed via backfill — must complete before the reservation holder starts.
+    /// Job placed via backfill — must complete before the reservation holder starts.
     Backfill {
-        allocation_id: AllocId,
-        nodes: Vec<NodeId>,
-        reservation_holder: AllocId,
+        allocation_id: Uuid,
+        nodes: Vec<String>,
+        reservation_holder: Uuid,
         must_complete_by: DateTime<Utc>,
     },
-    /// Allocation cannot be placed (insufficient resources, constraints, etc.)
-    Defer {
-        allocation_id: AllocId,
-        reason: String,
-    },
+    /// Job cannot be placed (insufficient resources, constraints, etc.)
+    Defer { allocation_id: Uuid, reason: String },
 }
 
 impl PlacementDecision {
-    pub fn allocation_id(&self) -> AllocId {
+    pub fn allocation_id(&self) -> Uuid {
         match self {
             PlacementDecision::Place { allocation_id, .. }
             | PlacementDecision::Preempt { allocation_id, .. }
@@ -87,7 +85,6 @@ impl SchedulingResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     #[test]
     fn placement_decision_variants() {
@@ -152,7 +149,6 @@ mod tests {
             ],
         };
 
-        // placed() includes both Place and Backfill
         assert_eq!(result.placed().len(), 2);
         assert_eq!(result.preemptions().len(), 1);
         assert_eq!(result.deferred().len(), 1);

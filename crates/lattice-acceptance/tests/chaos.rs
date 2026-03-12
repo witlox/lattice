@@ -29,6 +29,7 @@ fn make_cycle_input(
         topology,
         data_readiness: HashMap::new(),
         energy_price: 0.5,
+        timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
     }
 }
 
@@ -163,7 +164,13 @@ async fn concurrent_cancel_no_orphans() {
     // without panicking or producing invalid output.
     let solver = KnapsackSolver::new(CostWeights::default());
     let ctx = lattice_scheduler::CostContext::default();
-    let result = solver.solve(&allocs, &nodes, &topology, &ctx);
+    let result = solver.solve(
+        &allocs,
+        &nodes,
+        &topology,
+        &ctx,
+        &lattice_scheduler::ResourceTimeline { events: vec![] },
+    );
 
     // All decisions should reference known allocation IDs
     let known_ids: HashSet<_> = allocs.iter().map(|a| a.id).collect();

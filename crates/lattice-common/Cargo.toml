@@ -9,6 +9,7 @@ description = "Shared types, configuration, and error handling for Lattice sched
 default = []
 federation = []
 accounting = []
+scheduler-core = ["dep:hpc-scheduler-core"]
 
 [dependencies]
 serde = { workspace = true }
@@ -25,6 +26,7 @@ config = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
+hpc-scheduler-core = { path = "../hpc-scheduler-core", optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -770,6 +770,7 @@ async fn scheduler_runs_cycle(world: &mut LatticeWorld) {
         topology: create_test_topology(1, world.nodes.len()),
         data_readiness: HashMap::new(),
         energy_price: 0.5,
+        timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
     };
 
     let result = run_cycle(&input, &weights);
@@ -1300,6 +1301,7 @@ async fn scheduler_runs_dag_cycle(world: &mut LatticeWorld) {
         topology: create_test_topology(1, world.nodes.len()),
         data_readiness: HashMap::new(),
         energy_price: 0.5,
+        timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
     };
 
     let result = run_cycle(&input, &weights);

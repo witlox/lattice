@@ -13,6 +13,8 @@ pub mod clients;
 pub mod config;
 pub mod error;
 pub mod proto;
+#[cfg(feature = "scheduler-core")]
+pub mod scheduler_core_impls;
 pub mod traits;
 pub mod tsdb_client;
 pub mod types;

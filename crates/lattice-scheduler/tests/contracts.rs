@@ -200,6 +200,7 @@ mod knapsack_contracts {
             topology,
             data_readiness: HashMap::new(),
             energy_price: 0.5,
+            timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
         }
     }
 

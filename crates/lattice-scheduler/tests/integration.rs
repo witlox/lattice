@@ -42,6 +42,7 @@ fn cycle_input(
         topology: create_test_topology(groups, nodes_per_group),
         data_readiness: HashMap::new(),
         energy_price: 0.5,
+        timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
     }
 }
 
@@ -710,6 +711,7 @@ fn cost_weights_drive_placement_order_across_cycle() {
         topology: create_test_topology(1, 2),
         data_readiness: HashMap::new(),
         energy_price: 0.5,
+        timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
     };
 
     let result = run_cycle(&input, &weights);
@@ -920,6 +922,7 @@ fn knapsack_conformant_nodes_preferred() {
         &nodes,
         &topology,
         &CostContext::default(),
+        &lattice_scheduler::ResourceTimeline { events: vec![] },
     );
 
     assert_eq!(result.placed().len(), 1);
@@ -980,6 +983,7 @@ fn knapsack_topology_aware_packing() {
         &nodes_g0,
         &topology,
         &CostContext::default(),
+        &lattice_scheduler::ResourceTimeline { events: vec![] },
     );
 
     assert_eq!(result.placed().len(), 1);

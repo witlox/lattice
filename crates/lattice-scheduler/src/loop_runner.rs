@@ -13,6 +13,7 @@ use tracing::{debug, error, info, warn};
 use crate::autoscaler::{Autoscaler, ScaleDecision};
 use crate::cycle::{run_cycle, CycleInput};
 use crate::placement::PlacementDecision;
+use crate::resource_timeline::TimelineConfig;
 
 /// Reads cluster state for the scheduler.
 #[async_trait::async_trait]
@@ -77,6 +78,8 @@ pub struct SchedulerLoopConfig {
     pub weights: CostWeights,
     /// Normalized energy price (0.0-1.0).
     pub energy_price: f64,
+    /// Resource timeline configuration for backfill scheduling.
+    pub timeline_config: TimelineConfig,
 }
 
 impl Default for SchedulerLoopConfig {
@@ -85,6 +88,7 @@ impl Default for SchedulerLoopConfig {
             tick_interval: Duration::from_secs(5),
             weights: CostWeights::default(),
             energy_price: 0.5,
+            timeline_config: TimelineConfig::default(),
         }
     }
 }
@@ -133,6 +137,7 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                 topology,
                 data_readiness: HashMap::new(),
                 energy_price: self.config.energy_price,
+                timeline_config: self.config.timeline_config.clone(),
             };
 
             let result = run_cycle(&input, &self.config.weights);
@@ -151,6 +156,30 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                         }
                         if let Err(e) = self.sink.set_running(*allocation_id).await {
                             error!(alloc_id = %allocation_id, error = %e, "Failed to set Running");
+                            continue;
+                        }
+                        placed_count += 1;
+                    }
+                    PlacementDecision::Backfill {
+                        allocation_id,
+                        nodes,
+                        reservation_holder,
+                        must_complete_by,
+                    } => {
+                        debug!(
+                            alloc_id = %allocation_id,
+                            nodes = nodes.len(),
+                            reservation_holder = %reservation_holder,
+                            must_complete_by = %must_complete_by,
+                            "Backfilling allocation"
+                        );
+                        if let Err(e) = self.sink.assign_nodes(*allocation_id, nodes.clone()).await
+                        {
+                            error!(alloc_id = %allocation_id, error = %e, "Failed to assign nodes for backfill");
+                            continue;
+                        }
+                        if let Err(e) = self.sink.set_running(*allocation_id).await {
+                            error!(alloc_id = %allocation_id, error = %e, "Failed to set Running for backfill");
                             continue;
                         }
                         placed_count += 1;
