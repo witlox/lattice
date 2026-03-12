@@ -50,7 +50,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Configuration
-config = "0.14"
+config = "0.15"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -65,23 +65,23 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 
 # HTTP (for REST gateway, storage API integration)
-reqwest = { version = "0.12", features = ["json"] }
-axum = "0.7"
+reqwest = { version = "0.13", features = ["json"] }
+axum = "0.8"
 
 # JWT / OIDC
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 
 # Metrics
-prometheus = "0.13"
+prometheus = "0.14"
 
 # GPU discovery (optional)
-nvml-wrapper = "0.10"
+nvml-wrapper = "0.12"
 
 # Hex encoding (CXI credentials)
 hex = "0.4"
 
 # Test cert generation
-rcgen = "0.13"
+rcgen = "0.14"
 
 # Testing
 proptest = "1"
