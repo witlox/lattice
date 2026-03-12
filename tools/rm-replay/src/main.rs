@@ -270,6 +270,7 @@ fn build_cost_context(
 
     CostContext {
         tenant_usage,
+        budget_utilization: HashMap::new(),
         backlog,
         energy_price,
         data_readiness,
@@ -277,6 +278,7 @@ fn build_cost_context(
         max_groups,
         now,
         memory_locality: HashMap::new(),
+        conformance_fitness: HashMap::new(),
     }
 }
 
