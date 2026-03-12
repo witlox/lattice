@@ -26,7 +26,8 @@ docker-compose.override.yml
 .Trash-*
 
 # Claude
-.claude/
+.claude/settings.local.json
+.claude/CLAUDE.md
 
 # IDE
 .idea/
