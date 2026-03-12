@@ -69,8 +69,8 @@ impl VniPool {
     /// Allocate the next available VNI. Returns None if pool is exhausted.
     pub fn allocate(&mut self, domain_key: &str) -> Option<u32> {
         for vni in self.start..=self.end {
-            if !self.allocated.contains_key(&vni) {
-                self.allocated.insert(vni, domain_key.to_string());
+            if let std::collections::hash_map::Entry::Vacant(e) = self.allocated.entry(vni) {
+                e.insert(domain_key.to_string());
                 return Some(vni);
             }
         }
