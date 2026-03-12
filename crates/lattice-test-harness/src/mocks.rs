@@ -597,6 +597,8 @@ mod tests {
             user: "test-user".into(),
             action: AuditAction::NodeClaim,
             details: serde_json::json!({"node": "x1000c0s0b0n0"}),
+            previous_hash: String::new(),
+            signature: String::new(),
         };
         log.record(entry).await.unwrap();
 

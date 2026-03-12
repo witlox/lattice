@@ -19,6 +19,9 @@ pub struct Heartbeat {
     pub issues: Vec<String>,
     pub running_allocations: u32,
     pub conformance_fingerprint: Option<String>,
+    /// Owner version for stale heartbeat rejection (ADV-06).
+    #[serde(default)]
+    pub owner_version: u64,
 }
 
 /// Generates heartbeats with monotonically increasing sequence numbers.
@@ -53,6 +56,7 @@ impl HeartbeatGenerator {
             issues,
             running_allocations,
             conformance_fingerprint,
+            owner_version: 0, // Updated by agent when ownership changes
         }
     }
 
@@ -209,6 +213,7 @@ mod tests {
             issues: vec![],
             running_allocations: 0,
             conformance_fingerprint: None,
+            owner_version: 0,
         };
 
         tracker.record(&hb);
@@ -229,6 +234,7 @@ mod tests {
             issues: vec![],
             running_allocations: 0,
             conformance_fingerprint: None,
+            owner_version: 0,
         };
 
         tracker.record(&hb);
@@ -268,6 +274,7 @@ mod tests {
             issues: vec![],
             running_allocations: 0,
             conformance_fingerprint: None,
+            owner_version: 0,
         };
         tracker.record(&hb);
         assert!(!tracker.is_timed_out(Utc::now()));

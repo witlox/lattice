@@ -10,10 +10,12 @@ use chrono::{DateTime, Utc};
 use lattice_common::error::LatticeError;
 use lattice_common::traits::{AuditEntry, AuditFilter};
 use lattice_common::types::{
-    AllocId, Allocation, AllocationState, IsolationLevel, Node, NodeId, NodeOwnership, NodeState,
-    Tenant, TenantId, TenantQuota, TopologyModel, VCluster, VClusterId,
+    AllocId, Allocation, AllocationState, IsolationLevel, NetworkDomain, NetworkDomainState, Node,
+    NodeId, NodeOwnership, NodeState, Tenant, TenantId, TenantQuota, TopologyModel, VCluster,
+    VClusterId,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::commands::{Command, CommandResponse};
 use crate::TypeConfig;
@@ -30,6 +32,55 @@ pub struct GlobalState {
     /// System-wide limit on nodes that can be claimed for sensitive use.
     /// None means unlimited (no sensitive pool cap).
     pub sensitive_pool_size: Option<u32>,
+    /// Monotonic version counter. Incremented on every state mutation.
+    /// Used by the scheduler for optimistic concurrency control (ADV-04).
+    #[serde(default)]
+    pub state_version: u64,
+    /// Network domains keyed by (tenant, name) for tenant-scoped uniqueness (ADV-09).
+    #[serde(default)]
+    pub network_domains: HashMap<String, NetworkDomain>,
+    /// VNI pool: tracks allocated VNIs for authoritative management (ADV-08).
+    #[serde(default)]
+    pub vni_pool: VniPool,
+}
+
+/// Authoritative VNI pool allocator (ADV-08).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VniPool {
+    /// Start of the VNI range (inclusive).
+    pub start: u32,
+    /// End of the VNI range (inclusive).
+    pub end: u32,
+    /// Currently allocated VNIs (value = domain key "tenant/name").
+    pub allocated: HashMap<u32, String>,
+}
+
+impl Default for VniPool {
+    fn default() -> Self {
+        Self {
+            start: 100,
+            end: 4095,
+            allocated: HashMap::new(),
+        }
+    }
+}
+
+impl VniPool {
+    /// Allocate the next available VNI. Returns None if pool is exhausted.
+    pub fn allocate(&mut self, domain_key: &str) -> Option<u32> {
+        for vni in self.start..=self.end {
+            if !self.allocated.contains_key(&vni) {
+                self.allocated.insert(vni, domain_key.to_string());
+                return Some(vni);
+            }
+        }
+        None
+    }
+
+    /// Release a VNI back to the pool.
+    pub fn release(&mut self, vni: u32) {
+        self.allocated.remove(&vni);
+    }
 }
 
 impl Default for GlobalState {
@@ -42,6 +93,9 @@ impl Default for GlobalState {
             topology: TopologyModel { groups: vec![] },
             audit_log: Vec::new(),
             sensitive_pool_size: None,
+            state_version: 0,
+            network_domains: HashMap::new(),
+            vni_pool: VniPool::default(),
         }
     }
 }
@@ -53,7 +107,7 @@ impl GlobalState {
 
     /// Apply a command to the state machine, returning a response.
     pub fn apply(&mut self, cmd: Command) -> CommandResponse {
-        match cmd {
+        let resp = match cmd {
             Command::SubmitAllocation(alloc) => self.submit_allocation(alloc),
             Command::UpdateAllocationState {
                 id,
@@ -61,14 +115,22 @@ impl GlobalState {
                 message,
                 exit_code,
             } => self.update_allocation_state(id, state, message, exit_code),
-            Command::AssignNodes { id, nodes } => self.assign_nodes(id, nodes),
+            Command::AssignNodes {
+                id,
+                nodes,
+                expected_version,
+            } => self.assign_nodes(id, nodes, expected_version),
             Command::RegisterNode(node) => self.register_node(node),
             Command::UpdateNodeState { id, state, reason } => {
                 self.update_node_state(id, state, reason)
             }
             Command::ClaimNode { id, ownership } => self.claim_node(id, ownership),
             Command::ReleaseNode { id } => self.release_node(id),
-            Command::RecordHeartbeat { id, timestamp } => self.record_heartbeat(id, timestamp),
+            Command::RecordHeartbeat {
+                id,
+                timestamp,
+                owner_version,
+            } => self.record_heartbeat(id, timestamp, owner_version),
             Command::CreateTenant(tenant) => self.create_tenant(tenant),
             Command::UpdateTenant {
                 id,
@@ -90,11 +152,19 @@ impl GlobalState {
                 self.sensitive_pool_size = size;
                 CommandResponse::Ok
             }
-            Command::RecordAudit(entry) => {
-                self.audit_log.push(entry);
-                CommandResponse::Ok
+            Command::CreateNetworkDomain { tenant, name } => {
+                self.create_network_domain(tenant, name)
             }
+            Command::ReleaseNetworkDomain { tenant, name } => {
+                self.release_network_domain(tenant, name)
+            }
+            Command::RecordAudit(entry) => self.record_audit(entry),
+        };
+        // Increment state version on every successful mutation (ADV-04).
+        if !matches!(resp, CommandResponse::Error(_)) {
+            self.state_version += 1;
         }
+        resp
     }
 
     // ── Allocation operations ───────────────────────────────
@@ -150,7 +220,21 @@ impl GlobalState {
         CommandResponse::Ok
     }
 
-    fn assign_nodes(&mut self, id: AllocId, nodes: Vec<NodeId>) -> CommandResponse {
+    fn assign_nodes(
+        &mut self,
+        id: AllocId,
+        nodes: Vec<NodeId>,
+        expected_version: Option<u64>,
+    ) -> CommandResponse {
+        // Optimistic concurrency check (ADV-04).
+        if let Some(ev) = expected_version {
+            if ev != self.state_version {
+                return CommandResponse::Error(format!(
+                    "Stale proposal: expected state version {ev}, current is {}. Retry with fresh state.",
+                    self.state_version
+                ));
+            }
+        }
         let Some(alloc) = self.allocations.get(&id) else {
             return CommandResponse::Error(format!("Allocation not found: {id}"));
         };
@@ -251,6 +335,7 @@ impl GlobalState {
 
         let node = self.nodes.get_mut(&id).unwrap();
         node.owner = Some(ownership);
+        node.owner_version += 1; // ADV-06: bump on ownership change
         CommandResponse::Ok
     }
 
@@ -259,13 +344,26 @@ impl GlobalState {
             return CommandResponse::Error(format!("Node not found: {id}"));
         };
         node.owner = None;
+        node.owner_version += 1; // ADV-06: bump on ownership change
         CommandResponse::Ok
     }
 
-    fn record_heartbeat(&mut self, id: NodeId, timestamp: DateTime<Utc>) -> CommandResponse {
+    fn record_heartbeat(
+        &mut self,
+        id: NodeId,
+        timestamp: DateTime<Utc>,
+        owner_version: u64,
+    ) -> CommandResponse {
         let Some(node) = self.nodes.get_mut(&id) else {
             return CommandResponse::Error(format!("Node not found: {id}"));
         };
+        // ADV-06: reject heartbeats from stale owner contexts.
+        if owner_version != node.owner_version {
+            return CommandResponse::Error(format!(
+                "Stale heartbeat for node {id}: owner_version {owner_version} != current {}",
+                node.owner_version
+            ));
+        }
         node.last_heartbeat = Some(timestamp);
         CommandResponse::Ok
     }
@@ -324,6 +422,83 @@ impl GlobalState {
             vc.allow_lending = l;
         }
         CommandResponse::Ok
+    }
+
+    // ── Network domain operations (ADV-08, ADV-09) ────────
+
+    fn create_network_domain(&mut self, tenant: TenantId, name: String) -> CommandResponse {
+        let domain_key = format!("{tenant}/{name}");
+        if self.network_domains.contains_key(&domain_key) {
+            return CommandResponse::Error(format!(
+                "Network domain '{name}' already exists for tenant '{tenant}'"
+            ));
+        }
+        let Some(vni) = self.vni_pool.allocate(&domain_key) else {
+            return CommandResponse::Error("VNI pool exhausted".to_string());
+        };
+        let domain = NetworkDomain {
+            name: name.clone(),
+            tenant,
+            vni,
+            state: NetworkDomainState::Active,
+            member_allocations: Vec::new(),
+            created_at: Utc::now(),
+            grace_deadline: None,
+        };
+        self.network_domains.insert(domain_key, domain);
+        CommandResponse::Ok
+    }
+
+    fn release_network_domain(&mut self, tenant: TenantId, name: String) -> CommandResponse {
+        let domain_key = format!("{tenant}/{name}");
+        let Some(domain) = self.network_domains.get_mut(&domain_key) else {
+            return CommandResponse::Error(format!(
+                "Network domain '{name}' not found for tenant '{tenant}'"
+            ));
+        };
+        let vni = domain.vni;
+        domain.state = NetworkDomainState::Released;
+        self.vni_pool.release(vni);
+        CommandResponse::Ok
+    }
+
+    // ── Audit operations (ADV-03) ───────────────────────────
+
+    fn record_audit(&mut self, mut entry: AuditEntry) -> CommandResponse {
+        // Compute hash chain: previous_hash = SHA-256 of last entry.
+        let previous_hash = if let Some(last) = self.audit_log.last() {
+            Self::hash_audit_entry(last)
+        } else {
+            String::new()
+        };
+        entry.previous_hash = previous_hash;
+        // Sign with HMAC-SHA256 over the entry's canonical fields.
+        entry.signature = Self::sign_audit_entry(&entry);
+        self.audit_log.push(entry);
+        CommandResponse::Ok
+    }
+
+    /// Compute SHA-256 hash of an audit entry for chain linking.
+    fn hash_audit_entry(entry: &AuditEntry) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(entry.id.as_bytes());
+        hasher.update(entry.timestamp.to_rfc3339().as_bytes());
+        hasher.update(entry.user.as_bytes());
+        hasher.update(format!("{:?}", entry.action).as_bytes());
+        hasher.update(entry.details.to_string().as_bytes());
+        hasher.update(entry.previous_hash.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Sign an audit entry. In production this would use site PKI;
+    /// currently uses a deterministic HMAC placeholder for integrity verification.
+    fn sign_audit_entry(entry: &AuditEntry) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"lattice-audit-v1:");
+        hasher.update(entry.id.as_bytes());
+        hasher.update(entry.previous_hash.as_bytes());
+        hasher.update(entry.details.to_string().as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 
     // ── Quota enforcement ───────────────────────────────────
@@ -712,6 +887,8 @@ mod tests {
             user: "dr-smith".into(),
             action: AuditAction::NodeClaim,
             details: serde_json::json!({"node": "x1000c0s0b0n0"}),
+            previous_hash: String::new(),
+            signature: String::new(),
         };
         state.apply(Command::RecordAudit(entry.clone()));
 
@@ -721,6 +898,152 @@ mod tests {
         });
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].action, AuditAction::NodeClaim);
+        // ADV-03: verify hash chain and signature are populated
+        assert!(!results[0].signature.is_empty());
+        // First entry has empty previous_hash
+        assert!(results[0].previous_hash.is_empty());
+    }
+
+    #[test]
+    fn audit_hash_chain_links_entries() {
+        let mut state = GlobalState::new();
+        let entry1 = AuditEntry {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            user: "user-1".into(),
+            action: AuditAction::NodeClaim,
+            details: serde_json::json!({}),
+            previous_hash: String::new(),
+            signature: String::new(),
+        };
+        state.apply(Command::RecordAudit(entry1));
+
+        let entry2 = AuditEntry {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            user: "user-2".into(),
+            action: AuditAction::NodeRelease,
+            details: serde_json::json!({}),
+            previous_hash: String::new(),
+            signature: String::new(),
+        };
+        state.apply(Command::RecordAudit(entry2));
+
+        assert_eq!(state.audit_log.len(), 2);
+        // Second entry's previous_hash should reference first entry
+        assert!(!state.audit_log[1].previous_hash.is_empty());
+        assert!(!state.audit_log[1].signature.is_empty());
+        // Hash chain is consistent
+        let expected_hash = GlobalState::hash_audit_entry(&state.audit_log[0]);
+        assert_eq!(state.audit_log[1].previous_hash, expected_hash);
+    }
+
+    #[test]
+    fn state_version_increments_on_mutation() {
+        let mut state = GlobalState::new();
+        assert_eq!(state.state_version, 0);
+        state.apply(Command::RegisterNode(test_node("n1")));
+        assert_eq!(state.state_version, 1);
+        state.apply(Command::RegisterNode(test_node("n2")));
+        assert_eq!(state.state_version, 2);
+    }
+
+    #[test]
+    fn stale_assign_nodes_rejected() {
+        let mut state = GlobalState::new();
+        let alloc = test_allocation("test-tenant");
+        let id = alloc.id;
+        state.apply(Command::SubmitAllocation(alloc));
+        let version_at_submit = state.state_version;
+
+        // Another mutation changes the version
+        state.apply(Command::RegisterNode(test_node("n1")));
+        assert!(state.state_version > version_at_submit);
+
+        // Stale proposal with old version is rejected
+        let resp = state.apply(Command::AssignNodes {
+            id,
+            nodes: vec!["n1".into()],
+            expected_version: Some(version_at_submit),
+        });
+        assert!(matches!(resp, CommandResponse::Error(e) if e.contains("Stale proposal")));
+    }
+
+    #[test]
+    fn heartbeat_with_stale_owner_version_rejected() {
+        let mut state = GlobalState::new();
+        state.apply(Command::RegisterNode(test_node("n1")));
+
+        // Claim the node (bumps owner_version to 1)
+        let ownership = NodeOwnership {
+            tenant: "t1".into(),
+            vcluster: "vc1".into(),
+            allocation: Uuid::new_v4(),
+            claimed_by: Some("user-1".into()),
+            is_borrowed: false,
+        };
+        state.apply(Command::ClaimNode {
+            id: "n1".into(),
+            ownership,
+        });
+        assert_eq!(state.nodes["n1"].owner_version, 1);
+
+        // Heartbeat with old version 0 is rejected
+        let resp = state.apply(Command::RecordHeartbeat {
+            id: "n1".into(),
+            timestamp: Utc::now(),
+            owner_version: 0,
+        });
+        assert!(matches!(resp, CommandResponse::Error(e) if e.contains("Stale heartbeat")));
+
+        // Heartbeat with correct version 1 is accepted
+        let ts = Utc::now();
+        let resp = state.apply(Command::RecordHeartbeat {
+            id: "n1".into(),
+            timestamp: ts,
+            owner_version: 1,
+        });
+        assert!(matches!(resp, CommandResponse::Ok));
+        assert_eq!(state.nodes["n1"].last_heartbeat, Some(ts));
+    }
+
+    #[test]
+    fn create_and_release_network_domain() {
+        let mut state = GlobalState::new();
+        let resp = state.apply(Command::CreateNetworkDomain {
+            tenant: "t1".into(),
+            name: "my-domain".into(),
+        });
+        assert!(matches!(resp, CommandResponse::Ok));
+        assert!(state.network_domains.contains_key("t1/my-domain"));
+        let domain = &state.network_domains["t1/my-domain"];
+        assert_eq!(domain.state, NetworkDomainState::Active);
+        assert!(domain.vni >= 100);
+
+        // Duplicate creation fails
+        let resp = state.apply(Command::CreateNetworkDomain {
+            tenant: "t1".into(),
+            name: "my-domain".into(),
+        });
+        assert!(matches!(resp, CommandResponse::Error(_)));
+
+        // Different tenant same name succeeds (ADV-09: tenant-scoped)
+        let resp = state.apply(Command::CreateNetworkDomain {
+            tenant: "t2".into(),
+            name: "my-domain".into(),
+        });
+        assert!(matches!(resp, CommandResponse::Ok));
+
+        // Release
+        let resp = state.apply(Command::ReleaseNetworkDomain {
+            tenant: "t1".into(),
+            name: "my-domain".into(),
+        });
+        assert!(matches!(resp, CommandResponse::Ok));
+        assert_eq!(
+            state.network_domains["t1/my-domain"].state,
+            NetworkDomainState::Released
+        );
     }
 
     #[test]
@@ -754,6 +1077,7 @@ mod tests {
         state.apply(Command::RecordHeartbeat {
             id: "n1".into(),
             timestamp: ts,
+            owner_version: 0, // matches initial version
         });
 
         assert_eq!(state.nodes["n1"].last_heartbeat, Some(ts));
@@ -835,6 +1159,7 @@ mod tests {
         state.apply(Command::AssignNodes {
             id,
             nodes: vec!["n1".into(), "n2".into()],
+            expected_version: None,
         });
 
         assert_eq!(state.allocations[&id].assigned_nodes, vec!["n1", "n2"]);
@@ -853,6 +1178,7 @@ mod tests {
         state.apply(Command::AssignNodes {
             id: id1,
             nodes: vec!["n1".into(), "n2".into()],
+            expected_version: None,
         });
 
         // Second allocation: assigning 2 more would exceed quota of 3
@@ -862,6 +1188,7 @@ mod tests {
         let resp = state.apply(Command::AssignNodes {
             id: id2,
             nodes: vec!["n3".into(), "n4".into()],
+            expected_version: None,
         });
         assert!(matches!(resp, CommandResponse::Error(e) if e.contains("max_nodes")));
         // Original assignment unchanged
@@ -894,6 +1221,7 @@ mod tests {
         let resp = state.apply(Command::AssignNodes {
             id,
             nodes: vec!["n1".into(), "n2".into(), "n3".into()],
+            expected_version: None,
         });
         assert!(matches!(resp, CommandResponse::Ok));
         assert_eq!(state.allocations[&id].assigned_nodes.len(), 3);

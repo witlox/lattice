@@ -24,6 +24,9 @@ pub enum Command {
     AssignNodes {
         id: AllocId,
         nodes: Vec<NodeId>,
+        /// State version the scheduler read when making this proposal (ADV-04).
+        /// If provided and stale, the proposal is rejected.
+        expected_version: Option<u64>,
     },
 
     // ── Node commands ───────────────────────────────────────
@@ -43,6 +46,10 @@ pub enum Command {
     RecordHeartbeat {
         id: NodeId,
         timestamp: DateTime<Utc>,
+        /// Owner version the node agent believes is current (ADV-06).
+        /// Heartbeats with stale versions are rejected to prevent
+        /// post-claim stale health records.
+        owner_version: u64,
     },
 
     // ── Tenant commands ─────────────────────────────────────
@@ -70,6 +77,18 @@ pub enum Command {
     /// None removes the limit.
     SetSensitivePoolSize(Option<u32>),
 
+    // ── Network domain commands (ADV-08, ADV-09) ──────────
+    /// Create a network domain with an authoritative VNI allocation.
+    CreateNetworkDomain {
+        tenant: TenantId,
+        name: String,
+    },
+    /// Release a network domain and return VNI to the pool.
+    ReleaseNetworkDomain {
+        tenant: TenantId,
+        name: String,
+    },
+
     // ── Audit commands ──────────────────────────────────────
     RecordAudit(AuditEntry),
 }
@@ -81,7 +100,7 @@ impl fmt::Display for Command {
             Command::UpdateAllocationState { id, state, .. } => {
                 write!(f, "UpdateAllocationState({id}, {state:?})")
             }
-            Command::AssignNodes { id, nodes } => {
+            Command::AssignNodes { id, nodes, .. } => {
                 write!(f, "AssignNodes({id}, {} nodes)", nodes.len())
             }
             Command::RegisterNode(n) => write!(f, "RegisterNode({})", n.id),
@@ -91,6 +110,12 @@ impl fmt::Display for Command {
             Command::ClaimNode { id, .. } => write!(f, "ClaimNode({id})"),
             Command::ReleaseNode { id } => write!(f, "ReleaseNode({id})"),
             Command::RecordHeartbeat { id, .. } => write!(f, "RecordHeartbeat({id})"),
+            Command::CreateNetworkDomain { tenant, name } => {
+                write!(f, "CreateNetworkDomain({tenant}/{name})")
+            }
+            Command::ReleaseNetworkDomain { tenant, name } => {
+                write!(f, "ReleaseNetworkDomain({tenant}/{name})")
+            }
             Command::CreateTenant(t) => write!(f, "CreateTenant({})", t.id),
             Command::UpdateTenant { id, .. } => write!(f, "UpdateTenant({id})"),
             Command::CreateVCluster(vc) => write!(f, "CreateVCluster({})", vc.id),

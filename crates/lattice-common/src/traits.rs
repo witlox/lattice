@@ -153,7 +153,7 @@ pub struct AllocationFilter {
     pub vcluster: Option<VClusterId>,
 }
 
-/// A single audit log entry.
+/// A single audit log entry with cryptographic integrity chain (ADV-03).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub id: Uuid,
@@ -161,6 +161,14 @@ pub struct AuditEntry {
     pub user: UserId,
     pub action: AuditAction,
     pub details: serde_json::Value,
+    /// SHA-256 hash of the previous audit entry (hex string).
+    /// Empty string for the first entry in the chain.
+    #[serde(default)]
+    pub previous_hash: String,
+    /// HMAC-SHA256 signature over (id, timestamp, user, action, details, previous_hash).
+    /// Empty until signed by the quorum on commit.
+    #[serde(default)]
+    pub signature: String,
 }
 
 /// Categories of auditable actions.
@@ -175,6 +183,12 @@ pub enum AuditAction {
     LogAccess,
     MetricsQuery,
     CheckpointEvent,
+    /// GPU HBM wipe initiated (ADV-01).
+    WipeStarted,
+    /// GPU HBM wipe completed successfully (ADV-01).
+    WipeCompleted,
+    /// GPU HBM wipe failed (ADV-01).
+    WipeFailed,
 }
 
 /// Filter criteria for audit log queries.

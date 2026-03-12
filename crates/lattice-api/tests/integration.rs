@@ -1386,6 +1386,8 @@ async fn rest_audit_returns_entries() {
         user: "admin".into(),
         action: lattice_common::traits::AuditAction::NodeClaim,
         details: serde_json::json!({"node": "n1"}),
+        previous_hash: String::new(),
+        signature: String::new(),
     };
     audit_log.record(entry).await.unwrap();
 

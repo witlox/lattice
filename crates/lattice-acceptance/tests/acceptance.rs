@@ -420,6 +420,8 @@ async fn user_claims_node(world: &mut LatticeWorld, user: String, node_idx: usiz
                 user: user.clone(),
                 action: AuditAction::NodeClaim,
                 details: serde_json::json!({"node": node_id}),
+                previous_hash: String::new(),
+                signature: String::new(),
             };
             world.audit.record(entry).await.unwrap();
             world.last_error = None;

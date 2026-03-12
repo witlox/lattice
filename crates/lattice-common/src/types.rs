@@ -76,6 +76,11 @@ pub struct Allocation {
     pub preempted_count: u32,
     /// Whether to resume from checkpoint on next scheduling
     pub resume_from_checkpoint: bool,
+    /// Whether this allocation requires sensitive workload isolation.
+    /// Sensitive allocations get dedicated nodes, encrypted storage, audit logging,
+    /// and single-session attach limits (INV-C2).
+    #[serde(default)]
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -521,6 +526,11 @@ pub struct Node {
     pub conformance_fingerprint: Option<String>,
     /// Last heartbeat received from this node's agent
     pub last_heartbeat: Option<DateTime<Utc>>,
+    /// Monotonic version counter for ownership changes.
+    /// Incremented on every ClaimNode/ReleaseNode. Heartbeats must carry
+    /// the current owner_version to be accepted (ADV-06).
+    #[serde(default)]
+    pub owner_version: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

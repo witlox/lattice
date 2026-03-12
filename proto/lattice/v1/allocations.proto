@@ -141,6 +141,9 @@ message AllocationSpec {
   // Requeue policy: "never", "on_node_failure", "always"
   string requeue_policy = 90;
   uint32 max_requeue = 91;
+
+  // Whether this allocation requires sensitive workload isolation
+  bool sensitive = 100;
 }
 
 message EnvironmentSpec {

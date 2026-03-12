@@ -63,6 +63,35 @@ pub fn allocation_from_proto(spec: &pb::AllocationSpec, user: &str) -> Result<Al
 
     let requeue_policy = requeue_policy_from_str(&spec.requeue_policy);
 
+    // ── Input validation (ADV-10, ADV-11, ADV-12) ──────────────
+
+    // ADV-11: Reject min_nodes=0 explicitly instead of silently clamping.
+    if let Some(ref r) = spec.resources {
+        if r.min_nodes == 0 {
+            return Err("min_nodes must be >= 1".to_string());
+        }
+    }
+
+    // ADV-10: Reject walltime <= 0 for bounded allocations.
+    if let Some(ref l) = spec.lifecycle {
+        let ltype = pb::lifecycle_spec::Type::try_from(l.r#type)
+            .unwrap_or(pb::lifecycle_spec::Type::Bounded);
+        if ltype == pb::lifecycle_spec::Type::Bounded {
+            if let Some(ref wt) = l.walltime {
+                if wt.seconds <= 0 {
+                    return Err("walltime must be > 0 for bounded allocations".to_string());
+                }
+            }
+        }
+        // ADV-12: Validate preemption_class 0-10.
+        if l.preemption_class > 10 {
+            return Err(format!(
+                "preemption_class must be 0-10, got {}",
+                l.preemption_class
+            ));
+        }
+    }
+
     Ok(Allocation {
         id,
         tenant: spec.tenant.clone(),
@@ -93,6 +122,7 @@ pub fn allocation_from_proto(spec: &pb::AllocationSpec, user: &str) -> Result<Al
         requeue_count: 0,
         preempted_count: 0,
         resume_from_checkpoint: false,
+        sensitive: spec.sensitive,
     })
 }
 
@@ -133,6 +163,7 @@ pub fn allocation_to_spec(alloc: &Allocation) -> pb::AllocationSpec {
         telemetry: Some(telemetry_to_proto(&alloc.telemetry_mode)),
         requeue_policy: requeue_policy_to_str(&alloc.requeue_policy).to_string(),
         max_requeue: alloc.max_requeue,
+        sensitive: alloc.sensitive,
     }
 }
 
@@ -297,13 +328,14 @@ fn default_environment() -> Environment {
 }
 
 fn resources_from_proto(r: &pb::ResourceSpec) -> ResourceRequest {
+    // ADV-11: min_nodes validated upstream; no silent clamping.
     let nodes = if r.max_nodes > 0 && r.max_nodes != r.min_nodes {
         NodeCount::Range {
-            min: r.min_nodes.max(1),
+            min: r.min_nodes,
             max: r.max_nodes,
         }
     } else {
-        NodeCount::Exact(r.min_nodes.max(1))
+        NodeCount::Exact(r.min_nodes)
     };
 
     ResourceRequest {

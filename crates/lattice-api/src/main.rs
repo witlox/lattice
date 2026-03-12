@@ -108,6 +108,7 @@ impl SchedulerCommandSink for QuorumCommandSink {
             .propose(lattice_quorum::QuorumCommand::AssignNodes {
                 id: alloc_id,
                 nodes,
+                expected_version: None,
             })
             .await?;
         match resp {

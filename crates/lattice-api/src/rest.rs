@@ -2134,6 +2134,8 @@ mod tests {
             user: "dr-smith".into(),
             action: lattice_common::traits::AuditAction::NodeClaim,
             details: serde_json::json!({"node": "x1000c0s0b0n0"}),
+            previous_hash: String::new(),
+            signature: String::new(),
         };
         audit_log.record(entry).await.unwrap();
         let nodes = create_node_batch(3, 0);

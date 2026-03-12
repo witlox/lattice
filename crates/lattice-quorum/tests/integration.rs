@@ -222,6 +222,8 @@ async fn audit_log_append_and_query() {
         user: "dr-smith".into(),
         action: AuditAction::NodeClaim,
         details: serde_json::json!({"node": "x1000c0s0b0n0"}),
+        previous_hash: String::new(),
+        signature: String::new(),
     };
     let entry2 = AuditEntry {
         id: Uuid::new_v4(),
@@ -229,6 +231,8 @@ async fn audit_log_append_and_query() {
         user: "dr-jones".into(),
         action: AuditAction::NodeRelease,
         details: serde_json::json!({"node": "x1000c0s0b0n1"}),
+        previous_hash: String::new(),
+        signature: String::new(),
     };
     let entry3 = AuditEntry {
         id: Uuid::new_v4(),
@@ -236,6 +240,8 @@ async fn audit_log_append_and_query() {
         user: "dr-smith".into(),
         action: AuditAction::NodeRelease,
         details: serde_json::json!({"node": "x1000c0s0b0n0"}),
+        previous_hash: String::new(),
+        signature: String::new(),
     };
 
     client.record(entry1).await.unwrap();
@@ -384,6 +390,7 @@ async fn node_registration_and_heartbeat() {
         .propose(commands::Command::RecordHeartbeat {
             id: "x2000c0s1b0n0".into(),
             timestamp: hb_time,
+            owner_version: 0,
         })
         .await
         .unwrap();
@@ -399,6 +406,7 @@ async fn node_registration_and_heartbeat() {
         .propose(commands::Command::RecordHeartbeat {
             id: "x2000c0s1b0n0".into(),
             timestamp: hb_time2,
+            owner_version: 0,
         })
         .await
         .unwrap();

@@ -80,6 +80,116 @@ impl SensitiveWiper for NoopSensitiveWiper {
     }
 }
 
+/// GPU-aware sensitive wiper that clears GPU HBM before node reuse (ADV-01).
+///
+/// Feature-gated: uses `nvidia-smi --gpu-reset` for NVIDIA GPUs and
+/// `rocm-smi --resetgpu` for AMD GPUs. Falls back to error if neither
+/// vendor tool is available and GPUs are present.
+pub struct GpuSensitiveWiper {
+    /// GPU vendor detected on this node.
+    pub vendor: GpuVendor,
+}
+
+/// GPU vendor for wipe command selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuVendor {
+    None,
+    Nvidia,
+    Amd,
+}
+
+impl GpuSensitiveWiper {
+    pub fn new(vendor: GpuVendor) -> Self {
+        Self { vendor }
+    }
+
+    /// Detect GPU vendor from environment.
+    pub fn detect() -> Self {
+        // Check for NVIDIA first (nvidia-smi), then AMD (rocm-smi).
+        if std::path::Path::new("/usr/bin/nvidia-smi").exists() || which("nvidia-smi").is_some() {
+            return Self::new(GpuVendor::Nvidia);
+        }
+        if std::path::Path::new("/opt/rocm/bin/rocm-smi").exists() || which("rocm-smi").is_some() {
+            return Self::new(GpuVendor::Amd);
+        }
+        Self::new(GpuVendor::None)
+    }
+}
+
+/// Simple which(1) equivalent — checks PATH for an executable.
+fn which(cmd: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let full = dir.join(cmd);
+            if full.is_file() {
+                Some(full)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+#[async_trait]
+impl SensitiveWiper for GpuSensitiveWiper {
+    async fn wipe(&self, alloc_id: AllocId) -> Result<(), String> {
+        match self.vendor {
+            GpuVendor::None => {
+                tracing::info!(alloc_id = %alloc_id, "No GPUs detected, skipping GPU HBM wipe");
+                Ok(())
+            }
+            GpuVendor::Nvidia => {
+                tracing::info!(alloc_id = %alloc_id, "Wiping NVIDIA GPU HBM via nvidia-smi --gpu-reset");
+                #[cfg(target_os = "linux")]
+                {
+                    let output = tokio::process::Command::new("nvidia-smi")
+                        .args(["--gpu-reset"])
+                        .output()
+                        .await
+                        .map_err(|e| format!("Failed to execute nvidia-smi --gpu-reset: {e}"))?;
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Err(format!(
+                            "nvidia-smi --gpu-reset failed (exit {}): {stderr}",
+                            output.status
+                        ));
+                    }
+                    tracing::info!(alloc_id = %alloc_id, "NVIDIA GPU HBM wipe completed");
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    tracing::warn!(alloc_id = %alloc_id, "GPU wipe skipped: not on Linux");
+                }
+                Ok(())
+            }
+            GpuVendor::Amd => {
+                tracing::info!(alloc_id = %alloc_id, "Wiping AMD GPU HBM via rocm-smi --resetgpu");
+                #[cfg(target_os = "linux")]
+                {
+                    let output = tokio::process::Command::new("rocm-smi")
+                        .args(["--resetgpu"])
+                        .output()
+                        .await
+                        .map_err(|e| format!("Failed to execute rocm-smi --resetgpu: {e}"))?;
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Err(format!(
+                            "rocm-smi --resetgpu failed (exit {}): {stderr}",
+                            output.status
+                        ));
+                    }
+                    tracing::info!(alloc_id = %alloc_id, "AMD GPU HBM wipe completed");
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    tracing::warn!(alloc_id = %alloc_id, "GPU wipe skipped: not on Linux");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Runs the epilogue pipeline for an allocation.
 pub struct EpiloguePipeline {
     config: EpilogueConfig,
@@ -462,6 +572,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.exit_status, ExitStatus::Code(42));
+    }
+
+    #[tokio::test]
+    async fn gpu_wiper_no_gpus_succeeds() {
+        let wiper = GpuSensitiveWiper::new(GpuVendor::None);
+        let result = wiper.wipe(uuid::Uuid::new_v4()).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

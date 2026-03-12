@@ -23,6 +23,7 @@ pub struct AllocationBuilder {
     tags: HashMap<String, String>,
     depends_on: Vec<Dependency>,
     dag_id: Option<String>,
+    sensitive: bool,
 }
 
 impl AllocationBuilder {
@@ -45,6 +46,7 @@ impl AllocationBuilder {
             tags: HashMap::new(),
             depends_on: Vec::new(),
             dag_id: None,
+            sensitive: false,
         }
     }
 
@@ -108,6 +110,7 @@ impl AllocationBuilder {
     pub fn sensitive(mut self) -> Self {
         self.sign_required = true;
         self.scan_required = true;
+        self.sensitive = true;
         self.isolation_level = Some(IsolationLevel::Strict);
         self.tags
             .insert("workload_class".into(), "sensitive".into());
@@ -177,6 +180,7 @@ impl AllocationBuilder {
             requeue_count: 0,
             preempted_count: 0,
             resume_from_checkpoint: false,
+            sensitive: self.sensitive,
         }
     }
 }
@@ -295,6 +299,7 @@ impl NodeBuilder {
             owner: self.owner,
             conformance_fingerprint: self.conformance_fingerprint,
             last_heartbeat: Some(Utc::now()),
+            owner_version: 0,
         }
     }
 }

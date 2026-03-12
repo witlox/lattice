@@ -99,14 +99,18 @@ impl<R: DagStateReader, S: DagCommandSink> DagController<R, S> {
                 continue;
             }
 
+            // ADV-07: Mark as processed BEFORE calling unblock to prevent
+            // double-enqueue if async scheduling interleaves evaluation cycles.
+            self.processed.insert(alloc_id);
             debug!(alloc_id = %alloc_id, "Unblocking DAG successor");
             match self.sink.unblock_allocation(alloc_id).await {
                 Ok(()) => {
-                    self.processed.insert(alloc_id);
                     count += 1;
                 }
                 Err(e) => {
                     error!(alloc_id = %alloc_id, error = %e, "Failed to unblock allocation");
+                    // Remove from processed so it can be retried next cycle.
+                    self.processed.remove(&alloc_id);
                 }
             }
         }

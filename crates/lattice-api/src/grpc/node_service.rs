@@ -144,6 +144,7 @@ impl NodeService for LatticeNodeService {
             owner: None,
             conformance_fingerprint: None,
             last_heartbeat: None,
+            owner_version: 0,
         };
 
         // Propose through Raft if quorum is available
@@ -171,6 +172,7 @@ impl NodeService for LatticeNodeService {
                 .propose(lattice_quorum::QuorumCommand::RecordHeartbeat {
                     id: req.node_id.clone(),
                     timestamp: chrono::Utc::now(),
+                    owner_version: req.owner_version,
                 })
                 .await
                 .map_err(|e| Status::internal(format!("raft propose failed: {e}")))?;
@@ -351,6 +353,7 @@ mod tests {
                 running_allocations: 2,
                 conformance_fingerprint: "abc123".to_string(),
                 sequence: 1,
+                owner_version: 0,
             }))
             .await
             .unwrap();

@@ -42,6 +42,9 @@ pub enum AttachError {
     #[error("session {0} not found")]
     SessionNotFound(AttachSessionId),
 
+    #[error("sensitive allocation {0} already has an active session (INV-C2)")]
+    SensitiveSessionLimit(AllocId),
+
     #[error("PTY error: {0}")]
     Pty(#[from] PtyError),
 }
@@ -64,14 +67,20 @@ pub struct AttachSession {
     pub command: Option<String>,
 }
 
-/// Ownership lookup for allocations. The `AttachManager` needs to
-/// verify that the requesting user owns the allocation. This trait
-/// decouples the attach logic from how ownership is tracked.
+/// Ownership and sensitivity lookup for allocations. The `AttachManager`
+/// needs to verify that the requesting user owns the allocation and to
+/// enforce single-session limits on sensitive allocations (INV-C2).
 #[async_trait::async_trait]
 pub trait AllocationOwnerLookup: Send + Sync + std::fmt::Debug {
     /// Return the user who owns the given allocation, or None if
     /// the allocation is not found.
     async fn get_owner(&self, alloc_id: &AllocId) -> Option<UserId>;
+
+    /// Return whether the allocation is a sensitive workload.
+    /// Default: false (non-sensitive).
+    async fn is_sensitive(&self, _alloc_id: &AllocId) -> bool {
+        false
+    }
 }
 
 /// Manages active attach sessions on a node.
@@ -153,6 +162,19 @@ impl AttachManager {
                 alloc_id,
                 owner,
             });
+        }
+
+        // ADV-05: Sensitive allocations allow only one active session (INV-C2).
+        if self.owner_lookup.is_sensitive(&alloc_id).await {
+            let existing = self.sessions_for_allocation(&alloc_id).await;
+            if !existing.is_empty() {
+                warn!(
+                    alloc_id = %alloc_id,
+                    existing_sessions = existing.len(),
+                    "Rejecting attach: sensitive allocation already has active session"
+                );
+                return Err(AttachError::SensitiveSessionLimit(alloc_id));
+            }
         }
 
         // Open PTY session
@@ -312,17 +334,23 @@ impl AttachManager {
 #[derive(Debug)]
 pub struct MockOwnerLookup {
     owners: Mutex<HashMap<AllocId, UserId>>,
+    sensitive: Mutex<std::collections::HashSet<AllocId>>,
 }
 
 impl MockOwnerLookup {
     pub fn new() -> Self {
         Self {
             owners: Mutex::new(HashMap::new()),
+            sensitive: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
     pub async fn set_owner(&self, alloc_id: AllocId, user: UserId) {
         self.owners.lock().await.insert(alloc_id, user);
+    }
+
+    pub async fn set_sensitive(&self, alloc_id: AllocId) {
+        self.sensitive.lock().await.insert(alloc_id);
     }
 }
 
@@ -336,6 +364,10 @@ impl Default for MockOwnerLookup {
 impl AllocationOwnerLookup for MockOwnerLookup {
     async fn get_owner(&self, alloc_id: &AllocId) -> Option<UserId> {
         self.owners.lock().await.get(alloc_id).cloned()
+    }
+
+    async fn is_sensitive(&self, alloc_id: &AllocId) -> bool {
+        self.sensitive.lock().await.contains(alloc_id)
     }
 }
 
@@ -572,15 +604,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multiple_sessions_on_same_allocation() {
+    async fn multiple_sessions_on_non_sensitive_allocation() {
         let (mgr, alloc_id, _user, owner_lookup, _) = setup_with_running_alloc().await;
 
         // A second user (bob) also owns the allocation for this test
         let user2: UserId = "bob".to_string();
         owner_lookup.set_owner(alloc_id, user2.clone()).await;
 
-        // Alice attaches (will fail because ownership was overwritten to bob)
-        // Instead, let bob attach twice
+        // Non-sensitive: multiple sessions allowed
         let _session1 = mgr
             .attach(alloc_id, user2.clone(), None, TerminalSize::default())
             .await
@@ -604,6 +635,37 @@ mod tests {
         let detached = mgr.detach_all_for_allocation(&alloc_id).await;
         assert_eq!(detached.len(), 2);
         assert_eq!(mgr.active_session_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn sensitive_allocation_rejects_second_session() {
+        let (mgr, alloc_id, user, owner_lookup, _) = setup_with_running_alloc().await;
+
+        // Mark allocation as sensitive (ADV-05 / INV-C2)
+        owner_lookup.set_sensitive(alloc_id).await;
+
+        // First session succeeds
+        let _session1 = mgr
+            .attach(alloc_id, user.clone(), None, TerminalSize::default())
+            .await
+            .unwrap();
+
+        // Second session on sensitive allocation is rejected
+        let result = mgr
+            .attach(
+                alloc_id,
+                user.clone(),
+                Some("/bin/zsh".to_string()),
+                TerminalSize::default(),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            AttachError::SensitiveSessionLimit(_)
+        ));
+        assert_eq!(mgr.active_session_count().await, 1);
     }
 
     #[tokio::test]

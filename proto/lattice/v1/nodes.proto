@@ -159,6 +159,8 @@ message HeartbeatRequest {
   uint32 running_allocations = 4;
   string conformance_fingerprint = 5;
   uint64 sequence = 6;
+  // Owner version for stale heartbeat rejection (ADV-06)
+  uint64 owner_version = 7;
 }
 
 message HeartbeatResponse {

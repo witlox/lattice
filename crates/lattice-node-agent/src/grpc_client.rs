@@ -49,6 +49,7 @@ impl HeartbeatSink for GrpcHeartbeatSink {
             running_allocations: heartbeat.running_allocations,
             conformance_fingerprint: heartbeat.conformance_fingerprint.unwrap_or_default(),
             sequence: heartbeat.sequence,
+            owner_version: heartbeat.owner_version,
         };
 
         let mut client = self.client.clone();
@@ -295,6 +296,7 @@ fn node_from_status(status: pb::NodeStatus) -> Node {
         last_heartbeat: status.last_heartbeat.map(|ts| {
             chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default()
         }),
+        owner_version: 0,
     }
 }
 

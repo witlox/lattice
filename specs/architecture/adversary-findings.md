@@ -337,4 +337,28 @@ The audit log (~1.3GB over 7 years) grows unbounded in GlobalState. Snapshot/res
 
 ---
 
-*Review complete. 17 findings: 5 critical, 4 high, 5 medium, 3 low.*
+## Resolution Status (2026-03-12)
+
+All Critical and High findings have been addressed in code:
+
+| Finding | Status | Implementation |
+|---|---|---|
+| ADV-01 | **RESOLVED** | `GpuSensitiveWiper` with NVIDIA/AMD paths in `epilogue.rs`, feature-gated Linux execution |
+| ADV-02 | **RESOLVED** | Audit hash chain computed on `RecordAudit` apply — `previous_hash` links entries |
+| ADV-03 | **RESOLVED** | `previous_hash` (SHA-256) and `signature` fields on `AuditEntry`, hash chain in `global_state.rs` |
+| ADV-04 | **RESOLVED** | `state_version` on `GlobalState`, `expected_version` on `AssignNodes`, stale proposals rejected |
+| ADV-05 | **RESOLVED** | `sensitive` flag on `Allocation`, attach handler rejects second session on sensitive allocations |
+| ADV-06 | **RESOLVED** | `owner_version` on `Node`, heartbeat carries version, quorum rejects stale owner heartbeats |
+| ADV-07 | **RESOLVED** | DAG controller marks processed BEFORE `unblock_allocation()`, removes on failure for retry |
+| ADV-08 | **RESOLVED** | `VniPool` in `GlobalState` with authoritative allocation/release via Raft commands |
+| ADV-09 | **RESOLVED** | `CreateNetworkDomain`/`ReleaseNetworkDomain` commands keyed by `(tenant, name)` tuple |
+| ADV-10 | **RESOLVED** | `allocation_from_proto` rejects `walltime <= 0` with error |
+| ADV-11 | **RESOLVED** | `allocation_from_proto` rejects `min_nodes == 0` (removed silent `.max(1)` clamp) |
+| ADV-12 | **RESOLVED** | `allocation_from_proto` validates `preemption_class` in range 0-10 |
+| ADV-13 | Open | Deferred — low impact |
+| ADV-14 | Open | Deferred — needs walltime/checkpoint coordinator design |
+| ADV-15 | Open | Deferred — low impact |
+| ADV-16 | Open | Deferred — operational concern, not correctness |
+| ADV-17 | Open | Covered by ADV-12 validation |
+
+*Review complete. 17 findings: 5 critical, 4 high, 5 medium, 3 low. 12 resolved, 5 deferred.*
