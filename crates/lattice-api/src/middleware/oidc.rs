@@ -499,7 +499,8 @@ mod tests {
         let token = encode(&header, &claims, &encoding_key).unwrap();
 
         // Extract EC public key coordinates from SPKI DER for JWKS.
-        let spki_der = key_pair.public_key_der();
+        use rcgen::PublicKeyData;
+        let spki_der = key_pair.subject_public_key_info();
         let (x, y) = extract_ec_coordinates_from_spki(&spki_der);
 
         let jwks = serde_json::json!({

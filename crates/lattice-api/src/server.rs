@@ -369,7 +369,7 @@ mod tests {
     }
 
     fn generate_test_pki() -> TestPki {
-        use rcgen::{CertificateParams, IsCa, KeyPair};
+        use rcgen::{CertificateParams, Issuer, IsCa, KeyPair};
 
         // 1. Generate CA key pair and self-signed CA certificate.
         let ca_key = KeyPair::generate().expect("CA key generation");
@@ -382,8 +382,9 @@ mod tests {
         let server_key = KeyPair::generate().expect("server key generation");
         let server_params =
             CertificateParams::new(vec!["localhost".to_string()]).expect("server params");
+        let issuer = Issuer::from_params(&ca_params, &ca_key);
         let server_cert = server_params
-            .signed_by(&server_key, &ca_cert, &ca_key)
+            .signed_by(&server_key, &issuer)
             .expect("sign server cert");
 
         TestPki {
