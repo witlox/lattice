@@ -67,6 +67,9 @@ pub struct CostContext {
     pub now: DateTime<Utc>,
     /// Pre-computed memory locality scores per node (0.0-1.0)
     pub memory_locality: HashMap<NodeId, f64>,
+    /// Pre-computed conformance fitness per allocation (0.0-1.0).
+    /// Score = largest_conformance_group_size / requested_nodes.
+    pub conformance_fitness: HashMap<AllocId, f64>,
 }
 
 impl Default for CostContext {
@@ -81,6 +84,7 @@ impl Default for CostContext {
             max_groups: 1,
             now: Utc::now(),
             memory_locality: HashMap::new(),
+            conformance_fitness: HashMap::new(),
         }
     }
 }
@@ -108,9 +112,9 @@ impl CostEvaluator {
             + w.data_readiness * self.f5_data_readiness(alloc, ctx)
             + w.backlog * self.f6_backlog(ctx)
             + w.energy * self.f7_energy(ctx)
-            + w.checkpoint_efficiency * self.f8_checkpoint(alloc);
-        // f9 (conformance) is handled during node selection, not scoring
-        // Budget penalty is a multiplier: depleted budgets suppress the score
+            + w.checkpoint_efficiency * self.f8_checkpoint(alloc)
+            + w.conformance * self.f9_conformance(alloc, ctx);
+
         base * self.budget_penalty(alloc, ctx)
     }
 
@@ -259,17 +263,7 @@ impl CostEvaluator {
     /// Returns 1.0 (no penalty) when budget info is unavailable.
     pub fn budget_penalty(&self, alloc: &Allocation, ctx: &CostContext) -> f64 {
         match ctx.budget_utilization.get(&alloc.tenant) {
-            Some(bu) => {
-                let u = bu.fraction_used;
-                if u <= 0.8 {
-                    1.0
-                } else if u <= 1.0 {
-                    // Linear ramp: 1.0 at 0.8 → 0.2 at 1.0
-                    1.0 - 4.0 * (u - 0.8)
-                } else {
-                    0.05
-                }
-            }
+            Some(bu) => budget_penalty_curve(bu.fraction_used),
             None => 1.0,
         }
     }
@@ -290,6 +284,33 @@ impl CostEvaluator {
                 0.0
             }
         }
+    }
+
+    /// f₉: conformance_fitness — configuration homogeneity of candidate nodes.
+    /// Pre-computed per allocation and stored in `CostContext::conformance_fitness`.
+    /// Returns 0.5 (neutral) if not available.
+    pub fn f9_conformance(&self, alloc: &Allocation, ctx: &CostContext) -> f64 {
+        ctx.conformance_fitness
+            .get(&alloc.id)
+            .copied()
+            .unwrap_or(0.5)
+    }
+}
+
+/// Smooth budget penalty curve.
+///
+/// - u ≤ 0.8: 1.0 (no penalty)
+/// - 0.8 < u ≤ 1.2: smooth cosine ramp from 1.0 → 0.05
+/// - u > 1.2: 0.05 (floor)
+fn budget_penalty_curve(u: f64) -> f64 {
+    if u <= 0.8 {
+        1.0
+    } else if u <= 1.2 {
+        let t = (u - 0.8) / 0.4; // 0.0 at u=0.8, 1.0 at u=1.2
+        let cosine = (1.0 + (t * std::f64::consts::PI).cos()) / 2.0; // 1.0 → 0.0
+        0.05 + 0.95 * cosine // 1.0 → 0.05
+    } else {
+        0.05
     }
 }
 
@@ -700,35 +721,53 @@ mod tests {
     }
 
     #[test]
-    fn budget_penalty_at_90_percent_is_0_6() {
+    fn budget_penalty_at_90_percent_is_between() {
         let eval = CostEvaluator::new(CostWeights::default());
         let alloc = AllocationBuilder::new().tenant("t1").build();
         let mut ctx = default_ctx();
         ctx.budget_utilization
             .insert("t1".into(), BudgetUtilization { fraction_used: 0.9 });
-        // 1.0 - 4.0 * (0.9 - 0.8) = 1.0 - 0.4 = 0.6
-        assert!((eval.budget_penalty(&alloc, &ctx) - 0.6).abs() < 1e-10);
+        let penalty = eval.budget_penalty(&alloc, &ctx);
+        // Smooth cosine: at u=0.9 (t=0.25), should be between 0.5 and 1.0
+        assert!(penalty > 0.5 && penalty < 1.0, "penalty={penalty}");
     }
 
     #[test]
-    fn budget_penalty_at_100_percent_is_0_2() {
+    fn budget_penalty_at_100_percent_is_midpoint() {
         let eval = CostEvaluator::new(CostWeights::default());
         let alloc = AllocationBuilder::new().tenant("t1").build();
         let mut ctx = default_ctx();
         ctx.budget_utilization
             .insert("t1".into(), BudgetUtilization { fraction_used: 1.0 });
-        // 1.0 - 4.0 * (1.0 - 0.8) = 1.0 - 0.8 = 0.2
-        assert!((eval.budget_penalty(&alloc, &ctx) - 0.2).abs() < 1e-10);
+        let penalty = eval.budget_penalty(&alloc, &ctx);
+        // At u=1.0 (t=0.5), cosine midpoint: 0.05 + 0.95*0.5 = 0.525
+        assert!((penalty - 0.525).abs() < 1e-10, "penalty={penalty}");
     }
 
     #[test]
-    fn budget_penalty_over_100_percent_starvation() {
+    fn budget_penalty_over_120_percent_floor() {
         let eval = CostEvaluator::new(CostWeights::default());
         let alloc = AllocationBuilder::new().tenant("t1").build();
         let mut ctx = default_ctx();
         ctx.budget_utilization
             .insert("t1".into(), BudgetUtilization { fraction_used: 1.5 });
         assert!((eval.budget_penalty(&alloc, &ctx) - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn budget_penalty_smooth_monotonic() {
+        // Verify the curve is monotonically decreasing from 0.8 to 1.2
+        let points: Vec<f64> = (0..=10).map(|i| 0.8 + i as f64 * 0.04).collect();
+        let values: Vec<f64> = points.iter().map(|u| budget_penalty_curve(*u)).collect();
+        for i in 1..values.len() {
+            assert!(
+                values[i] <= values[i - 1] + 1e-10,
+                "not monotonic at u={}: {} > {}",
+                points[i],
+                values[i],
+                values[i - 1]
+            );
+        }
     }
 
     #[test]

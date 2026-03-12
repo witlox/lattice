@@ -68,6 +68,10 @@ pub struct CostContext {
     pub now: DateTime<Utc>,
     /// Pre-computed memory locality scores per node (0.0-1.0).
     pub memory_locality: HashMap<String, f64>,
+    /// Pre-computed conformance fitness per job (0.0-1.0).
+    /// Score = largest_conformance_group_size / requested_nodes.
+    /// 1.0 means all candidate nodes share the same configuration.
+    pub conformance_fitness: HashMap<uuid::Uuid, f64>,
 }
 
 impl Default for CostContext {
@@ -82,6 +86,7 @@ impl Default for CostContext {
             max_groups: 1,
             now: Utc::now(),
             memory_locality: HashMap::new(),
+            conformance_fitness: HashMap::new(),
         }
     }
 }
@@ -108,7 +113,8 @@ impl CostEvaluator {
             + w.data_readiness * self.f5_data_readiness(job, ctx)
             + w.backlog * self.f6_backlog(ctx)
             + w.energy * self.f7_energy(ctx)
-            + w.checkpoint_efficiency * self.f8_checkpoint(job);
+            + w.checkpoint_efficiency * self.f8_checkpoint(job)
+            + w.conformance * self.f9_conformance(job, ctx);
 
         base * self.budget_penalty(job, ctx)
     }
@@ -218,18 +224,19 @@ impl CostEvaluator {
     /// GPU-hours budget penalty.
     pub fn budget_penalty<J: Job>(&self, job: &J, ctx: &CostContext) -> f64 {
         match ctx.budget_utilization.get(job.tenant_id()) {
-            Some(bu) => {
-                let u = bu.fraction_used;
-                if u <= 0.8 {
-                    1.0
-                } else if u <= 1.0 {
-                    1.0 - 4.0 * (u - 0.8)
-                } else {
-                    0.05
-                }
-            }
+            Some(bu) => budget_penalty_curve(bu.fraction_used),
             None => 1.0,
         }
+    }
+
+    /// f₉: conformance_fitness — configuration homogeneity of candidate nodes.
+    /// Pre-computed per job and stored in `CostContext::conformance_fitness`.
+    /// Returns 0.5 (neutral) if not available.
+    pub fn f9_conformance<J: Job>(&self, job: &J, ctx: &CostContext) -> f64 {
+        ctx.conformance_fitness
+            .get(&job.id())
+            .copied()
+            .unwrap_or(0.5)
     }
 
     /// f₈: checkpoint_efficiency — fast checkpoint = more attractive.
@@ -239,6 +246,23 @@ impl CostEvaluator {
             CheckpointKind::Manual => 1.0 / (1.0 + 10.0),
             CheckpointKind::None => 0.0,
         }
+    }
+}
+
+/// Smooth budget penalty curve.
+///
+/// - u ≤ 0.8: 1.0 (no penalty)
+/// - 0.8 < u ≤ 1.2: smooth cosine ramp from 1.0 → 0.05
+/// - u > 1.2: 0.05 (floor)
+fn budget_penalty_curve(u: f64) -> f64 {
+    if u <= 0.8 {
+        1.0
+    } else if u <= 1.2 {
+        let t = (u - 0.8) / 0.4; // 0.0 at u=0.8, 1.0 at u=1.2
+        let cosine = (1.0 + (t * std::f64::consts::PI).cos()) / 2.0; // 1.0 → 0.0
+        0.05 + 0.95 * cosine // 1.0 → 0.05
+    } else {
+        0.05
     }
 }
 

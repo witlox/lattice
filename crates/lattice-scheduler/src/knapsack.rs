@@ -55,9 +55,9 @@ impl KnapsackSolver {
 
         // 2. Pass 1 — Primary placement (greedy assignment)
         for (alloc, _score) in &scored {
-            let requested = match alloc.resources.nodes {
-                NodeCount::Exact(n) => n,
-                NodeCount::Range { min, .. } => min,
+            let (min_nodes, max_nodes) = match alloc.resources.nodes {
+                NodeCount::Exact(n) => (n, n),
+                NodeCount::Range { min, max } => (min, max),
             };
 
             // Filter: only operational, unused nodes matching constraints
@@ -70,21 +70,34 @@ impl KnapsackSolver {
 
             let constrained = filter_by_constraints(&candidates, &alloc.resources.constraints);
 
-            if (constrained.len() as u32) < requested {
+            if (constrained.len() as u32) < min_nodes {
                 deferred_candidates.push(alloc);
                 continue;
             }
 
-            // 2a. Try conformance-aware selection first
-            let selected = select_conformant_nodes(requested, &constrained).or_else(|| {
-                // Fallback: topology-aware selection without strict conformance
-                select_nodes_topology_aware(
-                    requested,
-                    alloc.resources.constraints.topology.as_ref(),
-                    &constrained,
-                    topology,
-                )
-            });
+            // For moldable jobs, try to use as many nodes as possible (up to max)
+            let requested = (constrained.len() as u32).min(max_nodes).max(min_nodes);
+
+            // 2a. Try conformance-aware selection first.
+            // Sensitive allocations require hard conformance — no topology fallback.
+            let is_sensitive = alloc.lifecycle.preemption_class >= 10
+                || alloc
+                    .tags
+                    .get("workload_class")
+                    .is_some_and(|v| v == "sensitive");
+
+            let selected = if is_sensitive {
+                select_conformant_nodes(requested, &constrained)
+            } else {
+                select_conformant_nodes(requested, &constrained).or_else(|| {
+                    select_nodes_topology_aware(
+                        requested,
+                        alloc.resources.constraints.topology.as_ref(),
+                        &constrained,
+                        topology,
+                    )
+                })
+            };
 
             match selected {
                 Some(nodes) => {
@@ -142,9 +155,9 @@ impl KnapsackSolver {
                     continue;
                 }
 
-                let requested = match alloc.resources.nodes {
-                    NodeCount::Exact(n) => n,
-                    NodeCount::Range { min, .. } => min,
+                let (bf_min_nodes, bf_max_nodes) = match alloc.resources.nodes {
+                    NodeCount::Exact(n) => (n, n),
+                    NodeCount::Range { min, max } => (min, max),
                 };
 
                 let candidates: Vec<&Node> = available_nodes
@@ -156,18 +169,32 @@ impl KnapsackSolver {
 
                 let constrained = filter_by_constraints(&candidates, &alloc.resources.constraints);
 
-                if (constrained.len() as u32) < requested {
+                if (constrained.len() as u32) < bf_min_nodes {
                     continue;
                 }
 
-                let selected = select_conformant_nodes(requested, &constrained).or_else(|| {
-                    select_nodes_topology_aware(
-                        requested,
-                        alloc.resources.constraints.topology.as_ref(),
-                        &constrained,
-                        topology,
-                    )
-                });
+                let requested = (constrained.len() as u32)
+                    .min(bf_max_nodes)
+                    .max(bf_min_nodes);
+
+                let bf_sensitive = alloc.lifecycle.preemption_class >= 10
+                    || alloc
+                        .tags
+                        .get("workload_class")
+                        .is_some_and(|v| v == "sensitive");
+
+                let selected = if bf_sensitive {
+                    select_conformant_nodes(requested, &constrained)
+                } else {
+                    select_conformant_nodes(requested, &constrained).or_else(|| {
+                        select_nodes_topology_aware(
+                            requested,
+                            alloc.resources.constraints.topology.as_ref(),
+                            &constrained,
+                            topology,
+                        )
+                    })
+                };
 
                 if let Some(nodes) = selected {
                     for n in &nodes {

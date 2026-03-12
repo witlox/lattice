@@ -28,6 +28,8 @@ pub struct PreemptionConfig {
     /// Allocations from tenants above their base target share (in burst territory)
     /// are cheaper to preempt.
     pub tenant_usage: HashMap<TenantId, TenantUsage>,
+    /// Current time (for elapsed-time computation). Avoids hidden `Utc::now()` calls.
+    pub now: chrono::DateTime<chrono::Utc>,
 }
 
 impl Default for PreemptionConfig {
@@ -36,6 +38,7 @@ impl Default for PreemptionConfig {
             max_victims: 3,
             near_completion_threshold: 0.9,
             tenant_usage: HashMap::new(),
+            now: chrono::Utc::now(),
         }
     }
 }
@@ -134,7 +137,7 @@ fn preemption_cost(alloc: &Allocation, config: &PreemptionConfig) -> f64 {
             let nodes = alloc.assigned_nodes.len() as f64;
             let elapsed = alloc
                 .started_at
-                .map(|s| (chrono::Utc::now() - s).num_minutes() as f64)
+                .map(|s| (config.now - s).num_minutes() as f64)
                 .unwrap_or(0.0);
             nodes * elapsed
         }
@@ -165,7 +168,7 @@ fn remaining_walltime_value(alloc: &Allocation, config: &PreemptionConfig) -> f6
 
     let elapsed = alloc
         .started_at
-        .map(|s| (chrono::Utc::now() - s).num_minutes() as f64)
+        .map(|s| (config.now - s).num_minutes() as f64)
         .unwrap_or(0.0);
 
     if walltime_minutes > 0.0 {

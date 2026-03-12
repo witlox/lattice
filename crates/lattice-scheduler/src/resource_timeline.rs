@@ -46,12 +46,7 @@ impl ResourceTimeline {
     /// Only bounded allocations with a known `started_at` and positive walltime
     /// produce release events. Unbounded and reactive allocations block nodes
     /// indefinitely (no events). Events beyond `look_ahead` are excluded.
-    pub fn build(
-        running: &[Allocation],
-        _all_nodes: &[Node],
-        now: DateTime<Utc>,
-        look_ahead: chrono::Duration,
-    ) -> Self {
+    pub fn build(running: &[Allocation], now: DateTime<Utc>, look_ahead: chrono::Duration) -> Self {
         let horizon = now + look_ahead;
         let mut events = Vec::new();
 
@@ -158,7 +153,7 @@ mod tests {
     #[test]
     fn empty_running_produces_no_events() {
         let now = Utc::now();
-        let timeline = ResourceTimeline::build(&[], &[], now, chrono::Duration::hours(24));
+        let timeline = ResourceTimeline::build(&[], now, chrono::Duration::hours(24));
         assert!(timeline.events.is_empty());
     }
 
@@ -168,7 +163,6 @@ mod tests {
         let alloc = make_running(vec!["n1", "n2"], 4, 1); // 4h wall, started 1h ago → 3h left
         let timeline = ResourceTimeline::build(
             std::slice::from_ref(&alloc),
-            &[],
             now,
             chrono::Duration::hours(24),
         );
@@ -188,7 +182,7 @@ mod tests {
         alloc.started_at = Some(now - chrono::Duration::hours(1));
         alloc.assigned_nodes = vec!["n1".into(), "n2".into()];
 
-        let timeline = ResourceTimeline::build(&[alloc], &[], now, chrono::Duration::hours(24));
+        let timeline = ResourceTimeline::build(&[alloc], now, chrono::Duration::hours(24));
         assert!(timeline.events.is_empty());
     }
 
@@ -204,7 +198,7 @@ mod tests {
         unbounded.assigned_nodes = vec!["n2".into()];
 
         let timeline =
-            ResourceTimeline::build(&[bounded, unbounded], &[], now, chrono::Duration::hours(24));
+            ResourceTimeline::build(&[bounded, unbounded], now, chrono::Duration::hours(24));
         assert_eq!(timeline.events.len(), 1);
     }
 
@@ -218,7 +212,7 @@ mod tests {
         alloc.assigned_nodes = vec!["n1".into()];
         // started_at is None by default
 
-        let timeline = ResourceTimeline::build(&[alloc], &[], now, chrono::Duration::hours(24));
+        let timeline = ResourceTimeline::build(&[alloc], now, chrono::Duration::hours(24));
         assert!(timeline.events.is_empty());
     }
 
@@ -232,7 +226,7 @@ mod tests {
         alloc.started_at = Some(now - chrono::Duration::hours(1));
         alloc.assigned_nodes = vec!["n1".into()];
 
-        let timeline = ResourceTimeline::build(&[alloc], &[], now, chrono::Duration::hours(24));
+        let timeline = ResourceTimeline::build(&[alloc], now, chrono::Duration::hours(24));
         assert!(timeline.events.is_empty());
     }
 
@@ -241,7 +235,7 @@ mod tests {
         let now = Utc::now();
         // Started 5h ago, 2h walltime → released 3h ago (past)
         let alloc = make_running(vec!["n1"], 2, 5);
-        let timeline = ResourceTimeline::build(&[alloc], &[], now, chrono::Duration::hours(24));
+        let timeline = ResourceTimeline::build(&[alloc], now, chrono::Duration::hours(24));
         assert!(timeline.events.is_empty());
     }
 
@@ -250,7 +244,7 @@ mod tests {
         let now = Utc::now();
         // Started 1h ago, 48h walltime → releases 47h from now, beyond 24h window
         let alloc = make_running(vec!["n1"], 48, 1);
-        let timeline = ResourceTimeline::build(&[alloc], &[], now, chrono::Duration::hours(24));
+        let timeline = ResourceTimeline::build(&[alloc], now, chrono::Duration::hours(24));
         assert!(timeline.events.is_empty());
     }
 
@@ -262,8 +256,7 @@ mod tests {
         let a2 = make_running(vec!["n2"], 4, 1);
         let a3 = make_running(vec!["n3"], 3, 1);
 
-        let timeline =
-            ResourceTimeline::build(&[a1, a2, a3], &[], now, chrono::Duration::hours(24));
+        let timeline = ResourceTimeline::build(&[a1, a2, a3], now, chrono::Duration::hours(24));
         assert_eq!(timeline.events.len(), 3);
         assert!(timeline.events[0].release_at <= timeline.events[1].release_at);
         assert!(timeline.events[1].release_at <= timeline.events[2].release_at);

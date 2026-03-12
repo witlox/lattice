@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use lattice_common::types::*;
 
-use crate::conformance::memory_locality_score;
+use crate::conformance::{conformance_fitness, memory_locality_score};
 use crate::cost::{BacklogMetrics, CostContext};
 use crate::knapsack::KnapsackSolver;
 use crate::placement::SchedulingResult;
@@ -68,15 +68,12 @@ pub fn run_cycle(input: &CycleInput, weights: &CostWeights) -> SchedulingResult 
         max_groups: input.topology.groups.len().max(1) as u32,
         now: chrono::Utc::now(),
         memory_locality: compute_memory_locality(&input.nodes),
+        conformance_fitness: compute_conformance_fitness(&input.pending, &input.nodes),
     };
 
     // Build resource timeline from running allocations
-    let timeline = ResourceTimeline::build(
-        &input.running,
-        &input.nodes,
-        ctx.now,
-        input.timeline_config.look_ahead,
-    );
+    let timeline =
+        ResourceTimeline::build(&input.running, ctx.now, input.timeline_config.look_ahead);
 
     // Run the knapsack solver
     let solver = KnapsackSolver::new(weights.clone());
@@ -94,6 +91,26 @@ fn compute_memory_locality(nodes: &[Node]) -> HashMap<NodeId, f64> {
     nodes
         .iter()
         .map(|n| (n.id.clone(), memory_locality_score(n)))
+        .collect()
+}
+
+/// Precompute f₉ conformance fitness for each pending allocation.
+fn compute_conformance_fitness(pending: &[Allocation], nodes: &[Node]) -> HashMap<AllocId, f64> {
+    let available: Vec<&Node> = nodes
+        .iter()
+        .filter(|n| n.state.is_operational() && n.owner.is_none())
+        .collect();
+
+    pending
+        .iter()
+        .map(|alloc| {
+            let requested = match alloc.resources.nodes {
+                NodeCount::Exact(n) => n,
+                NodeCount::Range { min, .. } => min,
+            };
+            let fitness = conformance_fitness(&available, requested);
+            (alloc.id, fitness)
+        })
         .collect()
 }
 

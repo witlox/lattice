@@ -82,6 +82,10 @@ impl SchedulingResult {
     pub fn deferred(&self) -> Vec<&PlacementDecision> {
         self.decisions.iter().filter(|d| d.is_deferred()).collect()
     }
+
+    pub fn backfilled(&self) -> Vec<&PlacementDecision> {
+        self.decisions.iter().filter(|d| d.is_backfill()).collect()
+    }
 }
 
 #[cfg(test)]

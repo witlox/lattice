@@ -26,6 +26,8 @@ pub struct PreemptionConfig {
     pub near_completion_threshold: f64,
     /// Per-tenant usage info for burst-aware preemption.
     pub tenant_usage: HashMap<String, TenantUsage>,
+    /// Current time (for elapsed-time computation). Avoids hidden `Utc::now()` calls.
+    pub now: chrono::DateTime<chrono::Utc>,
 }
 
 impl Default for PreemptionConfig {
@@ -34,6 +36,7 @@ impl Default for PreemptionConfig {
             max_victims: 3,
             near_completion_threshold: 0.9,
             tenant_usage: HashMap::new(),
+            now: chrono::Utc::now(),
         }
     }
 }
@@ -116,7 +119,7 @@ fn preemption_cost<J: Job>(job: &J, config: &PreemptionConfig) -> f64 {
             let nodes = job.assigned_nodes().len() as f64;
             let elapsed = job
                 .started_at()
-                .map(|s| (chrono::Utc::now() - s).num_minutes() as f64)
+                .map(|s| (config.now - s).num_minutes() as f64)
                 .unwrap_or(0.0);
             nodes * elapsed
         }
@@ -145,7 +148,7 @@ fn remaining_walltime_value<J: Job>(job: &J, config: &PreemptionConfig) -> f64 {
 
     let elapsed = job
         .started_at()
-        .map(|s| (chrono::Utc::now() - s).num_minutes() as f64)
+        .map(|s| (config.now - s).num_minutes() as f64)
         .unwrap_or(0.0);
 
     if walltime_minutes > 0.0 {

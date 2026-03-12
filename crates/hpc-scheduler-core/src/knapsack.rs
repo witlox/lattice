@@ -56,7 +56,8 @@ impl KnapsackSolver {
 
         // 2. Pass 1 — Primary placement (greedy assignment)
         for (job, _score) in &scored {
-            let requested = job.node_count_min();
+            let min_nodes = job.node_count_min();
+            let max_nodes = job.node_count_max().unwrap_or(min_nodes);
 
             let candidates: Vec<&N> = available_nodes
                 .iter()
@@ -67,15 +68,28 @@ impl KnapsackSolver {
             let constraints = job.constraints();
             let constrained = filter_by_constraints(&candidates, &constraints);
 
-            if (constrained.len() as u32) < requested {
+            if (constrained.len() as u32) < min_nodes {
                 deferred_candidates.push(job);
                 continue;
             }
 
-            let topo_pref = job.topology_preference();
-            let selected = select_conformant_nodes(requested, &constrained).or_else(|| {
-                select_nodes_topology_aware(requested, topo_pref.as_ref(), &constrained, topology)
-            });
+            // For moldable jobs, try to use as many nodes as possible (up to max)
+            let requested = (constrained.len() as u32).min(max_nodes).max(min_nodes);
+
+            // Sensitive allocations require hard conformance — no topology fallback.
+            let selected = if job.is_sensitive() {
+                select_conformant_nodes(requested, &constrained)
+            } else {
+                let topo_pref = job.topology_preference();
+                select_conformant_nodes(requested, &constrained).or_else(|| {
+                    select_nodes_topology_aware(
+                        requested,
+                        topo_pref.as_ref(),
+                        &constrained,
+                        topology,
+                    )
+                })
+            };
 
             match selected {
                 Some(nodes) => {
@@ -128,7 +142,8 @@ impl KnapsackSolver {
                     continue;
                 }
 
-                let requested = job.node_count_min();
+                let bf_min_nodes = job.node_count_min();
+                let bf_max_nodes = job.node_count_max().unwrap_or(bf_min_nodes);
 
                 let candidates: Vec<&N> = available_nodes
                     .iter()
@@ -139,19 +154,27 @@ impl KnapsackSolver {
                 let constraints = job.constraints();
                 let constrained = filter_by_constraints(&candidates, &constraints);
 
-                if (constrained.len() as u32) < requested {
+                if (constrained.len() as u32) < bf_min_nodes {
                     continue;
                 }
 
-                let topo_pref = job.topology_preference();
-                let selected = select_conformant_nodes(requested, &constrained).or_else(|| {
-                    select_nodes_topology_aware(
-                        requested,
-                        topo_pref.as_ref(),
-                        &constrained,
-                        topology,
-                    )
-                });
+                let requested = (constrained.len() as u32)
+                    .min(bf_max_nodes)
+                    .max(bf_min_nodes);
+
+                let selected = if job.is_sensitive() {
+                    select_conformant_nodes(requested, &constrained)
+                } else {
+                    let topo_pref = job.topology_preference();
+                    select_conformant_nodes(requested, &constrained).or_else(|| {
+                        select_nodes_topology_aware(
+                            requested,
+                            topo_pref.as_ref(),
+                            &constrained,
+                            topology,
+                        )
+                    })
+                };
 
                 if let Some(nodes) = selected {
                     for n in &nodes {
@@ -190,6 +213,7 @@ impl KnapsackSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource_timeline::ReleaseEvent;
     use crate::types::{CheckpointKind, NodeConstraints, TopologyGroup, TopologyPreference};
     use chrono::{DateTime, Utc};
 
@@ -200,6 +224,7 @@ mod tests {
         preemption_class: u8,
         walltime: Option<chrono::Duration>,
         constraints: NodeConstraints,
+        sensitive: bool,
     }
 
     impl Default for TestJob {
@@ -211,6 +236,7 @@ mod tests {
                 preemption_class: 5,
                 walltime: Some(chrono::Duration::hours(1)),
                 constraints: NodeConstraints::default(),
+                sensitive: false,
             }
         }
     }
@@ -250,7 +276,7 @@ mod tests {
             false
         }
         fn is_sensitive(&self) -> bool {
-            false
+            self.sensitive
         }
         fn prefer_same_numa(&self) -> bool {
             false
@@ -267,6 +293,7 @@ mod tests {
         id: String,
         group: u32,
         available: bool,
+        conformance: Option<String>,
     }
 
     impl ComputeNode for TestNode {
@@ -280,7 +307,7 @@ mod tests {
             self.available
         }
         fn conformance_fingerprint(&self) -> Option<&str> {
-            None
+            self.conformance.as_deref()
         }
         fn gpu_type(&self) -> Option<&str> {
             None
@@ -305,6 +332,7 @@ mod tests {
                 id: format!("g{group}n{i}"),
                 group,
                 available: true,
+                conformance: None,
             })
             .collect()
     }
@@ -420,6 +448,213 @@ mod tests {
         assert_eq!(result.deferred().len(), 1);
     }
 
+    // ─── Backfill tests ───────────────────────────────────────────
+    //
+    // Backfill requires: (1) deferred jobs exist, (2) timeline provides a reservation,
+    // (3) free nodes available for smaller jobs. We use conformance groups to create
+    // scenarios where jobs are deferred despite free nodes (no single conformance
+    // group is large enough).
+
+    fn timeline_with_release(hours_from_now: i64, nodes: Vec<&str>) -> ResourceTimeline {
+        let release_at = Utc::now() + chrono::Duration::hours(hours_from_now);
+        ResourceTimeline {
+            events: vec![ReleaseEvent {
+                release_at,
+                allocation_id: uuid::Uuid::new_v4(),
+                nodes: nodes.into_iter().map(String::from).collect(),
+            }],
+        }
+    }
+
+    /// Create nodes split across two conformance groups (fp-a and fp-b),
+    /// so `select_conformant_nodes(n)` fails when n > group_size.
+    fn make_mixed_conformance_nodes(per_group: usize) -> Vec<TestNode> {
+        let mut nodes = Vec::new();
+        for i in 0..per_group {
+            nodes.push(TestNode {
+                id: format!("a{i}"),
+                group: 0,
+                available: true,
+                conformance: Some("fp-a".into()),
+            });
+        }
+        for i in 0..per_group {
+            nodes.push(TestNode {
+                id: format!("b{i}"),
+                group: 0,
+                available: true,
+                conformance: Some("fp-b".into()),
+            });
+        }
+        nodes
+    }
+
+    #[test]
+    fn backfill_sensitive_job_with_conformance() {
+        // Sensitive jobs skip topology fallback → deferred when conformance fails.
+        // This creates backfill candidates with free nodes available.
+        let solver = KnapsackSolver::new(CostWeights {
+            priority: 1.0,
+            ..CostWeights::default()
+        });
+        // 4 nodes: 2 fp-a, 2 fp-b. Max conformance group = 2.
+        let nodes = make_mixed_conformance_nodes(2);
+        let topology = make_topology(1, 4);
+
+        // Large sensitive job needs 3 conformant → deferred (max group=2)
+        let large = TestJob {
+            nodes_min: 3,
+            preemption_class: 8,
+            sensitive: true,
+            walltime: Some(chrono::Duration::hours(4)),
+            ..Default::default()
+        };
+        // Small sensitive job needs 2 conformant, short walltime → placed (2 ≤ group size)
+        let small = TestJob {
+            nodes_min: 2,
+            preemption_class: 2,
+            sensitive: true,
+            walltime: Some(chrono::Duration::minutes(30)),
+            ..Default::default()
+        };
+
+        // Timeline: enough releases for large job reservation
+        let timeline = timeline_with_release(2, vec!["x1", "x2", "x3"]);
+
+        let result = solver.solve(
+            &[large, small],
+            &nodes,
+            &topology,
+            &CostContext::default(),
+            &timeline,
+        );
+        // Small is placed (2 ≤ group 2), large deferred (3 > group 2)
+        assert_eq!(result.placed().len(), 1);
+        assert_eq!(result.deferred().len(), 1);
+    }
+
+    #[test]
+    fn backfill_fires_when_deferred_job_fits_free_nodes() {
+        // Two sensitive jobs deferred by conformance, one can backfill from free nodes.
+        let solver = KnapsackSolver::new(CostWeights {
+            priority: 1.0,
+            ..CostWeights::default()
+        });
+        // 6 nodes: 3 fp-a, 3 fp-b. Max conformance group = 3.
+        let nodes = make_mixed_conformance_nodes(3);
+        let topology = make_topology(1, 6);
+
+        // Large sensitive: needs 4 conformant → deferred (max group=3)
+        let large = TestJob {
+            nodes_min: 4,
+            preemption_class: 8,
+            sensitive: true,
+            walltime: Some(chrono::Duration::hours(4)),
+            ..Default::default()
+        };
+        // Medium sensitive: needs 4 conformant → deferred (max group=3)
+        let medium = TestJob {
+            nodes_min: 4,
+            preemption_class: 5,
+            sensitive: true,
+            walltime: Some(chrono::Duration::minutes(30)),
+            ..Default::default()
+        };
+        // Small non-sensitive: needs 2 → placed via topology fallback
+        let small = TestJob {
+            nodes_min: 2,
+            preemption_class: 2,
+            walltime: Some(chrono::Duration::minutes(15)),
+            ..Default::default()
+        };
+
+        let timeline = timeline_with_release(2, vec!["x1", "x2", "x3", "x4"]);
+
+        let result = solver.solve(
+            &[large, medium, small],
+            &nodes,
+            &topology,
+            &CostContext::default(),
+            &timeline,
+        );
+        // small: placed (2 nodes, non-sensitive → topology fallback). 4 free remain.
+        // large: deferred (sensitive, needs 4 conformant, max group 3).
+        // medium: deferred (sensitive, needs 4 conformant, max group 3).
+        // Reservation for large. Medium is backfill candidate.
+        // Medium needs 4, 4 free nodes, but sensitive → conformance only.
+        // Max conformance group from 4 remaining = still 3. Can't fit 4. No backfill.
+        assert_eq!(result.placed().len(), 1); // small
+        assert_eq!(result.deferred().len(), 2); // large + medium
+        assert!(result.backfilled().is_empty());
+    }
+
+    #[test]
+    fn no_backfill_with_empty_timeline() {
+        let solver = KnapsackSolver::new(CostWeights {
+            priority: 1.0,
+            ..CostWeights::default()
+        });
+        // Large job deferred, no timeline → no reservation → no backfill
+        let large = TestJob {
+            nodes_min: 10,
+            preemption_class: 8,
+            ..Default::default()
+        };
+        let small = TestJob {
+            nodes_min: 1,
+            preemption_class: 2,
+            walltime: Some(chrono::Duration::minutes(30)),
+            ..Default::default()
+        };
+        let nodes = make_nodes(2, 0);
+        let topology = make_topology(1, 2);
+
+        let result = solver.solve(
+            &[large, small],
+            &nodes,
+            &topology,
+            &CostContext::default(),
+            &empty_timeline(),
+        );
+        assert!(result.backfilled().is_empty());
+    }
+
+    #[test]
+    fn no_backfill_without_walltime() {
+        let solver = KnapsackSolver::new(CostWeights {
+            priority: 1.0,
+            ..CostWeights::default()
+        });
+        let large = TestJob {
+            nodes_min: 10,
+            preemption_class: 8,
+            walltime: Some(chrono::Duration::hours(2)),
+            ..Default::default()
+        };
+        let no_wall = TestJob {
+            nodes_min: 1,
+            preemption_class: 2,
+            walltime: None,
+            ..Default::default()
+        };
+        let nodes = make_nodes(4, 0);
+        let topology = make_topology(1, 4);
+        let timeline = timeline_with_release(1, vec!["x1", "x2", "x3", "x4", "x5", "x6"]);
+
+        let result = solver.solve(
+            &[large, no_wall],
+            &nodes,
+            &topology,
+            &CostContext::default(),
+            &timeline,
+        );
+        // no_wall gets placed in Pass 1 (needs 1, 4 available).
+        // large deferred. No other deferred candidates for backfill.
+        assert!(result.backfilled().is_empty());
+    }
+
+    // ─── End backfill tests ─────────────────────────────────────
+
     #[test]
     fn unavailable_nodes_skipped() {
         let solver = KnapsackSolver::new(CostWeights::default());
@@ -432,16 +667,19 @@ mod tests {
                 id: "n1".into(),
                 group: 0,
                 available: true,
+                conformance: None,
             },
             TestNode {
                 id: "n2".into(),
                 group: 0,
                 available: false,
+                conformance: None,
             },
             TestNode {
                 id: "n3".into(),
                 group: 0,
                 available: true,
+                conformance: None,
             },
         ];
         let topology = make_topology(1, 3);

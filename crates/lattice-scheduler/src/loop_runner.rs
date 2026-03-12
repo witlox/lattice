@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use lattice_common::traits::{AllocationFilter, AllocationStore, NodeRegistry};
 use lattice_common::types::{AllocationState, CostWeights, Node, TopologyModel};
 use tokio::sync::watch;
@@ -56,6 +57,18 @@ pub trait SchedulerCommandSink: Send + Sync {
     async fn suspend(
         &self,
         _alloc_id: lattice_common::types::AllocId,
+    ) -> Result<(), lattice_common::error::LatticeError> {
+        Ok(())
+    }
+    /// Set an effective walltime deadline for a backfill allocation.
+    ///
+    /// Called when a backfill placement is made. The implementation should
+    /// ensure the allocation is terminated by `deadline` to protect the
+    /// reservation holder's start time (INV-E4: Walltime Supremacy).
+    async fn set_backfill_deadline(
+        &self,
+        _alloc_id: lattice_common::types::AllocId,
+        _deadline: DateTime<Utc>,
     ) -> Result<(), lattice_common::error::LatticeError> {
         Ok(())
     }
@@ -181,6 +194,15 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                         if let Err(e) = self.sink.set_running(*allocation_id).await {
                             error!(alloc_id = %allocation_id, error = %e, "Failed to set Running for backfill");
                             continue;
+                        }
+                        // Enforce must_complete_by deadline so the reservation holder
+                        // gets its nodes on time (INV-E4: Walltime Supremacy).
+                        if let Err(e) = self
+                            .sink
+                            .set_backfill_deadline(*allocation_id, *must_complete_by)
+                            .await
+                        {
+                            warn!(alloc_id = %allocation_id, error = %e, "Failed to set backfill deadline");
                         }
                         placed_count += 1;
                     }
