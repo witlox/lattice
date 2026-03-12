@@ -69,7 +69,7 @@ reqwest = { version = "0.12", features = ["json"] }
 axum = "0.7"
 
 # JWT / OIDC
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 
 # Metrics
 prometheus = "0.13"
