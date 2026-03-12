@@ -75,7 +75,7 @@ jsonwebtoken = "9"
 prometheus = "0.13"
 
 # GPU discovery (optional)
-nvml-wrapper = "0.10"
+nvml-wrapper = "0.12"
 
 # Hex encoding (CXI credentials)
 hex = "0.4"
