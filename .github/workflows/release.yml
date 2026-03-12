@@ -27,7 +27,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       skip: ${{ steps.check_tag.outputs.exists }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -89,7 +89,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
@@ -117,7 +117,7 @@ jobs:
             fi
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: common-${{ matrix.arch }}
           path: dist/*.tar.gz
@@ -166,7 +166,7 @@ jobs:
             gpu: nvidia
             features: "--features nvidia"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
@@ -188,7 +188,7 @@ jobs:
           tar czf "dist/lattice-agent-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz" -C dist lattice-agent
           rm dist/lattice-agent
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: agent-${{ matrix.arch }}-${{ matrix.gpu }}
           path: dist/*.tar.gz
@@ -200,12 +200,12 @@ jobs:
     if: needs.preflight.outputs.skip == 'false'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -235,7 +235,7 @@ jobs:
     if: needs.preflight.outputs.skip == 'false' && !inputs.dry_run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
