@@ -206,7 +206,7 @@ impl KnapsackSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource_timeline::{ReleaseEvent, TimelineConfig};
+    use crate::resource_timeline::ReleaseEvent;
     use lattice_test_harness::fixtures::{
         create_node_batch, create_test_topology, AllocationBuilder, NodeBuilder,
     };
@@ -610,7 +610,7 @@ mod tests {
         };
 
         let result = solver.solve(
-            &[large.clone()],
+            std::slice::from_ref(&large),
             &nodes,
             &topology,
             &default_ctx(),

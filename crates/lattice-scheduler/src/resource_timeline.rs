@@ -139,7 +139,7 @@ impl ResourceTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_test_harness::fixtures::{create_node_batch, AllocationBuilder};
+    use lattice_test_harness::fixtures::AllocationBuilder;
 
     fn make_running(nodes: Vec<&str>, walltime_hours: i64, started_hours_ago: i64) -> Allocation {
         let now = Utc::now();
@@ -166,8 +166,12 @@ mod tests {
     fn bounded_allocation_produces_event() {
         let now = Utc::now();
         let alloc = make_running(vec!["n1", "n2"], 4, 1); // 4h wall, started 1h ago → 3h left
-        let timeline =
-            ResourceTimeline::build(&[alloc.clone()], &[], now, chrono::Duration::hours(24));
+        let timeline = ResourceTimeline::build(
+            std::slice::from_ref(&alloc),
+            &[],
+            now,
+            chrono::Duration::hours(24),
+        );
         assert_eq!(timeline.events.len(), 1);
         assert_eq!(timeline.events[0].allocation_id, alloc.id);
         assert_eq!(timeline.events[0].nodes, vec!["n1", "n2"]);
