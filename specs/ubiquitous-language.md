@@ -1,0 +1,152 @@
+# Ubiquitous Language
+
+Precise definitions for every domain term used in Lattice. When two terms seem synonymous, this document explains why both exist. Code, APIs, docs, and conversations must use these terms consistently.
+
+## Core Concepts
+
+**Allocation** — The universal work unit. A request for compute resources with a defined environment, lifecycle, and resource requirements. Replaces both "job" (Slurm) and "pod" (Kubernetes). The term "job" is avoided in Lattice's domain language because it implies batch-only semantics; Allocation spans batch, service, and reactive workloads through lifecycle variants.
+
+**Lifecycle** — The duration semantics of an Allocation. Three variants:
+- **Bounded**: Has a walltime. Runs until completion or walltime expiry. Equivalent to a Slurm batch job.
+- **Unbounded**: Runs until explicitly cancelled. Auto-restarts on failure per restart policy. Equivalent to a Kubernetes Deployment.
+- **Reactive**: Unbounded with autoscaling. Node count varies between min and max based on a metric threshold.
+
+**vCluster** — A scheduling policy container that projects a filtered view of shared resources. Each vCluster has its own scheduler algorithm and cost function weights but shares the global quorum state with all other vClusters. Inspired by CSCS vClusters (Martinasso et al., CiSE 2024) but evolved: Lattice vClusters are dynamic, mutable, and have soft boundaries with elastic borrowing. vClusters are NOT security or isolation boundaries.
+
+**Tenant** — An organizational boundary representing a group of users with shared quotas and access policies. Maps 1:1 to a Waldur Customer. Tenants are the isolation boundary for security and quota enforcement. A Tenant can have allocations in multiple vClusters.
+
+**Project** — A subdivision within a Tenant for organizational purposes (maps to Waldur Project). Does not carry its own quotas — quotas are per-Tenant.
+
+**User** — An authenticated identity, identified by OIDC subject claim. For sensitive workloads, the User (not Tenant) is the entity that claims nodes and is recorded in the audit log.
+
+## Scheduling
+
+**Cost Function** — A composite weighted scoring function that evaluates how valuable it is to schedule a given Allocation. Score(j) = Σ wᵢ · fᵢ(j). Nine factors, weights tunable per vCluster.
+
+**Knapsack Solver** — The algorithm that selects which pending Allocations to schedule given available resources. Multi-dimensional (nodes, GPU-hours, topology span, I/O bandwidth, power). Greedy heuristic with topology-aware backfill.
+
+**Scheduling Cycle** — A periodic evaluation (5-30s, configurable per vCluster) where the scheduler scores pending Allocations, solves the knapsack, and proposes node ownership changes to the quorum.
+
+**Backfill** — Scheduling a lower-scored Allocation into resource gaps that cannot be used by higher-scored Allocations due to constraints (topology, conformance, etc.).
+
+**Preemption** — Evicting a running Allocation to free resources for a higher-priority one. Only moves down preemption classes (0-10). Checkpoint-aware: the system attempts to checkpoint before killing. Sensitive Allocations (class 10) are never preempted.
+
+**Preemption Class** — An integer 0-10 representing an Allocation's resistance to preemption. Higher = harder to preempt. Set by the Tenant's contract, not by the user. Sensitive claims are always class 10.
+
+**Fair Share** — The mechanism ensuring each Tenant gets approximately their contracted proportion of resources over time. Computed as the deficit between target share and actual usage. Feeds into cost function factor f3.
+
+**Elastic Borrowing** — When a vCluster has idle nodes beyond its base allocation, other vClusters may borrow them. Borrowed nodes carry preemption risk — the home vCluster can reclaim them via checkpoint + preempt.
+
+**Base Allocation** — The guaranteed node count for a vCluster. Nodes in the base allocation are not borrowable. Nodes beyond the base allocation that are idle become borrowable.
+
+## Allocation Composition
+
+**DAG** — A directed acyclic graph of Allocations with typed dependency edges. Submitted as a single unit. The DAG structure controls when Allocations enter the scheduler queue, not how they are scored.
+
+**TaskGroup** — An array of identical Allocations instantiated over an index range (equivalent to Slurm job arrays). Each element is an independent Allocation. Parameterized by `${INDEX}`.
+
+**Dependency** — A typed edge between two Allocations in a DAG. Conditions:
+- **Success** (afterok): successor runs only if predecessor exits 0
+- **Failure** (afternotok): successor runs only if predecessor exits non-zero
+- **Any** (afterany): successor runs regardless of predecessor exit status
+- **Corresponding** (aftercorr): element-wise dependency between TaskGroups
+- **Mutex** (singleton): only one Allocation with this mutex name runs at a time
+
+## Node & Infrastructure
+
+**Node** — A physical compute node. Identified by an **xname** (e.g., `x1000c0s0b0n0`) following the Cray/HPE naming convention. A Node is owned by exactly one (Tenant, vCluster, Allocation) tuple, or is unowned.
+
+**xname** — The hierarchical hardware identifier: `x{cabinet}c{chassis}s{slot}b{board}n{node}`. Used as NodeId throughout the system.
+
+**Node State** — The lifecycle state of a Node: Unknown, Booting, Ready, Degraded, Down, Draining, Drained, Failed. See node-lifecycle in architecture docs for the full state machine.
+
+**Heartbeat** — Periodic message (default: 10s) from a Node Agent to the quorum reporting health, conformance fingerprint, and running allocation count. Lightweight (~200 bytes), sent over management traffic class.
+
+**Grace Period** — The window between a missed heartbeat (Degraded) and declaring the node Down. Standard: 60s. Sensitive: 5 minutes. Borrowed: 30s.
+
+**Conformance Fingerprint** — SHA-256 hash of GPU driver version, NIC firmware version, BIOS version, kernel version. Nodes with identical fingerprints form a **Conformance Group**. The scheduler prefers placing multi-node Allocations within a single Conformance Group.
+
+**Conformance Group** — A set of Nodes with identical Conformance Fingerprints. Used by cost function factor f9 to avoid cross-configuration placement that causes subtle failures (NCCL hangs, libfabric ABI mismatches).
+
+**Dragonfly Group** — A topological unit in the Slingshot interconnect. Intra-group communication is electrical (low latency, high bandwidth). Inter-group is optical (higher latency, potential congestion). The scheduler packs Allocations into the fewest groups possible.
+
+## Software Delivery
+
+**uenv** — User Environment. A SquashFS image mounted via Linux mount namespace. Near-zero runtime overhead, native GPU/Slingshot access. Default software delivery mechanism.
+
+**Sarus** — OCI container runtime for cases requiring isolation (multi-tenant node sharing, third-party images, sensitive with enhanced isolation). Used by the interactive vCluster for intra-node packing.
+
+**DMTCP** — Distributed MultiThreaded Checkpointing. Transparent process-level checkpointing for applications that don't implement their own checkpoint support. Higher overhead but works for unmodified applications.
+
+## Network
+
+**Network Domain** — A named group of Allocations that share L3 network reachability via a Slingshot VNI. Scoped to a Tenant. Cross-vCluster sharing is intentional and supported. Sensitive Allocations get a unique per-allocation domain.
+
+**VNI** — Virtual Network Identifier. Hardware-enforced network isolation on Slingshot/Ultra Ethernet NICs. Each Network Domain maps to one VNI. Pool: 1000-4095 (expandable).
+
+**Traffic Class** — Slingshot hardware-enforced bandwidth partitioning: management, compute, storage, telemetry. Prevents one class from starving another.
+
+## Data
+
+**Data Staging** — Background pre-staging of input data from warm/cold tiers to hot tier (VAST) during queue wait. Invisible to the user. Cost function factor f5 scores data readiness.
+
+**Hot Tier** — VAST storage (NFS + S3). Active data. Scheduler can set QoS, pre-stage, snapshot.
+
+**Warm/Cold Tier** — S3-compatible capacity/archive storage. Cost-optimized. Regulatory retention on cold tier.
+
+## Sensitive Workloads
+
+**Sensitive** — The classification for workloads requiring regulatory-grade isolation and audit. Replaces the earlier term "medical" (generalized to cover financial, defense, etc.). Characteristics: user (not scheduler) claims nodes, dedicated hardware, encrypted storage, full audit trail, wipe on release, signed images only.
+
+**Claiming User** — The specific authenticated User who claims sensitive nodes. Their OIDC subject is recorded in the Raft-committed audit log. Individual accountability, not organizational.
+
+**Wipe on Release** — When a sensitive Allocation ends, the node undergoes secure erasure (GPU memory clear, NVMe secure erase, RAM scrub, reboot into clean image) via OpenCHAMI before returning to the general pool. Wipe failure quarantines the node.
+
+**Quarantine** — A node state (treated as Down) for sensitive nodes where secure wipe failed. Excluded from scheduling until operator intervention.
+
+## Checkpointing
+
+**Checkpoint Strategy** — How an Allocation communicates with the checkpoint system: Signal (SIGUSR1), SharedMemory (futex/flag), gRPC (callback with negotiation), DMTCP (transparent), or None (non-checkpointable).
+
+**Checkpoint Hint** — An advisory signal from the checkpoint broker to a node agent requesting that the application checkpoint. Not a command — the application may take time or fail.
+
+**Checkpoint Broker** — Cross-context coordination mechanism that evaluates `Value > Cost` for each running Allocation and decides when checkpointing is worthwhile. Stateless; crash recovery is re-evaluation.
+
+## Consensus
+
+**Quorum** — The Raft consensus cluster (3-5 replicas). Owns the GlobalState. Only two categories of state require Raft consensus: node ownership and sensitive audit events.
+
+**Proposal** — A state change submitted by a vCluster scheduler to the quorum for validation and commit. If the proposal conflicts with current state (e.g., node already owned), it is rejected and the scheduler retries next cycle.
+
+**Strong Consistency** — State that is Raft-committed and cannot be violated even momentarily. In Lattice: node ownership and sensitive audit log.
+
+**Eventual Consistency** — State that may be briefly stale (bounded by scheduling cycle time, ~5-30s). In Lattice: job queues, telemetry, quota accounting, session state, node capacity, DAG state, vCluster config.
+
+## External Systems
+
+**OpenCHAMI** — Infrastructure management system. Handles node boot/reimage (BSS), hardware discovery (Magellan/Redfish), state management (SMD), identity (OPAAL), and configuration injection (cloud-init). Lattice integrates but does not own.
+
+**Sovra** — Federated sovereign key management. Each site has its own root key. Shared workspaces enable cross-site trust. Feature-gated.
+
+**FirecREST** — User-facing API gateway. Handles OIDC authentication flow. Sits in front of lattice-api.
+
+**Waldur** — External accounting and billing system. Lattice pushes usage events; Waldur pushes quota updates. Feature-gated. Failure never blocks scheduling.
+
+**VAST** — Storage system providing hot tier (NFS + S3). Lattice integrates via REST API for QoS, pre-staging, snapshots, and secure encrypted pools.
+
+## API Tiers
+
+**Intent API** — The primary API. Declarative: agents/users declare what they need, the scheduler resolves how. All scheduling decisions flow through this path.
+
+**Compatibility API** — Stateless translation layer mapping Slurm commands (sbatch, squeue, scancel) to Intent API calls. Graceful degradation for unsupported directives (warns, never errors).
+
+## Terms Deliberately Avoided
+
+| Avoided Term | Reason | Use Instead |
+|---|---|---|
+| Job | Implies batch-only semantics | Allocation |
+| Pod | Implies Kubernetes model | Allocation |
+| Partition | Implies hard resource boundary (Slurm) | vCluster |
+| Container | Ambiguous (Docker? OCI? Sarus?) | uenv (default) or Sarus (when OCI needed) |
+| Cluster | Ambiguous (the whole system? a vCluster?) | "system" for the whole thing, "vCluster" for a policy boundary |
+| Medical | Too narrow for the general sensitive model | Sensitive |

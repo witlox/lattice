@@ -1,0 +1,109 @@
+# Enforcement Map
+
+Maps every invariant from `specs/invariants.md` to its enforcement point(s) in the architecture. An invariant without a clear enforcement point is an invariant that will be violated.
+
+## Strong Consistency Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-S1** Exclusive node ownership | lattice-quorum | `Command::ClaimNode` / `Command::AssignNodes` validation in `GlobalState::apply()` — rejects if node already owned | Unit tests (quorum), acceptance tests (scheduling_cycle.feature) |
+| **INV-S2** Hard quota non-violation | lattice-quorum | `Command::AssignNodes` sums current ownership per tenant, rejects if exceeds `max_nodes` or `max_concurrent_allocations` | Unit tests (quorum), acceptance tests (quota_enforcement.feature) |
+| **INV-S3** Sensitive audit completeness | lattice-quorum + lattice-api | API handlers for sensitive operations call `AuditLog::record()` (Raft commit) BEFORE executing the action. Gate pattern: audit commit → action. | Acceptance tests (sensitive_workload.feature), cross-context (audit ordering scenarios) |
+| **INV-S4** Sensitive audit immutability | lattice-quorum | `GlobalState.audit_log` is `Vec<AuditEntry>` — append-only. No `Command` variant exists to modify or delete entries. Raft log structure provides tamper evidence. | Structural (no mutation API exists) |
+| **INV-S5** Sensitive node isolation | lattice-quorum + lattice-scheduler | Quorum rejects proposals assigning sensitive-claimed nodes to different allocations. `SensitiveReservationScheduler` never participates in borrowing. | Unit tests (scheduler), acceptance tests (sensitive_workload.feature) |
+| **INV-S6** Sensitive wipe before reuse | lattice-node-agent + lattice-quorum | Node agent epilogue: GPU clear (`nvidia-smi --gpu-reset` / `rocm-smi --resetgpu`) → report to quorum → OpenCHAMI NVMe erase → wipe confirmation Raft-committed → node returns to pool. Wipe failure → quarantine (Down). | Acceptance tests (sensitive_workload.feature). **GAP: ESC-001 GPU HBM wipe step needs implementation verification.** |
+
+## Eventual Consistency Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Convergence Bound |
+|---|---|---|---|
+| **INV-E1** Preemption class ordering | lattice-scheduler | `evaluate_preemption()` filters candidates where `victim.preemption_class < requester.preemption_class`. API admission validates class 0-10 range. Sensitive = class 10 (never preempted). | Immediate (evaluated each cycle) |
+| **INV-E2** DAG acyclicity | lattice-scheduler + lattice-cli | `validate_dag()` runs Kahn's algorithm at submission time. CLI `validate_dag_yaml()` also checks. API rejects cyclic DAGs. | At submission (rejected before entering queue) |
+| **INV-E3** Dependency satisfaction | lattice-scheduler | `DagController` evaluates edges on each allocation state change. Downstream allocations enter queue only when all incoming conditions are met. | ≤1 scheduling cycle (~5-30s) |
+| **INV-E4** Walltime supremacy | lattice-node-agent | `WalltimeEnforcer` timer runs independently of checkpoint broker. SIGTERM → 30s grace → SIGKILL. Not extendable by checkpoint. | Immediate (OS timer) |
+| **INV-E5** Network domain tenant scoping | lattice-api | API validation on submission: domain name scoped to tenant ID internally. Cross-tenant domain names resolve to different VNIs. | At submission |
+| **INV-E6** Soft quota self-correction | lattice-scheduler | Cost function f3 (fair_share_deficit) penalizes over-budget tenants. Budget penalty multiplier reduces scores for tenants exceeding soft quotas. | ≤1 scheduling cycle |
+
+## Ordering Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism |
+|---|---|---|
+| **INV-O1** Proposal before execution | lattice-quorum → lattice-node-agent | Quorum notifies node agents AFTER Raft commit (gRPC `RunAllocation` sent only after `Command::AssignNodes` committed). Node agent waits for this notification. |
+| **INV-O2** Prologue before entrypoint | lattice-node-agent | `AllocationRunner` state machine: `Staging` → prologue → `Running` → entrypoint. Prologue failure → retry or fail. Entrypoint never starts without successful prologue. |
+| **INV-O3** Audit before sensitive action | lattice-api + lattice-quorum | Sensitive endpoint handlers: `audit.record(entry).await?` (Raft commit) → proceed with action. If audit commit fails, action is not performed. |
+
+## Cardinality Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism |
+|---|---|---|
+| **INV-C1** Node ownership cardinality (0:1) | lattice-quorum | Same as INV-S1. `GlobalState` stores `NodeOwnership` as `Option` — at most one owner. |
+| **INV-C2** Sensitive attach cardinality (0:1) | lattice-node-agent | Attach handler checks `sensitive && active_sessions > 0` → reject. Single-session guard per sensitive allocation. |
+| **INV-C3** VNI uniqueness | lattice-node-agent (network) + lattice-quorum | VNI pool allocator: sequential allocation, `HashMap<VNI, DomainId>` ensures 1:1 mapping. Released on domain teardown. |
+| **INV-C4** Allocation-vCluster binding | lattice-quorum | `Allocation.vcluster` is immutable after creation. No `Command` variant exists to change it. |
+| **INV-C5** DAG size limit | lattice-api + lattice-cli | API admission checks `dag.allocations.len() <= max_dag_size` (default 1000). CLI `validate_dag_yaml()` also checks. |
+
+## Negative Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism |
+|---|---|---|
+| **INV-N1** No Kubernetes dependencies | Build system | `deny.toml` bans K8s-related crates. Code review. |
+| **INV-N2** No SSH between compute | lattice-node-agent | PMI-2 over gRPC for inter-node coordination. No `ssh` or `sshd` invocations. Sensitive hardened images have no SSH daemon. |
+| **INV-N3** No sensitive data federation | lattice-scheduler (federation) | `FederationBroker` policy check: rejects requests involving sensitive data sovereignty violations. `DataStager` refuses cross-site transfers for sensitive allocations. |
+| **INV-N4** No silent failure | All modules | `LatticeError` typed error enum. Metrics for all failure paths (`lattice_*` counters). Alert rules in `infra/`. Audit log for sensitive. |
+| **INV-N5** Accounting never blocks scheduling | lattice-common (Waldur client) + lattice-scheduler | Async push with bounded buffer (10K memory + 100K disk). Events dropped with `lattice_accounting_events_dropped_total` counter rather than blocking. Scheduling cycle never awaits Waldur response. |
+
+## Cross-Context Enforcement
+
+Some invariants require coordination across modules:
+
+### INV-S1 + INV-S5 (Ownership + Sensitive Isolation)
+
+```
+lattice-scheduler                    lattice-quorum
+     │                                    │
+     ├─ SensitiveReservationScheduler     │
+     │  never borrows/lends nodes ────────┤
+     │                                    │
+     ├─ proposes ClaimNode ──────────────►│
+     │                                    ├─ validates: node unowned
+     │                                    ├─ validates: sensitive isolation
+     │                                    └─ Raft-commits or rejects
+```
+
+### INV-S3 + INV-O3 (Audit Completeness + Ordering)
+
+```
+lattice-api                    lattice-quorum
+     │                              │
+     ├─ sensitive claim request     │
+     ├─ audit.record(claim) ──────►│
+     │                              ├─ Raft-commit audit entry
+     │  ◄── commit confirmed ──────┤
+     ├─ NOW execute claim           │
+     ├─ quorum.propose(ClaimNode) ►│
+```
+
+### INV-S6 (Wipe Before Reuse — Multi-Step)
+
+```
+lattice-node-agent              lattice-quorum        OpenCHAMI
+     │                              │                     │
+     ├─ GPU HBM clear              │                     │
+     │  (nvidia-smi/rocm-smi)     │                     │
+     ├─ report GPU clear ─────────►│                     │
+     │                              ├─ Raft-commit       │
+     ├─ request NVMe wipe ─────────┼────────────────────►│
+     │                              │                     ├─ SecureErase
+     │  ◄── wipe complete ─────────┼─────────────────────┤
+     ├─ report wipe complete ──────►│                     │
+     │                              ├─ Raft-commit       │
+     │                              ├─ node → Ready      │
+```
+
+## Gaps Identified
+
+1. **ESC-001: GPU HBM wipe** — The epilogue path exists in lattice-node-agent but the GPU memory clear step for sensitive allocations needs verification that it actually calls `nvidia-smi --gpu-reset` / `rocm-smi --resetgpu` before the OpenCHAMI wipe. This is a regulatory compliance requirement (INV-S6).
+
+2. **INV-S4 cryptographic signing** — The spec states audit entries are "cryptographically signed and chained." The current implementation uses `Vec<AuditEntry>` in the Raft log, which provides ordering and tamper evidence via Raft's own guarantees. Explicit per-entry cryptographic signatures (site PKI or Sovra keys) are not yet implemented. The Raft log itself provides equivalent integrity guarantees within a single cluster, but external verification (for regulatory auditors) may require explicit signatures.
+
+3. **VNI uniqueness (INV-C3)** — Enforcement is split between node-agent (VNI pool) and quorum (network domain state). The authoritative VNI↔Domain mapping should be in the quorum to survive node agent restarts. Current implementation stores `network_domains: HashMap<String, NetworkDomain>` in GlobalState, which is correct.
