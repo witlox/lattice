@@ -21,3 +21,34 @@ Feature: Network Domains
     And 4 nodes in group 0
     When an allocation with a network domain completes
     Then the network domain should transition to Released
+
+  Scenario: VNI uniqueness enforced across active domains
+    Given 2 active network domains
+    Then each domain should have a unique VNI
+    And no two active domains share a VNI
+
+  Scenario: VNI reused after domain teardown
+    Given a network domain with VNI 1001
+    When the domain is released and torn down
+    Then VNI 1001 should return to the pool
+    When a new domain is created
+    Then VNI 1001 may be assigned to the new domain
+
+  Scenario: Cross-tenant network domain prevented
+    Given a tenant "physics" with max nodes 100
+    And a tenant "biology" with max nodes 100
+    When an allocation from tenant "physics" requests to join a domain owned by tenant "biology"
+    Then the request should be rejected with reason "cross_tenant_domain"
+
+  Scenario: VNI pool exhaustion blocks new domain creation
+    Given the VNI pool is fully allocated (3095/3095 in use)
+    When a new allocation requests a network domain
+    Then domain creation should be blocked with reason "vni_pool_exhausted"
+    And the allocation enters Pending
+
+  Scenario: Domain with CXI credentials for Slingshot
+    Given a tenant "physics" with max nodes 100
+    And 4 nodes with Slingshot interconnect in group 0
+    When an allocation with a network domain is submitted
+    Then the domain should have CXI credentials assigned
+    And the credentials should be available during prologue

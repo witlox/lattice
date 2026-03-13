@@ -29,3 +29,33 @@ Feature: Walltime Enforcement
     When the allocation is unregistered from walltime tracking
     And 2 hours have elapsed
     Then no allocations should be expired
+
+  Scenario: Zero walltime means unbounded allocation
+    Given a walltime enforcer with default grace period
+    And a running allocation registered with walltime "0s"
+    When 24 hours have elapsed
+    Then no allocations should be expired
+
+  Scenario: Multiple allocations tracked independently
+    Given a walltime enforcer with default grace period
+    And a running allocation "job-1" registered with walltime "1h"
+    And a running allocation "job-2" registered with walltime "2h"
+    When 1 hour and 1 seconds have elapsed
+    Then allocation "job-1" should be in "Terminate" phase
+    And allocation "job-2" should not be expired
+
+  Scenario: Grace period allows checkpoint completion
+    Given a walltime enforcer with default grace period
+    And a running allocation registered with walltime "1h"
+    And a checkpoint is in progress
+    When 1 hour has elapsed
+    Then the allocation should be in "Terminate" phase
+    And the checkpoint has the grace period to complete
+
+  Scenario: Walltime seconds-level precision
+    Given a walltime enforcer with default grace period
+    And a running allocation registered with walltime "90s"
+    When 89 seconds have elapsed
+    Then no allocations should be expired
+    When 91 seconds have elapsed
+    Then the allocation should be in "Terminate" phase

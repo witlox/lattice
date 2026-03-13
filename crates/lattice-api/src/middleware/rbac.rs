@@ -26,6 +26,10 @@ pub enum Role {
     SystemAdmin,
     /// Sensitive claiming user -- can claim and release sensitive nodes.
     ClaimingUser,
+    /// Operator -- can manage infrastructure (drain/undrain) but not tenants.
+    Operator,
+    /// Read-only viewer -- can list and get but not mutate.
+    ReadOnly,
 }
 
 // ---- Operation -----------------------------------------------------------
@@ -75,6 +79,12 @@ pub enum Operation {
     // Sensitive node claiming
     ClaimNode,
     ReleaseNode,
+
+    // Backup operations
+    BackupExport,
+
+    // Federation operations
+    FederationManage,
 }
 
 // ---- RbacContext ----------------------------------------------------------
@@ -131,6 +141,42 @@ impl RbacPolicy {
                 }
             }
 
+            Role::Operator => {
+                match op {
+                    // Operators can drain/undrain/disable nodes.
+                    Operation::DrainNode
+                    | Operation::UndrainNode
+                    | Operation::DisableNode => true,
+                    // Cannot create tenants or manage federation.
+                    Operation::CreateTenant
+                    | Operation::UpdateTenant
+                    | Operation::CreateVCluster
+                    | Operation::UpdateVCluster
+                    | Operation::FederationManage => false,
+                    // Everything the User role can do.
+                    _ => Self::is_allowed(&Role::User, op, context),
+                }
+            }
+
+            Role::ReadOnly => {
+                matches!(
+                    op,
+                    Operation::GetAllocation
+                        | Operation::ListAllocations
+                        | Operation::WatchAllocation
+                        | Operation::StreamLogs
+                        | Operation::QueryMetrics
+                        | Operation::StreamMetrics
+                        | Operation::GetDiagnostics
+                        | Operation::CompareMetrics
+                        | Operation::GetDag
+                        | Operation::ListDags
+                        | Operation::ListNodes
+                        | Operation::GetNode
+                        | Operation::GetRaftStatus
+                )
+            }
+
             Role::User => match op {
                 // Workload lifecycle -- broad access.
                 Operation::SubmitAllocation
@@ -157,18 +203,7 @@ impl RbacPolicy {
                 }
 
                 // Everything else is denied for a regular user.
-                Operation::DrainNode
-                | Operation::UndrainNode
-                | Operation::DisableNode
-                | Operation::CreateTenant
-                | Operation::UpdateTenant
-                | Operation::CreateVCluster
-                | Operation::UpdateVCluster
-                | Operation::GetRaftStatus
-                | Operation::BackupVerify
-                | Operation::QueryAudit
-                | Operation::ClaimNode
-                | Operation::ReleaseNode => false,
+                _ => false,
             },
         }
     }
@@ -224,6 +259,16 @@ pub fn derive_role(claims: &TokenClaims) -> Role {
     for scope in &claims.scopes {
         if scope == "sensitive:claim" {
             return Role::ClaimingUser;
+        }
+    }
+    for scope in &claims.scopes {
+        if scope == "operator" {
+            return Role::Operator;
+        }
+    }
+    for scope in &claims.scopes {
+        if scope == "readonly" {
+            return Role::ReadOnly;
         }
     }
     Role::User
