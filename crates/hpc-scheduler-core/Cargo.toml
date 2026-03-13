@@ -4,6 +4,7 @@ version = "2026.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Core scheduling algorithms for HPC job schedulers: multi-dimensional knapsack solver, composite cost function, topology-aware placement, reservation-based backfill, conformance grouping, preemption, and walltime enforcement."
+readme = "README.md"
 repository = "https://github.com/witlox/lattice"
 keywords = ["hpc", "scheduler", "knapsack", "backfill", "slurm"]
 categories = ["algorithms", "science"]
