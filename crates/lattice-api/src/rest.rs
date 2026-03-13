@@ -27,49 +27,49 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
     axum::Router::new()
         .route("/api/v1/allocations", post(submit_allocation))
         .route("/api/v1/allocations", get(list_allocations))
-        .route("/api/v1/allocations/:id", get(get_allocation))
-        .route("/api/v1/allocations/:id", patch(patch_allocation))
-        .route("/api/v1/allocations/:id/cancel", post(cancel_allocation))
+        .route("/api/v1/allocations/{id}", get(get_allocation))
+        .route("/api/v1/allocations/{id}", patch(patch_allocation))
+        .route("/api/v1/allocations/{id}/cancel", post(cancel_allocation))
         .route(
-            "/api/v1/allocations/:id/diagnostics",
+            "/api/v1/allocations/{id}/diagnostics",
             get(get_allocation_diagnostics),
         )
         .route(
-            "/api/v1/allocations/:id/metrics",
+            "/api/v1/allocations/{id}/metrics",
             get(get_allocation_metrics),
         )
-        .route("/api/v1/allocations/:id/logs", get(get_allocation_logs))
-        .route("/api/v1/allocations/:id/watch", get(watch_allocation_sse))
-        .route("/api/v1/allocations/:id/logs/stream", get(stream_logs_sse))
+        .route("/api/v1/allocations/{id}/logs", get(get_allocation_logs))
+        .route("/api/v1/allocations/{id}/watch", get(watch_allocation_sse))
+        .route("/api/v1/allocations/{id}/logs/stream", get(stream_logs_sse))
         .route(
-            "/api/v1/allocations/:id/metrics/stream",
+            "/api/v1/allocations/{id}/metrics/stream",
             get(stream_metrics_sse),
         )
         .route("/api/v1/sessions", post(create_session))
-        .route("/api/v1/sessions/:id", get(get_session))
-        .route("/api/v1/sessions/:id", delete(delete_session))
+        .route("/api/v1/sessions/{id}", get(get_session))
+        .route("/api/v1/sessions/{id}", delete(delete_session))
         .route("/api/v1/dags", post(submit_dag))
         .route("/api/v1/dags", get(list_dags))
-        .route("/api/v1/dags/:id", get(get_dag))
-        .route("/api/v1/dags/:id/cancel", post(cancel_dag))
+        .route("/api/v1/dags/{id}", get(get_dag))
+        .route("/api/v1/dags/{id}/cancel", post(cancel_dag))
         .route("/api/v1/audit", get(query_audit))
         .route("/api/v1/tenants", post(create_tenant))
         .route("/api/v1/tenants", get(list_tenants))
-        .route("/api/v1/tenants/:id", get(get_tenant))
-        .route("/api/v1/tenants/:id", put(update_tenant))
+        .route("/api/v1/tenants/{id}", get(get_tenant))
+        .route("/api/v1/tenants/{id}", put(update_tenant))
         .route("/api/v1/vclusters", post(create_vcluster))
         .route("/api/v1/vclusters", get(list_vclusters))
-        .route("/api/v1/vclusters/:id", get(get_vcluster))
-        .route("/api/v1/vclusters/:id/queue", get(vcluster_queue))
+        .route("/api/v1/vclusters/{id}", get(get_vcluster))
+        .route("/api/v1/vclusters/{id}/queue", get(vcluster_queue))
         .route("/api/v1/accounting/usage", get(accounting_usage))
         .route("/api/v1/raft/status", get(raft_status))
         .route("/api/v1/admin/backup", post(create_backup))
         .route("/api/v1/admin/backup/verify", post(verify_backup))
         .route("/api/v1/admin/backup/restore", post(restore_backup))
         .route("/api/v1/nodes", get(list_nodes))
-        .route("/api/v1/nodes/:id", get(get_node))
-        .route("/api/v1/nodes/:id/drain", post(drain_node))
-        .route("/api/v1/nodes/:id/undrain", post(undrain_node))
+        .route("/api/v1/nodes/{id}", get(get_node))
+        .route("/api/v1/nodes/{id}/drain", post(drain_node))
+        .route("/api/v1/nodes/{id}/undrain", post(undrain_node))
         .route("/healthz", get(healthz))
         .with_state(state)
 }
