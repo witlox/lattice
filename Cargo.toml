@@ -65,11 +65,11 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 
 # HTTP (for REST gateway, storage API integration)
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "query"] }
 axum = "0.8"
 
 # JWT / OIDC
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 
 # Metrics
 prometheus = "0.14"
