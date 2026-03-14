@@ -6,6 +6,7 @@ error handling, and type serialization roundtrips.
 """
 
 import json
+import re
 import pytest
 from datetime import datetime, timezone
 
@@ -451,7 +452,7 @@ class TestListAllocations:
         """Test listing allocations with array response."""
         allocs = [_sample_allocation_dict("a1"), _sample_allocation_dict("a2", "running")]
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/allocations",
+            url=re.compile(r".*/api/v1/allocations(\?.*)?$"),
             method="GET",
             json=allocs,
         )
@@ -465,7 +466,7 @@ class TestListAllocations:
     async def test_list_allocations_object_response(self, httpx_mock):
         """Test listing allocations with wrapped object response."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/allocations",
+            url=re.compile(r".*/api/v1/allocations(\?.*)?$"),
             method="GET",
             json={"allocations": [_sample_allocation_dict("a1")], "total": 1},
         )
@@ -477,7 +478,7 @@ class TestListAllocations:
     async def test_list_allocations_empty(self, httpx_mock):
         """Test listing allocations with empty result."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/allocations",
+            url=re.compile(r".*/api/v1/allocations(\?.*)?$"),
             method="GET",
             json=[],
         )
@@ -643,7 +644,7 @@ class TestLogs:
             {"timestamp": now_str, "level": "INFO", "message": "Running"},
         ]
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/allocations/alloc-001/logs",
+            url=re.compile(r".*/api/v1/allocations/alloc-001/logs(\?.*)?$"),
             method="GET",
             json=log_entries,
         )
@@ -789,7 +790,7 @@ class TestDags:
     async def test_list_dags_success(self, httpx_mock):
         """Test listing DAGs."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/dags",
+            url=re.compile(r".*/api/v1/dags(\?.*)?$"),
             method="GET",
             json=[_sample_dag_dict("dag-001"), _sample_dag_dict("dag-002")],
         )
@@ -802,7 +803,7 @@ class TestDags:
     async def test_list_dags_empty(self, httpx_mock):
         """Test listing DAGs with empty result."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/dags",
+            url=re.compile(r".*/api/v1/dags(\?.*)?$"),
             method="GET",
             json=[],
         )
@@ -873,7 +874,7 @@ class TestAudit:
     async def test_query_audit_success(self, httpx_mock):
         """Test successful audit query."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/audit",
+            url=re.compile(r".*/api/v1/audit(\?.*)?$"),
             method="GET",
             json=[_sample_audit_entry_dict()],
         )
@@ -887,7 +888,7 @@ class TestAudit:
     async def test_query_audit_with_filters(self, httpx_mock):
         """Test audit query with filters."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/audit",
+            url=re.compile(r".*/api/v1/audit(\?.*)?$"),
             method="GET",
             json=[_sample_audit_entry_dict()],
         )
@@ -901,7 +902,7 @@ class TestAudit:
     async def test_query_audit_empty(self, httpx_mock):
         """Test audit query with no results."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/audit",
+            url=re.compile(r".*/api/v1/audit(\?.*)?$"),
             method="GET",
             json=[],
         )
@@ -1074,7 +1075,7 @@ class TestAccounting:
     async def test_accounting_usage_success(self, httpx_mock):
         """Test successful accounting usage query."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/accounting/usage",
+            url=re.compile(r".*/api/v1/accounting/usage(\?.*)?$"),
             method="GET",
             json=_sample_accounting_usage_dict(),
         )
@@ -1089,7 +1090,7 @@ class TestAccounting:
     async def test_accounting_usage_with_period(self, httpx_mock):
         """Test accounting usage with date range."""
         httpx_mock.add_response(
-            url="http://localhost:8080/api/v1/accounting/usage",
+            url=re.compile(r".*/api/v1/accounting/usage(\?.*)?$"),
             method="GET",
             json=_sample_accounting_usage_dict(),
         )
