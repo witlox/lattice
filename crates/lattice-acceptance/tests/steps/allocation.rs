@@ -6,12 +6,8 @@ use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 
 // ─── Given Steps ───────────────────────────────────────────
-
-#[given(regex = r#"^a tenant "(\w[\w-]*)" with a quota of (\d+) nodes$"#)]
-fn given_tenant_with_quota(world: &mut LatticeWorld, name: String, max_nodes: u32) {
-    let tenant = TenantBuilder::new(&name).max_nodes(max_nodes).build();
-    world.tenants.push(tenant);
-}
+// Note: tenant, vCluster, ready nodes, pending allocation, requeue policy,
+// and checkpoint protocol steps are in common.rs
 
 #[given(regex = r#"^a tenant "(\w[\w-]*)" with strict isolation$"#)]
 fn given_tenant_strict(world: &mut LatticeWorld, name: String) {
@@ -23,37 +19,6 @@ fn given_tenant_strict(world: &mut LatticeWorld, name: String) {
 fn given_tenant_max_nodes(world: &mut LatticeWorld, name: String, max_nodes: u32) {
     let tenant = TenantBuilder::new(&name).max_nodes(max_nodes).build();
     world.tenants.push(tenant);
-}
-
-#[given(regex = r#"^a vCluster "(\w[\w-]*)" with scheduler "(\w+)"$"#)]
-fn given_vcluster(world: &mut LatticeWorld, name: String, scheduler: String) {
-    use super::helpers::parse_scheduler_type;
-    let stype = parse_scheduler_type(&scheduler);
-    let tenant_id = world
-        .tenants
-        .last()
-        .map(|t| t.id.clone())
-        .unwrap_or_else(|| "test-tenant".into());
-    let vc = VClusterBuilder::new(&name)
-        .tenant(&tenant_id)
-        .scheduler(stype)
-        .build();
-    world.vclusters.push(vc);
-}
-
-#[given(regex = r#"^(\d+) ready nodes in group (\d+)$"#)]
-fn given_ready_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
-    let nodes = create_node_batch(count, group);
-    world.nodes.extend(nodes);
-}
-
-#[given(regex = r#"^a pending allocation requesting (\d+) nodes$"#)]
-fn given_pending_allocation(world: &mut LatticeWorld, nodes: u32) {
-    let alloc = AllocationBuilder::new()
-        .nodes(nodes)
-        .state(AllocationState::Pending)
-        .build();
-    world.allocations.push(alloc);
 }
 
 #[given("a running allocation")]
@@ -86,36 +51,7 @@ fn given_suspended_allocation(world: &mut LatticeWorld) {
     world.allocations.push(alloc);
 }
 
-#[given("a running allocation with checkpoint enabled")]
-fn given_running_alloc_checkpoint(world: &mut LatticeWorld) {
-    let mut alloc = AllocationBuilder::new()
-        .nodes(2)
-        .state(AllocationState::Running)
-        .build();
-    alloc.checkpoint = CheckpointStrategy::Auto;
-    alloc.assigned_nodes = vec!["node-0".into(), "node-1".into()];
-    alloc.started_at = Some(chrono::Utc::now());
-    world.allocations.push(alloc);
-}
-
-#[given(regex = r#"^a running allocation with requeue policy "(\w+)"$"#)]
-fn given_running_alloc_requeue_policy(world: &mut LatticeWorld, policy: String) {
-    let requeue_policy = match policy.as_str() {
-        "on_node_failure" => RequeuePolicy::OnNodeFailure,
-        "always" => RequeuePolicy::Always,
-        "never" => RequeuePolicy::Never,
-        other => panic!("Unknown requeue policy: {other}"),
-    };
-    let mut alloc = AllocationBuilder::new()
-        .nodes(1)
-        .state(AllocationState::Running)
-        .build();
-    alloc.requeue_policy = requeue_policy;
-    alloc.assigned_nodes = vec!["node-0".into()];
-    alloc.started_at = Some(chrono::Utc::now());
-    world.allocations.push(alloc);
-    world.requeue_policy = Some(policy);
-}
+// Note: "a running allocation with checkpoint enabled" is in common.rs
 
 #[given(regex = r#"^a running allocation with requeue policy "(\w+)" and max_requeue (\d+)$"#)]
 fn given_running_alloc_requeue_policy_with_limit(
@@ -150,24 +86,7 @@ fn given_requeued_n_times(world: &mut LatticeWorld, count: u32) {
 }
 
 // ─── When Steps ────────────────────────────────────────────
-
-#[when(regex = r#"^I submit a bounded allocation requesting (\d+) nodes with walltime "(\w+)"$"#)]
-fn submit_bounded(world: &mut LatticeWorld, nodes: u32, walltime: String) {
-    use super::helpers::parse_duration_str;
-    let dur = parse_duration_str(&walltime);
-    let hours = dur.num_hours().max(1) as u64;
-    let tenant = world
-        .tenants
-        .last()
-        .map(|t| t.id.clone())
-        .unwrap_or_else(|| "test-tenant".into());
-    let alloc = AllocationBuilder::new()
-        .tenant(&tenant)
-        .nodes(nodes)
-        .lifecycle_bounded(hours)
-        .build();
-    world.allocations.push(alloc);
-}
+// Note: submit_bounded and application_crashes are in common.rs
 
 #[when(regex = r#"^I submit an unbounded allocation requesting (\d+) nodes$"#)]
 fn submit_unbounded(world: &mut LatticeWorld, nodes: u32) {
@@ -260,21 +179,6 @@ fn cancel_allocation(world: &mut LatticeWorld) {
     alloc.completed_at = Some(chrono::Utc::now());
 }
 
-#[when("the application process exits with non-zero status")]
-fn application_crashes(world: &mut LatticeWorld) {
-    let alloc = world.last_allocation_mut();
-    assert!(
-        alloc.state.can_transition_to(&AllocationState::Failed),
-        "Cannot transition to Failed from {:?}",
-        alloc.state
-    );
-    alloc.state = AllocationState::Failed;
-    alloc.exit_code = Some(1);
-    alloc.message = Some("application process exited with non-zero status".into());
-    alloc.assigned_nodes.clear();
-    alloc.completed_at = Some(chrono::Utc::now());
-}
-
 #[when("the allocation begins prologue")]
 fn allocation_begins_prologue(world: &mut LatticeWorld) {
     let alloc = world.last_allocation_mut();
@@ -311,17 +215,7 @@ fn preemption_checkpoint_initiated(world: &mut LatticeWorld) {
     alloc.state = AllocationState::Checkpointing;
 }
 
-#[when("the checkpoint completes")]
-fn checkpoint_completes(world: &mut LatticeWorld) {
-    let alloc = world.last_allocation_mut();
-    assert!(
-        alloc.state.can_transition_to(&AllocationState::Suspended),
-        "Cannot transition to Suspended from {:?}",
-        alloc.state
-    );
-    alloc.state = AllocationState::Suspended;
-    alloc.resume_from_checkpoint = true;
-}
+// Note: "the checkpoint completes" is in common.rs
 
 #[when("the assigned node transitions to down")]
 fn assigned_node_goes_down(world: &mut LatticeWorld) {
@@ -377,17 +271,7 @@ fn application_crashes_again(world: &mut LatticeWorld) {
 }
 
 // ─── Then Steps ────────────────────────────────────────────
-
-#[then(regex = r#"^the allocation state should be "(\w+)"$"#)]
-fn check_allocation_state(world: &mut LatticeWorld, expected: String) {
-    let expected_state = parse_allocation_state(&expected);
-    let alloc = world.last_allocation();
-    assert_eq!(
-        alloc.state, expected_state,
-        "Expected state {:?}, got {:?}",
-        expected_state, alloc.state
-    );
-}
+// Note: check_allocation_state is in common.rs
 
 #[then("the allocation should have a valid ID")]
 fn check_valid_id(world: &mut LatticeWorld) {

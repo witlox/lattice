@@ -8,33 +8,7 @@ use lattice_scheduler::autoscaler::{Autoscaler, AutoscalerConfig, ScaleDecision}
 use lattice_test_harness::fixtures::*;
 
 // ─── Given Steps ───────────────────────────────────────────
-
-#[given(regex = r#"^a tenant "(\w[\w-]*)" with max nodes (\d+)$"#)]
-fn given_tenant_max_nodes_space(world: &mut LatticeWorld, name: String, max_nodes: u32) {
-    let tenant = TenantBuilder::new(&name).max_nodes(max_nodes).build();
-    world.tenants.push(tenant);
-}
-
-#[given(regex = r#"^a vCluster "(\w[\w-]*)" for tenant "(\w[\w-]*)" with scheduler "(\w[\w_]*)"$"#)]
-fn given_vcluster_for_tenant(
-    world: &mut LatticeWorld,
-    vc_name: String,
-    tenant: String,
-    scheduler: String,
-) {
-    let sched_type = super::helpers::parse_scheduler_type(&scheduler);
-    let vc = VClusterBuilder::new(&vc_name)
-        .tenant(&tenant)
-        .scheduler(sched_type)
-        .build();
-    world.vclusters.push(vc);
-}
-
-#[given(regex = r#"^(\d+) nodes in group (\d+)$"#)]
-fn given_nodes_in_group(world: &mut LatticeWorld, count: usize, group: u32) {
-    let nodes = create_node_batch(count, group);
-    world.nodes.extend(nodes);
-}
+// Note: tenant, vCluster, and nodes-in-group steps are in common.rs
 
 #[given(regex = r#"^a running reactive allocation using (\d+) nodes$"#)]
 fn given_reactive_allocation(world: &mut LatticeWorld, node_count: u32) {
@@ -86,10 +60,7 @@ fn given_reactive_allocation_with_min_nodes(
     world.allocations.push(alloc);
 }
 
-#[given("the TSDB is unreachable")]
-fn given_tsdb_unreachable(world: &mut LatticeWorld) {
-    world.tsdb_available = false;
-}
+// Note: "the TSDB is unreachable" is in common.rs
 
 #[given(regex = r#"^reactive allocation "([^"]+)" using (\d+) nodes$"#)]
 fn given_named_reactive_allocation(world: &mut LatticeWorld, name: String, node_count: u32) {

@@ -7,6 +7,13 @@ use lattice_scheduler::conformance::{
 };
 use lattice_test_harness::fixtures::*;
 
+fn requested_nodes(alloc: &Allocation) -> u32 {
+    match alloc.resources.nodes {
+        NodeCount::Exact(n) => n,
+        NodeCount::Range { max, .. } => max,
+    }
+}
+
 // ─── Given Steps ───────────────────────────────────────────
 
 #[given(regex = r#"^(\d+) nodes with conformance fingerprint "([^"]+)" in group (\d+)$"#)]
@@ -43,16 +50,7 @@ fn given_conformance_short_in_group(
     }
 }
 
-#[given(regex = r#"^(\d+) ready nodes with conformance fingerprint "([^"]+)"$"#)]
-fn given_conformant_nodes(world: &mut LatticeWorld, count: usize, fingerprint: String) {
-    for i in 0..count {
-        let node = NodeBuilder::new()
-            .id(&format!("conf-{fingerprint}-{i}"))
-            .conformance(&fingerprint)
-            .build();
-        world.nodes.push(node);
-    }
-}
+// Note: "N ready nodes with conformance fingerprint" is in common.rs
 
 #[given(regex = r#"^a node with OS "([^"]+)", GPU driver "([^"]+)", and libraries "([^"]+)"$"#)]
 fn given_node_with_software_stack(
@@ -129,39 +127,7 @@ fn given_conformance_nodes_no_group(
 
 // ─── When Steps ────────────────────────────────────────────
 
-#[when(regex = r"^an allocation requiring (\d+) nodes is submitted$")]
-fn when_allocation_requiring_n_nodes(world: &mut LatticeWorld, count: u32) {
-    let node_refs: Vec<&Node> = world.nodes.iter().collect();
-    let constraints = ResourceConstraints::default();
-    let filtered = filter_by_constraints(&node_refs, &constraints);
-    let selected = select_conformant_nodes(count, &filtered);
-
-    let mut alloc = AllocationBuilder::new()
-        .nodes(count)
-        .state(AllocationState::Pending)
-        .build();
-
-    if let Some(node_ids) = selected {
-        alloc.assigned_nodes = node_ids;
-        alloc.state = AllocationState::Running;
-    } else {
-        // Fall back: take nodes across groups using topology-aware selection.
-        alloc.assigned_nodes = filtered
-            .iter()
-            .take(count as usize)
-            .map(|n| n.id.clone())
-            .collect();
-        if alloc.assigned_nodes.len() == count as usize {
-            alloc.state = AllocationState::Running;
-            alloc
-                .tags
-                .insert("placement_mode".into(), "topology_fallback".into());
-        }
-    }
-
-    world.allocations.push(alloc);
-    world.filtered_nodes = world.last_allocation().assigned_nodes.clone();
-}
+// Note: "an allocation requiring N nodes is submitted" is in common.rs
 
 #[when("the conformance fingerprint is computed")]
 fn when_fingerprint_computed(world: &mut LatticeWorld) {
@@ -202,8 +168,23 @@ fn when_sensitive_allocation(world: &mut LatticeWorld, count: u32) {
     let filtered = filter_by_constraints(&node_refs, &constraints);
 
     // Sensitive allocations require exact conformance match.
-    // Pick the conformance group assigned to sensitive nodes.
-    let selected = select_conformant_nodes(count, &filtered);
+    // Prefer nodes whose fingerprint contains "sensitive" (the sensitive baseline).
+    let sensitive_nodes: Vec<&Node> = filtered
+        .iter()
+        .filter(|n| {
+            n.conformance_fingerprint
+                .as_deref()
+                .map(|fp| fp.contains("sensitive"))
+                .unwrap_or(false)
+        })
+        .copied()
+        .collect();
+
+    let selected = if sensitive_nodes.len() >= count as usize {
+        select_conformant_nodes(count, &sensitive_nodes)
+    } else {
+        select_conformant_nodes(count, &filtered)
+    };
 
     let mut alloc = AllocationBuilder::new()
         .nodes(count)
@@ -396,7 +377,7 @@ fn then_conformance_fitness_penalized(world: &mut LatticeWorld) {
         .iter()
         .filter_map(|id| world.nodes.iter().find(|n| n.id == *id))
         .collect();
-    let score = conformance_fitness(&assigned_nodes, alloc.requested_nodes);
+    let score = conformance_fitness(&assigned_nodes, requested_nodes(alloc));
     assert!(
         score < 1.0,
         "Expected conformance fitness < 1.0 when spanning groups, got {score}"
@@ -414,11 +395,11 @@ fn then_homogeneous_scores_higher(world: &mut LatticeWorld) {
         .filter(|n| n.conformance_fingerprint.as_deref() == Some("a"))
         .copied()
         .collect();
-    let score_homo = conformance_fitness(&group_a, alloc.requested_nodes);
+    let score_homo = conformance_fitness(&group_a, requested_nodes(alloc));
 
     // Score for a mixed group.
-    let mixed: Vec<&Node> = node_refs.iter().take(alloc.requested_nodes as usize).copied().collect();
-    let score_mixed = conformance_fitness(&mixed, alloc.requested_nodes);
+    let mixed: Vec<&Node> = node_refs.iter().take(requested_nodes(alloc) as usize).copied().collect();
+    let score_mixed = conformance_fitness(&mixed, requested_nodes(alloc));
 
     assert!(
         score_homo >= score_mixed,
@@ -434,7 +415,7 @@ fn then_f9_contributes(world: &mut LatticeWorld) {
         .iter()
         .filter_map(|id| world.nodes.iter().find(|n| n.id == *id))
         .collect();
-    let score = conformance_fitness(&assigned_nodes, alloc.requested_nodes);
+    let score = conformance_fitness(&assigned_nodes, requested_nodes(alloc));
     // f9 is always between 0.0 and 1.0.
     assert!(
         (0.0..=1.0).contains(&score),

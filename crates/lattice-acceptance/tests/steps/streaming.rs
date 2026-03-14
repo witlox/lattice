@@ -35,7 +35,9 @@ fn given_subscriber(world: &mut LatticeWorld, alloc_name: String) {
         .or_insert_with(Vec::new);
 
     // Subscribe synchronously via block_on (cucumber steps are sync).
-    let mut rx = futures::executor::block_on(bus.subscribe(alloc_id));
+    let mut rx = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.subscribe(alloc_id))
+    });
 
     // Spawn a background thread to collect events.
     let events: Arc<std::sync::Mutex<Vec<AllocationEvent>>> =
@@ -149,7 +151,9 @@ fn given_named_subscriber(world: &mut LatticeWorld, sub_name: String, alloc_name
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
     let bus = world.event_bus.as_ref().expect("event bus not created").clone();
 
-    let mut rx = futures::executor::block_on(bus.subscribe(alloc_id));
+    let mut rx = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.subscribe(alloc_id))
+    });
 
     let events: Arc<std::sync::Mutex<Vec<AllocationEvent>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -177,7 +181,9 @@ fn given_slow_subscriber(world: &mut LatticeWorld, alloc_name: String) {
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
     let bus = world.event_bus.as_ref().expect("event bus not created").clone();
 
-    let mut rx = futures::executor::block_on(bus.subscribe(alloc_id));
+    let mut rx = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.subscribe(alloc_id))
+    });
 
     world.slow_subscriber_name = Some(alloc_name.clone());
 
@@ -215,7 +221,9 @@ fn publish_state_change(
         old_state,
         new_state,
     };
-    futures::executor::block_on(bus.publish(event));
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.publish(event))
+    });
 }
 
 #[when(regex = r#"^(\d+) log lines are published for "([^"]+)"$"#)]
@@ -228,7 +236,9 @@ fn publish_log_lines(world: &mut LatticeWorld, count: usize, alloc_name: String)
             line: format!("log line {i}"),
             stream: LogStream::Stdout,
         };
-        futures::executor::block_on(bus.publish(event));
+        tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.publish(event))
+    });
     }
 }
 
@@ -243,7 +253,9 @@ fn publish_metric_samples(world: &mut LatticeWorld, count: usize, alloc_name: St
             value: i as f64 * 0.1,
             timestamp_epoch_ms: 1000 + i as u64,
         };
-        futures::executor::block_on(bus.publish(event));
+        tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.publish(event))
+    });
     }
 }
 
@@ -259,7 +271,9 @@ fn when_rapid_events(world: &mut LatticeWorld, count: usize, alloc_name: String)
             line: format!("rapid event {i}"),
             stream: LogStream::Stdout,
         };
-        futures::executor::block_on(bus.publish(event));
+        tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.publish(event))
+    });
     }
     let elapsed = start.elapsed();
 
@@ -290,7 +304,9 @@ fn when_subscriber_disconnects(world: &mut LatticeWorld) {
     if let Some(bus) = &world.event_bus {
         let alloc_id = world.named_alloc_ids.get(&last_alloc).copied();
         if let Some(id) = alloc_id {
-            futures::executor::block_on(bus.remove(&id));
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(bus.remove(&id))
+            });
         }
     }
 }
@@ -323,8 +339,12 @@ fn when_ordered_events(
         new_state: state3,
     };
 
-    futures::executor::block_on(bus.publish(event1));
-    futures::executor::block_on(bus.publish(event2));
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.publish(event1))
+    });
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(bus.publish(event2))
+    });
 }
 
 // ─── Then Steps ────────────────────────────────────────────

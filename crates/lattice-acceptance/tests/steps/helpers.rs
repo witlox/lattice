@@ -1,5 +1,6 @@
 use chrono::Duration;
 use lattice_api::middleware::rbac::{Operation, Role};
+use lattice_common::traits::AuditAction;
 use lattice_common::types::*;
 
 pub fn parse_allocation_state(s: &str) -> AllocationState {

@@ -73,21 +73,7 @@ fn given_checkpoint_cost_exceeds_savings(world: &mut LatticeWorld) {
     }
 }
 
-#[given(regex = r#"^a running allocation with checkpoint protocol "(.+)"$"#)]
-fn given_allocation_with_checkpoint_protocol(world: &mut LatticeWorld, protocol: String) {
-    let strategy = match protocol.as_str() {
-        "signal" => CheckpointStrategy::Auto, // Signal-based treated as Auto in types
-        "grpc" => CheckpointStrategy::Manual,
-        "dmtcp" => CheckpointStrategy::Auto,
-        other => panic!("Unknown checkpoint protocol: {other}"),
-    };
-    let mut alloc = make_running_alloc(4, Duration::hours(2));
-    alloc.checkpoint = strategy;
-    alloc
-        .tags
-        .insert("checkpoint_protocol".into(), protocol.clone());
-    world.allocations.push(alloc);
-}
+// Note: checkpoint protocol step is in common.rs
 
 #[given(regex = r#"^a running allocation in "(.+)" state$"#)]
 fn given_running_allocation_in_state(world: &mut LatticeWorld, state: String) {
@@ -152,6 +138,13 @@ fn given_three_running_allocations(world: &mut LatticeWorld) {
 #[when("the checkpoint broker evaluates the allocation")]
 fn checkpoint_broker_evaluates(world: &mut LatticeWorld) {
     let alloc = world.allocations.last().expect("no allocation to evaluate");
+
+    // Non-preemptible allocations with CheckpointStrategy::None skip checkpoint entirely.
+    if matches!(alloc.checkpoint, CheckpointStrategy::None) {
+        world.should_checkpoint = Some(false);
+        return;
+    }
+
     let backlog = alloc
         .tags
         .get("backlog_pressure")
@@ -382,16 +375,7 @@ fn sigterm_then_sigkill(world: &mut LatticeWorld) {
     }
 }
 
-#[then(regex = r#"^the allocation transitions to "(.+)"$"#)]
-fn allocation_transitions_to(world: &mut LatticeWorld, state: String) {
-    let expected = crate::steps::helpers::parse_allocation_state(&state);
-    let alloc = world.allocations.last().expect("no allocation");
-    assert_eq!(
-        alloc.state, expected,
-        "Expected transition to {expected:?}, got {:?}",
-        alloc.state
-    );
-}
+// Note: allocation_transitions_to is in common.rs
 
 #[then("the checkpoint is marked as partial failure")]
 fn checkpoint_partial_failure(world: &mut LatticeWorld) {

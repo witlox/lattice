@@ -7,28 +7,7 @@ use lattice_test_harness::fixtures::*;
 
 use super::helpers::parse_allocation_state;
 
-// ─── Shared Given Steps (tenant / vCluster) ─────────────────
-
-#[given(regex = r#"^a tenant "([^"]+)" with max nodes (\d+)$"#)]
-fn given_tenant_with_max_nodes(world: &mut LatticeWorld, name: String, max_nodes: u32) {
-    let tenant = TenantBuilder::new(&name).max_nodes(max_nodes).build();
-    world.tenants.push(tenant);
-}
-
-#[given(regex = r#"^a vCluster "([^"]+)" for tenant "([^"]+)" with scheduler "([^"]+)"$"#)]
-fn given_vcluster_for_tenant(
-    world: &mut LatticeWorld,
-    vc_name: String,
-    tenant: String,
-    scheduler: String,
-) {
-    let sched_type = super::helpers::parse_scheduler_type(&scheduler);
-    let vc = VClusterBuilder::new(&vc_name)
-        .tenant(&tenant)
-        .scheduler(sched_type)
-        .build();
-    world.vclusters.push(vc);
-}
+// Note: tenant, vCluster, and checkpoint protocol steps are in common.rs
 
 // ─── Given: Node Setup Steps ────────────────────────────────
 
@@ -143,42 +122,7 @@ fn given_n_nodes_all_running_low_priority(world: &mut LatticeWorld, count: u32) 
     world.nodes.extend(nodes);
 }
 
-#[given("a running allocation with checkpoint enabled")]
-fn given_running_alloc_checkpoint_enabled(world: &mut LatticeWorld) {
-    let node = NodeBuilder::new().id("ckpt-node-0").build();
-    let mut alloc = AllocationBuilder::new()
-        .preemption_class(2)
-        .nodes(1)
-        .state(AllocationState::Running)
-        .lifecycle_bounded(4)
-        .build();
-    alloc.assigned_nodes = vec![node.id.clone()];
-    alloc.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(30));
-    alloc.checkpoint = CheckpointStrategy::Auto;
-    world.allocations.push(alloc);
-    world.nodes.push(node);
-}
-
-#[given(regex = r#"^a running allocation with checkpoint protocol "([^"]+)"$"#)]
-fn given_running_alloc_checkpoint_protocol(world: &mut LatticeWorld, protocol: String) {
-    let node = NodeBuilder::new().id("nocp-node-0").build();
-    let mut alloc = AllocationBuilder::new()
-        .preemption_class(2)
-        .nodes(1)
-        .state(AllocationState::Running)
-        .lifecycle_bounded(4)
-        .build();
-    alloc.assigned_nodes = vec![node.id.clone()];
-    alloc.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(30));
-    alloc.checkpoint = match protocol.as_str() {
-        "none" => CheckpointStrategy::None,
-        "auto" => CheckpointStrategy::Auto,
-        "manual" => CheckpointStrategy::Manual,
-        other => panic!("Unknown checkpoint protocol: {other}"),
-    };
-    world.allocations.push(alloc);
-    world.nodes.push(node);
-}
+// Note: "a running allocation with checkpoint enabled" is in common.rs
 
 #[given("2 class-3 allocations running with different submission times")]
 fn given_two_class3_different_submission_times(world: &mut LatticeWorld) {
@@ -758,21 +702,7 @@ fn then_additional_victims_selected(world: &mut LatticeWorld) {
     }
 }
 
-#[then(regex = r#"^the allocation transitions to "([^"]+)"$"#)]
-fn then_allocation_transitions_to(world: &mut LatticeWorld, state_str: String) {
-    let expected = parse_allocation_state(&state_str);
-    let alloc = world
-        .allocations
-        .iter()
-        .find(|a| a.state == expected)
-        .unwrap_or_else(|| {
-            panic!(
-                "no allocation in state {state_str}, states: {:?}",
-                world.allocations.iter().map(|a| &a.state).collect::<Vec<_>>()
-            );
-        });
-    assert_eq!(alloc.state, expected);
-}
+// Note: then_allocation_transitions is in common.rs
 
 #[then("the allocation re-enters the queue with original submission time")]
 fn then_alloc_reenters_queue(world: &mut LatticeWorld) {
@@ -793,18 +723,7 @@ fn then_alloc_reenters_queue(world: &mut LatticeWorld) {
     );
 }
 
-#[then("the allocation is not requeued")]
-fn then_alloc_not_requeued(world: &mut LatticeWorld) {
-    let failed = world
-        .allocations
-        .iter()
-        .find(|a| a.state == AllocationState::Failed)
-        .expect("no failed allocation found");
-    assert!(
-        !failed.resume_from_checkpoint,
-        "failed allocation should not have resume_from_checkpoint set"
-    );
-}
+// Note: "the allocation is not requeued" is in common.rs
 
 #[then("the more recently submitted class-3 allocation is preempted first")]
 fn then_newer_class3_preempted_first(world: &mut LatticeWorld) {

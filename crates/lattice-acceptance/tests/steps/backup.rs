@@ -56,10 +56,10 @@ fn given_export_backup(world: &mut LatticeWorld) {
         .expect("no tempdir");
     let backup_path = tempdir.path().join("test-backup.tar.gz");
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let metadata = rt
-        .block_on(export_backup(state, &backup_path))
-        .expect("export_backup failed");
+    let metadata = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(export_backup(state, &backup_path))
+    })
+    .expect("export_backup failed");
 
     world.backup_path = Some(backup_path);
     world.backup_metadata = Some(metadata);
@@ -102,10 +102,10 @@ fn when_export_backup(world: &mut LatticeWorld) {
         .expect("no tempdir");
     let backup_path = tempdir.path().join("test-backup.tar.gz");
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let metadata = rt
-        .block_on(export_backup(state, &backup_path))
-        .expect("export_backup failed");
+    let metadata = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(export_backup(state, &backup_path))
+    })
+    .expect("export_backup failed");
 
     world.backup_path = Some(backup_path);
     world.backup_metadata = Some(metadata);
@@ -181,8 +181,8 @@ fn when_restore_to_existing_dir(world: &mut LatticeWorld) {
 #[then(regex = r#"^the backup metadata should show (\d+) nodes and (\d+) allocations$"#)]
 fn then_backup_metadata_counts(
     world: &mut LatticeWorld,
-    expected_nodes: u32,
-    expected_allocs: u32,
+    expected_nodes: usize,
+    expected_allocs: usize,
 ) {
     let meta = world
         .backup_metadata

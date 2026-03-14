@@ -1760,6 +1760,7 @@ dependencies = [
  "cucumber",
  "flate2",
  "futures",
+ "hex",
  "lattice-api",
  "lattice-checkpoint",
  "lattice-common",

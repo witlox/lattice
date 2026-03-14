@@ -68,7 +68,7 @@ fn given_tenant_fair_share(world: &mut LatticeWorld, name: String, target: f64) 
 }
 
 #[given(regex = r#"^tenant "(\w[\w-]*)" currently using ([\d.]+) of cluster resources$"#)]
-fn given_tenant_current_usage(world: &mut LatticeWorld, _tenant: String, _usage: f64) {
+fn given_tenant_current_usage(_world: &mut LatticeWorld, _tenant: String, _usage: f64) {
     // Track usage as metadata; soft quota does not reject, just scores lower.
     // No-op for setup: the scoring check happens in the then step.
 }
@@ -311,18 +311,7 @@ fn both_tenants_pending(world: &mut LatticeWorld) {
 
 // ─── Then Steps ────────────────────────────────────────────
 
-#[then(regex = r#"^the allocation should be rejected with "QuotaExceeded"$"#)]
-fn allocation_rejected_with_quota(world: &mut LatticeWorld) {
-    let err = world
-        .last_error
-        .as_ref()
-        .expect("Expected allocation to be rejected, but no error occurred");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("QuotaExceeded") || msg.contains("Quota exceeded"),
-        "Expected QuotaExceeded error, got '{msg}'"
-    );
-}
+// Note: 'the allocation should be rejected with "X"' is in common.rs
 
 #[then("the allocation should not be rejected")]
 fn allocation_not_rejected(world: &mut LatticeWorld) {
@@ -448,7 +437,7 @@ fn tenant_higher_fair_share(world: &mut LatticeWorld, tenant_name: String) {
         .expect("Tenant not found");
 
     // Find the other tenant for comparison
-    let other = world
+    let _other = world
         .tenants
         .iter()
         .find(|t| t.id != tenant_name)

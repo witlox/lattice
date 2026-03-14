@@ -250,50 +250,7 @@ fn when_requiring_gpu_memory(world: &mut LatticeWorld) {
     world.allocations.push(alloc);
 }
 
-#[when(regex = r"^an allocation requiring (\d+) nodes is submitted$")]
-fn when_allocation_requiring_n_nodes(world: &mut LatticeWorld, count: u32) {
-    let node_refs: Vec<&Node> = world.nodes.iter().collect();
-    // Prefer nodes in the same group (topology packing).
-    let mut by_group: std::collections::HashMap<u32, Vec<&Node>> = std::collections::HashMap::new();
-    for n in &node_refs {
-        by_group.entry(n.group).or_default().push(n);
-    }
-
-    let mut alloc = AllocationBuilder::new()
-        .nodes(count)
-        .state(AllocationState::Running)
-        .build();
-
-    // Try to find a single group with enough nodes.
-    let mut placed = false;
-    for (_group, group_nodes) in &by_group {
-        if group_nodes.len() >= count as usize {
-            alloc.assigned_nodes = group_nodes
-                .iter()
-                .take(count as usize)
-                .map(|n| n.id.clone())
-                .collect();
-            alloc.tags.insert("placement_mode".into(), "group_packed".into());
-            placed = true;
-            break;
-        }
-    }
-
-    if !placed {
-        // Fallback: spread across groups.
-        alloc.assigned_nodes = node_refs
-            .iter()
-            .take(count as usize)
-            .map(|n| n.id.clone())
-            .collect();
-        alloc
-            .tags
-            .insert("placement_mode".into(), "spread".into());
-    }
-
-    world.filtered_nodes = alloc.assigned_nodes.clone();
-    world.allocations.push(alloc);
-}
+// Note: "an allocation requiring N nodes is submitted" is in common.rs
 
 #[when(regex = r"^an allocation requiring 0 GPUs is submitted$")]
 fn when_requiring_zero_gpus(world: &mut LatticeWorld) {

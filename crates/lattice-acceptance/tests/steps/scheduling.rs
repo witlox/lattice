@@ -1,147 +1,14 @@
-use std::collections::HashMap;
-
 use chrono::{Duration, Utc};
 use cucumber::{given, then, when};
 use uuid::Uuid;
 
 use crate::LatticeWorld;
-use super::helpers::{parse_allocation_state, parse_scheduler_type};
+use super::helpers::parse_allocation_state;
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
-use lattice_scheduler::cycle::{run_cycle, CycleInput};
-use lattice_scheduler::placement::PlacementDecision;
-use lattice_scheduler::resource_timeline::TimelineConfig;
-
-// ─── Shared helpers ────────────────────────────────────────
-
-/// Build a `CycleInput` from the current world state.
-fn build_cycle_input(world: &LatticeWorld) -> CycleInput {
-    let groups: usize = world
-        .nodes
-        .iter()
-        .map(|n| n.group as usize)
-        .max()
-        .map(|g| g + 1)
-        .unwrap_or(1);
-
-    let nodes_per_group: usize = if groups > 0 {
-        world.nodes.len() / groups
-    } else {
-        world.nodes.len()
-    };
-
-    let topology = create_test_topology(groups, nodes_per_group.max(1));
-
-    let pending: Vec<Allocation> = world
-        .allocations
-        .iter()
-        .filter(|a| a.state == AllocationState::Pending)
-        .cloned()
-        .collect();
-
-    let running: Vec<Allocation> = world
-        .allocations
-        .iter()
-        .filter(|a| a.state == AllocationState::Running)
-        .cloned()
-        .collect();
-
-    CycleInput {
-        pending,
-        running,
-        nodes: world.nodes.clone(),
-        tenants: world.tenants.clone(),
-        topology,
-        data_readiness: HashMap::new(),
-        energy_price: 0.5,
-        timeline_config: TimelineConfig::default(),
-    }
-}
-
-/// Get cost weights from the first vCluster or use defaults.
-fn weights_for_world(world: &LatticeWorld) -> CostWeights {
-    world
-        .vclusters
-        .first()
-        .map(|vc| vc.cost_weights.clone())
-        .unwrap_or_default()
-}
-
-/// Apply Place/Backfill decisions to allocations in the world.
-fn apply_decisions(world: &mut LatticeWorld, decisions: &[PlacementDecision]) {
-    for decision in decisions {
-        match decision {
-            PlacementDecision::Place {
-                allocation_id,
-                nodes,
-            }
-            | PlacementDecision::Backfill {
-                allocation_id,
-                nodes,
-                ..
-            } => {
-                if let Some(alloc) = world.allocations.iter_mut().find(|a| a.id == *allocation_id) {
-                    alloc.state = AllocationState::Running;
-                    alloc.assigned_nodes = nodes.clone();
-                    alloc.started_at = Some(Utc::now());
-                }
-            }
-            PlacementDecision::Preempt {
-                allocation_id,
-                nodes,
-                victims,
-            } => {
-                // Mark victims as suspended
-                for vid in victims {
-                    if let Some(v) = world.allocations.iter_mut().find(|a| a.id == *vid) {
-                        v.state = AllocationState::Suspended;
-                        v.assigned_nodes.clear();
-                    }
-                }
-                // Place the preempting allocation
-                if let Some(alloc) = world.allocations.iter_mut().find(|a| a.id == *allocation_id) {
-                    alloc.state = AllocationState::Running;
-                    alloc.assigned_nodes = nodes.clone();
-                    alloc.started_at = Some(Utc::now());
-                }
-            }
-            PlacementDecision::Defer { .. } => {
-                // Allocation stays Pending — nothing to do.
-            }
-        }
-    }
-}
 
 // ─── Given steps ───────────────────────────────────────────
-
-#[given(regex = r#"^a tenant "(\w+)" with a quota of (\d+) nodes$"#)]
-fn given_tenant_with_quota(world: &mut LatticeWorld, tenant: String, max_nodes: u32) {
-    let t = TenantBuilder::new(&tenant)
-        .max_nodes(max_nodes)
-        .build();
-    world.tenants.push(t);
-}
-
-#[given(regex = r#"^a vCluster "([^"]+)" with scheduler "(\w+)"$"#)]
-fn given_vcluster_with_scheduler(world: &mut LatticeWorld, name: String, sched: String) {
-    let scheduler_type = parse_scheduler_type(&sched);
-    let tenant = world
-        .tenants
-        .first()
-        .map(|t| t.id.clone())
-        .unwrap_or_else(|| "test-tenant".into());
-    let vc = VClusterBuilder::new(&name)
-        .tenant(&tenant)
-        .scheduler(scheduler_type)
-        .build();
-    world.vclusters.push(vc);
-}
-
-#[given(regex = r#"^(\d+) ready nodes in group (\d+)$"#)]
-fn given_ready_nodes_in_group(world: &mut LatticeWorld, count: usize, group: u32) {
-    let mut nodes = create_node_batch(count, group);
-    world.nodes.append(&mut nodes);
-}
+// Note: tenant, vCluster, ready nodes, and scheduler cycle steps are in common.rs
 
 #[given(regex = r#"^a tenant "(\w+)" with fair_share_target ([0-9.]+) and current usage ([0-9.]+)$"#)]
 fn given_tenant_with_fair_share(
@@ -203,15 +70,21 @@ fn given_large_deferred_allocation(
 
 #[given(regex = r#"^(\d+) ready nodes in group (\d+) all running allocations$"#)]
 fn given_nodes_all_running(world: &mut LatticeWorld, count: usize, group: u32) {
-    let nodes = create_node_batch(count, group);
+    let mut nodes = create_node_batch(count, group);
     let tenant = world
         .tenants
         .first()
         .map(|t| t.id.clone())
         .unwrap_or_else(|| "test-tenant".into());
+    let vcluster = world
+        .vclusters
+        .first()
+        .map(|vc| vc.id.clone())
+        .unwrap_or_else(|| "default".into());
 
-    // Create a running allocation occupying all these nodes
-    for node in &nodes {
+    // Create a running allocation occupying all these nodes, and mark each
+    // node as owned so the scheduler sees them as unavailable.
+    for node in &mut nodes {
         let mut alloc = AllocationBuilder::new()
             .tenant(&tenant)
             .nodes(1)
@@ -220,6 +93,13 @@ fn given_nodes_all_running(world: &mut LatticeWorld, count: usize, group: u32) {
             .build();
         alloc.assigned_nodes = vec![node.id.clone()];
         alloc.started_at = Some(Utc::now() - Duration::minutes(30));
+        node.owner = Some(NodeOwnership {
+            tenant: tenant.clone(),
+            vcluster: vcluster.clone(),
+            allocation: alloc.id,
+            claimed_by: None,
+            is_borrowed: false,
+        });
         world.allocations.push(alloc);
     }
     world.nodes.extend(nodes);
@@ -294,77 +174,9 @@ fn given_new_pending_allocation(world: &mut LatticeWorld, node_count: u32) {
 
 // ─── When steps ────────────────────────────────────────────
 
-#[when("the scheduler runs a cycle")]
-fn scheduler_runs_cycle(world: &mut LatticeWorld) {
-    let input = build_cycle_input(world);
-    let weights = weights_for_world(world);
-    let result = run_cycle(&input, &weights);
-    apply_decisions(world, &result.decisions);
+// Note: "the scheduler runs a cycle" is in common.rs
 
-    // Store decisions in named_allocations for later assertion under a sentinel key.
-    // We serialize decision info via tags on a dummy allocation.
-    let mut meta = AllocationBuilder::new().build();
-    meta.tags.insert(
-        "__decisions_count".into(),
-        result.decisions.len().to_string(),
-    );
-    meta.tags.insert(
-        "__placed_count".into(),
-        result.placed().len().to_string(),
-    );
-    meta.tags.insert(
-        "__deferred_count".into(),
-        result.deferred().len().to_string(),
-    );
-    meta.tags.insert(
-        "__backfilled_count".into(),
-        result.backfilled().len().to_string(),
-    );
-    meta.tags.insert(
-        "__preemption_count".into(),
-        result.preemptions().len().to_string(),
-    );
-
-    // Track which allocation IDs were placed
-    for (i, d) in result.placed().iter().enumerate() {
-        meta.tags.insert(
-            format!("__placed_id_{i}"),
-            d.allocation_id().to_string(),
-        );
-    }
-    for (i, d) in result.backfilled().iter().enumerate() {
-        meta.tags.insert(
-            format!("__backfill_id_{i}"),
-            d.allocation_id().to_string(),
-        );
-    }
-
-    world
-        .named_allocations
-        .insert("__cycle_result".into(), meta);
-}
-
-#[when(regex = r#"^I submit a bounded allocation requesting (\d+) nodes with walltime "([^"]+)"$"#)]
-fn submit_bounded_allocation(world: &mut LatticeWorld, node_count: u32, walltime: String) {
-    let hours = super::helpers::parse_duration_str(&walltime).num_hours() as u64;
-    let tenant = world
-        .tenants
-        .first()
-        .map(|t| t.id.clone())
-        .unwrap_or_else(|| "test-tenant".into());
-    let vcluster = world
-        .vclusters
-        .first()
-        .map(|vc| vc.id.clone())
-        .unwrap_or_else(|| "default".into());
-    let alloc = AllocationBuilder::new()
-        .tenant(&tenant)
-        .vcluster(&vcluster)
-        .nodes(node_count)
-        .lifecycle_bounded(hours)
-        .build();
-    world.allocations.push(alloc);
-}
+// Note: submit_bounded is in common.rs
 
 #[when(regex = r#"^I submit a low-priority allocation requesting (\d+) nodes$"#)]
 fn submit_low_priority(world: &mut LatticeWorld, node_count: u32) {
@@ -616,16 +428,7 @@ fn allocation_placed_on_nodes(world: &mut LatticeWorld, expected_nodes: usize) {
     );
 }
 
-#[then(regex = r#"^the allocation state should be "(\w+)"$"#)]
-fn allocation_state_is(world: &mut LatticeWorld, expected: String) {
-    let expected_state = parse_allocation_state(&expected);
-    let alloc = world.allocations.last().expect("no allocations");
-    assert_eq!(
-        alloc.state, expected_state,
-        "Expected allocation state {expected}, got {:?}",
-        alloc.state
-    );
-}
+// Note: check_allocation_state is in common.rs
 
 #[then(regex = r#"^the high-priority allocation should be "(\w+)"$"#)]
 fn high_priority_is_state(world: &mut LatticeWorld, expected: String) {

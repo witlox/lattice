@@ -89,19 +89,7 @@ fn given_n_running_allocs_by_tenant(world: &mut LatticeWorld, count: usize, tena
     }
 }
 
-#[given(regex = r#"^a running sensitive allocation owned by user "(\w[\w-]*)"$"#)]
-fn given_running_sensitive_alloc(world: &mut LatticeWorld, user: String) {
-    let mut alloc = AllocationBuilder::new()
-        .sensitive()
-        .nodes(1)
-        .state(AllocationState::Running)
-        .build();
-    alloc.user = user.clone();
-    alloc.assigned_nodes = vec!["node-0".into()];
-    alloc.started_at = Some(chrono::Utc::now());
-    world.allocations.push(alloc);
-    world.attach_owner = Some(user);
-}
+// Note: running sensitive allocation step is in common.rs
 
 #[given("the log buffer is at capacity")]
 fn given_log_buffer_at_capacity(world: &mut LatticeWorld) {
@@ -192,7 +180,7 @@ fn when_node_agent_pushes_metrics(world: &mut LatticeWorld) {
 #[when("a diagnostics query is issued for the allocation")]
 fn when_diagnostics_query(world: &mut LatticeWorld) {
     let alloc = world.allocations.last().expect("no allocation");
-    let node_count = alloc.assigned_nodes.len();
+    let _node_count = alloc.assigned_nodes.len();
     let mut diag_lines = Vec::new();
     for node in &alloc.assigned_nodes {
         diag_lines.push(format!("{node}: healthy, cpu=45%, gpu=78%, mem=62%"));

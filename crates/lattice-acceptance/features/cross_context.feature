@@ -1,10 +1,10 @@
 Feature: Cross-Context Interactions
-  Scenarios that exercise boundaries between bounded contexts.
+  Tests that exercise boundaries between bounded contexts.
   These test integration surfaces, race conditions, and failure propagation
   across Scheduling, Consensus, Node Management, Observability, Tenant & Access,
   and Federation contexts.
 
-  # ── Concurrent vCluster Proposals ──────────────────────────────
+  # -- Concurrent vCluster Proposals ------------------------------
 
   Scenario: Two vCluster schedulers propose conflicting node assignments
     Given a quorum with 3 healthy members
@@ -23,14 +23,14 @@ Feature: Cross-Context Interactions
     Then it observes node "x1000c0s0b0n0" as owned by "hpc-1"
     And it does not re-propose the same node for "svc-1"
 
-  # ── Preemption vs Natural Completion ───────────────────────────
+  # -- Preemption vs Natural Completion ---------------------------
 
   Scenario: Allocation completes naturally while checkpoint hint is in flight
     Given allocation "train-1" is running on nodes "x1000c0s0b0n0,x1000c0s0b0n1"
     And allocation "train-1" has checkpoint strategy "auto"
     And the checkpoint broker sends a CHECKPOINT_HINT for "train-1"
     When allocation "train-1" completes successfully before the checkpoint begins
-    Then allocation "train-1" transitions to "Completed"
+    Then "train-1" transitions to "Completed"
     And nodes are released normally
     And the checkpoint hint is discarded as a no-op
     And no checkpoint file is written
@@ -48,7 +48,7 @@ Feature: Cross-Context Interactions
     And "urgent-1" is proposed for the freed nodes
     And "train-1" re-enters the queue with its original submission time preserved
 
-  # ── Quota Reduction vs In-Flight Proposal ──────────────────────
+  # -- Quota Reduction vs In-Flight Proposal ----------------------
 
   Scenario: Quota reduced while proposal is in flight
     Given tenant "physics" has max_nodes quota of 200
@@ -70,7 +70,7 @@ Feature: Cross-Context Interactions
     Then "sim-1" continues running (no retroactive preemption)
     And new proposals for tenant "physics" are rejected until usage drops below 195
 
-  # ── Walltime vs In-Progress Checkpoint ─────────────────────────
+  # -- Walltime vs In-Progress Checkpoint -------------------------
 
   Scenario: Walltime expires during active checkpoint - checkpoint completes in grace period
     Given allocation "long-job" has 30 seconds of walltime remaining
@@ -93,7 +93,7 @@ Feature: Cross-Context Interactions
     And "long-job" transitions to "Failed" with reason "walltime_exceeded"
     And the metric "lattice_checkpoint_walltime_conflict_total" is incremented
 
-  # ── VNI Exhaustion During DAG ──────────────────────────────────
+  # -- VNI Exhaustion During DAG ----------------------------------
 
   Scenario: VNI pool exhaustion stalls DAG at stage requiring new domain
     Given a DAG with stages "preprocess" -> "train" -> "evaluate"
@@ -116,7 +116,7 @@ Feature: Cross-Context Interactions
     Then "stage-b" joins the existing domain "shared-dom" (same VNI, no new allocation needed)
     And "stage-b" proceeds to scheduling normally
 
-  # ── Sensitive Audit Ordering ───────────────────────────────────
+  # -- Sensitive Audit Ordering -----------------------------------
 
   Scenario: Sensitive node claim audit entry committed before workload starts
     Given user "dr-x" requests 4 sensitive nodes
@@ -138,7 +138,7 @@ Feature: Cross-Context Interactions
     Then the attach is denied with reason "not_claiming_user"
     And an audit entry recording the denied attempt is Raft-committed
 
-  # ── Node Failure During Cross-Context Operations ───────────────
+  # -- Node Failure During Cross-Context Operations ---------------
 
   Scenario: Node crashes during checkpoint initiated by preemption
     Given allocation "victim" is being preempted
@@ -159,7 +159,7 @@ Feature: Cross-Context Interactions
     And a critical audit entry is Raft-committed recording the wipe failure
     And an alert is raised for operator intervention
 
-  # ── Accounting Failure Isolation ───────────────────────────────
+  # -- Accounting Failure Isolation -------------------------------
 
   Scenario: Waldur unavailable does not affect scheduling
     Given Waldur is unreachable
@@ -180,7 +180,7 @@ Feature: Cross-Context Interactions
     And scheduling continues normally
     And the allocation completion is recorded in the quorum (recoverable)
 
-  # ── Federation Cross-Context ───────────────────────────────────
+  # -- Federation Cross-Context -----------------------------------
 
   Scenario: Federated request arrives during local leader election
     Given federation is enabled
@@ -199,7 +199,7 @@ Feature: Cross-Context Interactions
     And no data transfer is initiated
     And no request is forwarded to Site B
 
-  # ── Observability Isolation for Sensitive ──────────────────────
+  # -- Observability Isolation for Sensitive ----------------------
 
   Scenario: Cross-tenant metric comparison rejected for sensitive allocations
     Given tenant "hospital-a" has sensitive allocation "sens-1"
@@ -216,7 +216,7 @@ Feature: Cross-Context Interactions
     And an audit entry is committed for both allocations
     And metrics are returned
 
-  # ── Data Staging Cross-Context ─────────────────────────────────
+  # -- Data Staging Cross-Context ---------------------------------
 
   Scenario: Data staging completes during queue wait improving scheduling score
     Given allocation "train-1" is pending with data mounts requiring hot-tier staging
@@ -234,7 +234,7 @@ Feature: Cross-Context Interactions
     And a warning is attached to the allocation status
     And the entrypoint starts (may encounter I/O latency)
 
-  # ── Elastic Borrowing Cross-Context ────────────────────────────
+  # -- Elastic Borrowing Cross-Context ----------------------------
 
   Scenario: Borrowed node reclaimed by home vCluster
     Given vCluster "hpc" has lent 20 idle nodes to vCluster "service"
@@ -255,6 +255,6 @@ Feature: Cross-Context Interactions
     When a third node would be reclaimed
     Then "autoscale-1" would drop below min_nodes
     And the scheduler attempts to acquire a replacement from the home vCluster
-    If no replacement is available
+    And no replacement is available
     Then "autoscale-1" operates below min_nodes temporarily
     And an alert is raised

@@ -34,11 +34,7 @@ fn given_storage_readiness(world: &mut LatticeWorld, readiness: f64, source: Str
     world.data_readiness.insert(source, readiness);
 }
 
-#[given(regex = r#"^(\d+) nodes in group (\d+)$"#)]
-fn given_nodes_in_group(world: &mut LatticeWorld, count: usize, group: u32) {
-    let nodes = create_node_batch(count, group);
-    world.nodes.extend(nodes);
-}
+// Note: nodes-in-group and node-agent steps are in common.rs
 
 #[given("storage staging fails with a VAST API error")]
 fn given_staging_fails(world: &mut LatticeWorld) {
@@ -50,22 +46,13 @@ fn given_staging_fails(world: &mut LatticeWorld) {
     world.allocations.push(alloc);
 }
 
-#[given(regex = r#"^a node agent for node "([^"]+)" with (\d+) GPUs$"#)]
-fn given_node_agent_for_node(world: &mut LatticeWorld, node_id: String, gpus: u32) {
-    let node = NodeBuilder::new()
-        .id(&node_id)
-        .gpu_count(gpus)
-        .build();
-    world.nodes.push(node);
-}
-
 #[given("an allocation with scratch directories on the node")]
 fn given_allocation_with_scratch(world: &mut LatticeWorld) {
     let mut alloc = AllocationBuilder::new()
         .nodes(1)
         .state(AllocationState::Running)
         .build();
-    alloc.data.scratch_per_node = Some(10 * 1024 * 1024 * 1024); // 10 GB
+    alloc.data.scratch_per_node = Some("10737418240".to_string()); // 10 GB
     alloc.assigned_nodes = vec![world
         .nodes
         .last()
@@ -163,7 +150,7 @@ fn when_prologue_with_scratch(world: &mut LatticeWorld) {
         .nodes(1)
         .state(AllocationState::Staging)
         .build();
-    alloc.data.scratch_per_node = Some(10 * 1024 * 1024 * 1024); // 10 GB
+    alloc.data.scratch_per_node = Some("10737418240".to_string()); // 10 GB
     alloc.assigned_nodes = vec![world
         .nodes
         .last()
@@ -320,14 +307,7 @@ fn then_scheduled_despite_staging_failure(world: &mut LatticeWorld) {
     );
 }
 
-#[then("a warning is attached to the allocation status")]
-fn then_warning_attached(world: &mut LatticeWorld) {
-    let alloc = world.last_allocation();
-    assert!(
-        alloc.tags.contains_key("staging_warning"),
-        "Expected a staging warning to be attached to the allocation"
-    );
-}
+// Note: "a warning is attached to the allocation status" is in common.rs
 
 #[then(regex = r#"^the QoS policy should be set to "(\w+)" on the staged data$"#)]
 fn then_qos_set(world: &mut LatticeWorld, expected_qos: String) {

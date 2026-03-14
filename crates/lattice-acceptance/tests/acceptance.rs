@@ -37,6 +37,20 @@ use lattice_scheduler::walltime::{WalltimeEnforcer, WalltimeExpiry};
 
 use lattice_api::mpi::MpiLaunchOrchestrator;
 
+/// A persistent PMI-2 connection to a server, used across multiple cucumber steps.
+#[cfg(unix)]
+pub struct PmiConnection {
+    pub reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    pub writer: tokio::net::unix::OwnedWriteHalf,
+}
+
+#[cfg(unix)]
+impl std::fmt::Debug for PmiConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PmiConnection").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 pub struct LatticeWorld {
@@ -106,6 +120,8 @@ pub struct LatticeWorld {
     pub tsdb_available: bool,
     pub alloc_min_nodes: HashMap<String, u32>,
     pub alloc_current_nodes: HashMap<String, u32>,
+    // Per-node tags (Node struct has no tags field, tracked here for BDD scenarios)
+    pub node_tags: HashMap<String, HashMap<String, String>>,
     // GPU topology / conformance filtering
     pub filtered_nodes: Vec<String>,
     pub locality_scores: Vec<(String, f64)>,
@@ -146,6 +162,8 @@ pub struct LatticeWorld {
     pub pmi_socket_path: Option<PathBuf>,
     #[cfg(unix)]
     pub pmi_responses: Vec<String>,
+    #[cfg(unix)]
+    pub pmi_connections: Vec<PmiConnection>,
     pub rank_layout: Option<RankLayout>,
     pub launch_result: Option<Result<LaunchId, String>>,
     pub parsed_command: Option<Result<Pmi2Command, String>>,
@@ -153,6 +171,8 @@ pub struct LatticeWorld {
     pub process_launcher: Option<ProcessLauncher>,
     pub fence_merged: Option<HashMap<String, String>>,
     pub mpi_temp_dir: Option<tempfile::TempDir>,
+    #[cfg(unix)]
+    pub pmi_server_handle: Option<tokio::task::JoinHandle<()>>,
     pub mpi_orchestrator: Option<MpiLaunchOrchestrator>,
     pub mpi_node_ids: Vec<NodeId>,
     pub mpi_node_addresses: HashMap<NodeId, String>,
@@ -219,6 +239,7 @@ impl LatticeWorld {
             tsdb_available: true,
             alloc_min_nodes: HashMap::new(),
             alloc_current_nodes: HashMap::new(),
+            node_tags: HashMap::new(),
             filtered_nodes: Vec::new(),
             locality_scores: Vec::new(),
             backup_state: None,
@@ -255,6 +276,8 @@ impl LatticeWorld {
             pmi_socket_path: None,
             #[cfg(unix)]
             pmi_responses: Vec::new(),
+            #[cfg(unix)]
+            pmi_connections: Vec::new(),
             rank_layout: None,
             launch_result: None,
             parsed_command: None,
@@ -262,6 +285,8 @@ impl LatticeWorld {
             process_launcher: None,
             fence_merged: None,
             mpi_temp_dir: None,
+            #[cfg(unix)]
+            pmi_server_handle: None,
             mpi_orchestrator: None,
             mpi_node_ids: Vec::new(),
             mpi_node_addresses: HashMap::new(),
@@ -283,6 +308,7 @@ impl LatticeWorld {
     }
 }
 
-fn main() {
-    futures::executor::block_on(LatticeWorld::cucumber().run("features/"));
+#[tokio::main]
+async fn main() {
+    LatticeWorld::cucumber().run("features/").await;
 }

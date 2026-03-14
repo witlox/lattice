@@ -604,7 +604,7 @@ pub struct TenantQuota {
     pub burst_allowance: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IsolationLevel {
     /// Standard HPC: shared nodes possible, elastic borrowing
     Standard,

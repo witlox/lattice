@@ -202,7 +202,7 @@ fn given_allocation_with_memory_policy(world: &mut LatticeWorld, policy: String)
         .nodes(1)
         .state(AllocationState::Pending)
         .build();
-    alloc.constraints.memory_policy = Some(memory_policy);
+    alloc.resources.constraints.memory_policy = Some(memory_policy);
     alloc.tags.insert("memory_policy".into(), policy);
     world.allocations.push(alloc);
 }
@@ -270,7 +270,7 @@ fn when_submit_unified_memory(world: &mut LatticeWorld) {
         .nodes(1)
         .state(AllocationState::Running)
         .build();
-    alloc.constraints = constraints;
+    alloc.resources.constraints = constraints;
     alloc.assigned_nodes = world.filtered_nodes.clone();
     world.allocations.push(alloc);
 }
@@ -289,7 +289,7 @@ fn when_submit_no_cxl(world: &mut LatticeWorld) {
         .nodes(1)
         .state(AllocationState::Running)
         .build();
-    alloc.constraints = constraints;
+    alloc.resources.constraints = constraints;
     alloc.assigned_nodes = world.filtered_nodes.clone();
     world.allocations.push(alloc);
 }
@@ -310,7 +310,7 @@ fn when_submit_prefer_numa(world: &mut LatticeWorld) {
         .nodes(1)
         .state(AllocationState::Running)
         .build();
-    alloc.constraints.prefer_same_numa = true;
+    alloc.resources.constraints.prefer_same_numa = true;
     alloc.assigned_nodes = vec![world.locality_scores[0].0.clone()];
     world.allocations.push(alloc);
 }
@@ -319,7 +319,7 @@ fn when_submit_prefer_numa(world: &mut LatticeWorld) {
 fn when_prologue_numactl(world: &mut LatticeWorld) {
     let alloc = world.last_allocation();
     let policy = alloc
-        .constraints
+        .resources.constraints
         .memory_policy
         .expect("memory_policy not set on allocation");
 

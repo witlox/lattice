@@ -59,27 +59,9 @@ fn given_heartbeat_timeout(_world: &mut LatticeWorld, _timeout_secs: u64) {
     // The step logic will simulate the timeout expiry.
 }
 
-#[given(regex = r#"^4 ready nodes with conformance fingerprint "(\S+)"$"#)]
-fn given_ready_nodes_with_conformance(world: &mut LatticeWorld, fingerprint: String) {
-    let nodes: Vec<Node> = (0..4)
-        .map(|i| {
-            NodeBuilder::new()
-                .id(&format!("x1000c0s0b0n{i}"))
-                .group(0)
-                .conformance(&fingerprint)
-                .build()
-        })
-        .collect();
-    for node in &nodes {
-        world
-            .registry
-            .nodes
-            .lock()
-            .unwrap()
-            .insert(node.id.clone(), node.clone());
-    }
-    world.nodes.extend(nodes);
-}
+// Note: "N ready nodes with conformance fingerprint" is handled by conformance.rs
+// For node_lifecycle scenarios that need specific node IDs and registry registration,
+// use the explicit node setup steps instead.
 
 // ─── When Steps ────────────────────────────────────────────
 
@@ -136,10 +118,9 @@ fn user_claims_node_for_tenant(
         claimed_by: Some(user),
         is_borrowed: false,
     };
-    let result = {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(world.registry.claim_node(&node_id, ownership))
-    };
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(world.registry.claim_node(&node_id, ownership))
+    });
     if let Err(e) = result {
         world.last_error = Some(e);
     } else {
@@ -151,24 +132,7 @@ fn user_claims_node_for_tenant(
     }
 }
 
-#[when(regex = r#"^user "(\w[\w-]*)" attempts to claim node (\d+)$"#)]
-fn user_attempts_claim(world: &mut LatticeWorld, user: String, idx: usize) {
-    let node_id = world.nodes[idx].id.clone();
-    let ownership = NodeOwnership {
-        tenant: "other-tenant".into(),
-        vcluster: "default".into(),
-        allocation: Uuid::new_v4(),
-        claimed_by: Some(user),
-        is_borrowed: false,
-    };
-    let result = {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(world.registry.claim_node(&node_id, ownership))
-    };
-    if let Err(e) = result {
-        world.last_error = Some(e);
-    }
-}
+// Note: user_attempts_claim is in common.rs
 
 #[when("the node agent sends its first heartbeat")]
 fn node_agent_first_heartbeat(world: &mut LatticeWorld) {
@@ -324,26 +288,7 @@ fn nodes_range_in_state(world: &mut LatticeWorld, from: usize, to: usize, expect
     }
 }
 
-#[then(regex = r#"^node (\d+) should be owned by user "(\w[\w-]*)"$"#)]
-fn node_owned_by(world: &mut LatticeWorld, idx: usize, user: String) {
-    let node = &world.nodes[idx];
-    let owner = node.owner.as_ref().expect("node should have an owner");
-    assert_eq!(
-        owner.claimed_by.as_deref(),
-        Some(user.as_str()),
-        "Expected owner {user}, got {:?}",
-        owner.claimed_by
-    );
-}
-
-#[then(regex = r#"^user "(\w[\w-]*)" receives an OwnershipConflict error$"#)]
-fn receives_ownership_conflict(world: &mut LatticeWorld, _user: String) {
-    let err = world.last_error.take().expect("Expected an error");
-    assert!(
-        matches!(err, LatticeError::OwnershipConflict { .. }),
-        "Expected OwnershipConflict, got {err:?}"
-    );
-}
+// Note: node_owned_by and receives_ownership_conflict are in common.rs
 
 #[then(regex = r#"^node "(\S+)" should be registered$"#)]
 fn node_should_be_registered(world: &mut LatticeWorld, node_id: String) {

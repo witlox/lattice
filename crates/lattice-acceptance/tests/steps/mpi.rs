@@ -65,28 +65,40 @@ fn make_launch_config(
 }
 
 #[cfg(unix)]
-async fn pmi_send_recv(
+async fn pmi_connect(
     socket_path: &std::path::Path,
-    msg: &str,
-) -> String {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+) -> crate::PmiConnection {
+    use tokio::io::BufReader;
     use tokio::net::UnixStream;
 
-    let mut stream = UnixStream::connect(socket_path)
+    let stream = UnixStream::connect(socket_path)
         .await
         .expect("failed to connect to PMI socket");
-    stream
+    let (read_half, write_half) = stream.into_split();
+    crate::PmiConnection {
+        reader: BufReader::new(read_half),
+        writer: write_half,
+    }
+}
+
+#[cfg(unix)]
+async fn pmi_send_on_conn(
+    conn: &mut crate::PmiConnection,
+    msg: &str,
+) -> String {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    conn.writer
         .write_all(msg.as_bytes())
         .await
         .expect("failed to write to PMI socket");
-    stream.shutdown().await.ok();
 
-    let mut buf = Vec::new();
-    stream
-        .read_to_end(&mut buf)
+    let mut line = String::new();
+    conn.reader
+        .read_line(&mut line)
         .await
         .expect("failed to read from PMI socket");
-    String::from_utf8(buf).expect("invalid UTF-8 from PMI")
+    line
 }
 
 // ─── Given Steps ───────────────────────────────────────────
@@ -108,12 +120,34 @@ fn given_pmi_server(world: &mut LatticeWorld, ranks: u32, _nodes: u32, world_siz
         socket_dir: socket_dir.clone(),
     };
 
-    let server = Pmi2Server::new(config);
+    let server = Arc::new(Pmi2Server::new(config));
     let socket_path = server.socket_path().to_path_buf();
 
-    world.pmi_server = Some(Arc::new(server));
+    // Spawn the server in the background so the socket is actually listening
+    let server_clone = server.clone();
+    let handle = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            tokio::spawn(async move {
+                let _ = server_clone
+                    .run(|local_entries| async move { Ok(local_entries) })
+                    .await;
+            })
+        })
+    });
+    // Wait for the server to bind the socket
+    let sp = socket_path.clone();
+    for _ in 0..100 {
+        if sp.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(sp.exists(), "PMI socket was not created at {:?}", sp);
+
+    world.pmi_server = Some(server);
     world.pmi_socket_path = Some(socket_path);
     world.mpi_temp_dir = Some(tempdir);
+    world.pmi_server_handle = Some(handle);
 }
 
 #[given(regex = r#"^(\d+) nodes with (\d+) tasks per node$"#)]
@@ -226,10 +260,16 @@ fn given_fence_coordinator(world: &mut LatticeWorld, node_count: u32, head_index
 #[when("a rank connects and performs fullinit")]
 fn when_rank_fullinit(world: &mut LatticeWorld) {
     let msg = "cmd=fullinit;pmi_version=2;pmi_subversion=0;\n";
-    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let resp = rt.block_on(pmi_send_recv(socket_path, msg));
+    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path").clone();
+    let (mut conn, resp) = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut conn = pmi_connect(&socket_path).await;
+            let resp = pmi_send_on_conn(&mut conn, msg).await;
+            (conn, resp)
+        })
+    });
     world.pmi_responses.push(resp);
+    world.pmi_connections.push(conn);
 }
 
 #[cfg(unix)]
@@ -262,8 +302,7 @@ fn when_launch_mpi(world: &mut LatticeWorld, num_tasks: u32, tasks_per_node: u32
         .mpi_orchestrator
         .as_ref()
         .expect("no orchestrator set up");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(orch.launch(
+    let result = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(orch.launch(
         Uuid::new_v4(),
         &world.mpi_node_ids,
         &world.mpi_node_addresses,
@@ -273,7 +312,7 @@ fn when_launch_mpi(world: &mut LatticeWorld, num_tasks: u32, tasks_per_node: u32
         num_tasks,
         tasks_per_node,
         PmiMode::Pmi2,
-    ));
+    )));
     world.launch_result = Some(result.map_err(|e| e.to_string()));
 }
 
@@ -320,9 +359,10 @@ fn when_head_executes_fence(world: &mut LatticeWorld) {
 #[when("the rank performs kvsfence")]
 fn when_rank_kvsfence(world: &mut LatticeWorld) {
     let msg = "cmd=kvsfence;\n";
-    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let resp = rt.block_on(pmi_send_recv(socket_path, msg));
+    let conn = world.pmi_connections.first_mut().expect("no PMI connection");
+    let resp = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(pmi_send_on_conn(conn, msg))
+    });
     world.pmi_responses.push(resp);
 }
 
@@ -340,9 +380,10 @@ fn then_fence_completes(world: &mut LatticeWorld) {
 #[when("the rank finalizes")]
 fn when_rank_finalizes(world: &mut LatticeWorld) {
     let msg = "cmd=finalize;\n";
-    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let resp = rt.block_on(pmi_send_recv(socket_path, msg));
+    let conn = world.pmi_connections.first_mut().expect("no PMI connection");
+    let resp = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(pmi_send_on_conn(conn, msg))
+    });
     world.pmi_responses.push(resp);
 }
 
@@ -361,31 +402,56 @@ fn then_pmi_shuts_down(world: &mut LatticeWorld) {
 #[cfg(unix)]
 #[when(regex = r#"^rank (\d+) connects and puts key "([^"]+)" with value "([^"]+)"$"#)]
 fn when_rank_puts_key(world: &mut LatticeWorld, _rank: u32, key: String, value: String) {
-    let msg = format!("cmd=kvsput;key={key};value={value};\n");
-    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let resp = rt.block_on(pmi_send_recv(socket_path, &msg));
+    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path").clone();
+    // Each rank connects and sends fullinit + kvsput on its own persistent connection
+    let (mut conn, resp) = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut conn = pmi_connect(&socket_path).await;
+            // fullinit first (PMI-2 requires it before any other command)
+            let _init_resp = pmi_send_on_conn(&mut conn, "cmd=fullinit;pmi_version=2;\n").await;
+            let resp = pmi_send_on_conn(&mut conn, &format!("cmd=kvsput;key={key};value={value};\n")).await;
+            (conn, resp)
+        })
+    });
     world.pmi_responses.push(resp);
+    world.pmi_connections.push(conn);
 }
 
 #[cfg(unix)]
 #[when("both ranks perform kvsfence")]
 fn when_both_ranks_fence(world: &mut LatticeWorld) {
     let msg = "cmd=kvsfence;\n";
-    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let resp = rt.block_on(pmi_send_recv(socket_path, msg));
-    world.pmi_responses.push(resp);
+    assert!(
+        world.pmi_connections.len() >= 2,
+        "expected at least 2 PMI connections for both ranks"
+    );
+    // We need to send fence on both connections concurrently.
+    // Take mutable references by splitting the slice.
+    let (first, rest) = world.pmi_connections.split_at_mut(1);
+    let conn0 = &mut first[0];
+    let conn1 = &mut rest[0];
+    let (resp0, resp1) = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            tokio::join!(
+                pmi_send_on_conn(conn0, msg),
+                pmi_send_on_conn(conn1, msg),
+            )
+        })
+    });
+    world.pmi_responses.push(resp0);
+    world.pmi_responses.push(resp1);
 }
 
 #[cfg(unix)]
 #[then(regex = r#"^rank (\d+) should be able to get key "([^"]+)" with value "([^"]+)"$"#)]
-fn then_rank_gets_key(world: &mut LatticeWorld, _rank: u32, key: String, expected: String) {
-    // After fence, KVS should have been merged. Verify by sending kvsget.
+fn then_rank_gets_key(world: &mut LatticeWorld, rank: u32, key: String, expected: String) {
+    // After fence, KVS should have been merged. Verify by sending kvsget on the rank's connection.
     let msg = format!("cmd=kvsget;key={key};\n");
-    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let resp = rt.block_on(pmi_send_recv(socket_path, &msg));
+    let conn = world.pmi_connections.get_mut(rank as usize)
+        .unwrap_or_else(|| panic!("no PMI connection for rank {rank}"));
+    let resp = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(pmi_send_on_conn(conn, &msg))
+    });
     assert!(
         resp.contains(&expected),
         "expected key '{key}' to have value '{expected}' in response '{resp}'"

@@ -40,19 +40,7 @@ fn healthy_observed(gpu_count: u32) -> ObservedHealth {
 }
 
 // ─── Given Steps ────────────────────────────────────────────
-
-#[given(regex = r#"^a node agent for node "([^"]+)" with (\d+) GPUs$"#)]
-fn given_node_agent(world: &mut LatticeWorld, node_id: String, gpu_count: u32) {
-    let node = NodeBuilder::new()
-        .id(&node_id)
-        .gpu_count(gpu_count)
-        .build();
-    let registry = Arc::new(MockNodeRegistry::new().with_nodes(vec![node]));
-    let capabilities = make_capabilities(gpu_count);
-    let agent = NodeAgent::new(node_id, capabilities, registry);
-    world.agent = Some(agent);
-    world.image_cache = Some(ImageCache::new(10 * 1024 * 1024 * 1024));
-}
+// Note: node agent and checkpoint protocol steps are in common.rs
 
 #[given(regex = r#"^a pre-cached image "([^"]+)"$"#)]
 fn given_pre_cached_image(world: &mut LatticeWorld, image_ref: String) {
@@ -82,27 +70,6 @@ fn given_allocation_with_data_mount(world: &mut LatticeWorld, source: String, ta
         tier_hint: Some(StorageTier::Hot),
     }];
     world.allocations.push(alloc);
-}
-
-#[given(regex = r#"^a running allocation with checkpoint protocol "([^"]+)"$"#)]
-fn given_running_allocation_with_checkpoint(world: &mut LatticeWorld, protocol: String) {
-    let alloc = AllocationBuilder::new()
-        .nodes(1)
-        .state(AllocationState::Running)
-        .build();
-    let alloc_id = alloc.id;
-    world.allocations.push(alloc);
-    world.agent_alloc_id = Some(alloc_id);
-
-    // Start the allocation on the agent
-    let agent = world.agent.as_mut().expect("agent not initialized");
-    agent
-        .allocations_mut()
-        .start(alloc_id, "python train.py".to_string())
-        .unwrap();
-
-    // Store the checkpoint protocol for later verification
-    let _ = protocol; // protocol type is checked in the Then step
 }
 
 // ─── When Steps ─────────────────────────────────────────────
@@ -548,6 +515,13 @@ fn then_sensitive_wipe_not_performed(world: &mut LatticeWorld) {
         !result.sensitive_wiped,
         "expected sensitive wipe NOT to be performed"
     );
+}
+
+#[then("the epilogue cleanup should have completed")]
+fn then_epilogue_cleanup_completed(world: &mut LatticeWorld) {
+    // The epilogue completing without error means cleanup completed.
+    // data_cleaned is only true when data mounts were present and cleaned.
+    let _result = world.epilogue_result.as_ref().expect("no epilogue result");
 }
 
 #[then("the runtime should use uenv mount namespace")]

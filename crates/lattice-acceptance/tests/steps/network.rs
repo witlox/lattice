@@ -20,40 +20,15 @@ fn create_network_domain(name: &str, tenant: &str, vni: u32) -> NetworkDomain {
 }
 
 // ─── Given Steps ───────────────────────────────────────────
-
-#[given(regex = r#"^a tenant "(\w[\w-]*)" with max nodes (\d+)$"#)]
-fn given_tenant_max_nodes_net(world: &mut LatticeWorld, name: String, max_nodes: u32) {
-    let tenant = TenantBuilder::new(&name).max_nodes(max_nodes).build();
-    world.tenants.push(tenant);
-}
-
-#[given(regex = r#"^a vCluster "(\w[\w-]*)" for tenant "(\w[\w-]*)" with scheduler "(\w+)"$"#)]
-fn given_vcluster_net(
-    world: &mut LatticeWorld,
-    vc_name: String,
-    tenant_name: String,
-    scheduler: String,
-) {
-    use super::helpers::parse_scheduler_type;
-    let stype = parse_scheduler_type(&scheduler);
-    let vc = VClusterBuilder::new(&vc_name)
-        .tenant(&tenant_name)
-        .scheduler(stype)
-        .build();
-    world.vclusters.push(vc);
-}
-
-#[given(regex = r#"^(\d+) nodes in group (\d+)$"#)]
-fn given_nodes_in_group_net(world: &mut LatticeWorld, count: usize, group: u32) {
-    let nodes = create_node_batch(count, group);
-    world.nodes.extend(nodes);
-}
+// Note: tenant, vCluster, and nodes-in-group steps are in common.rs
 
 #[given(regex = r#"^(\d+) nodes with Slingshot interconnect in group (\d+)$"#)]
 fn given_slingshot_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
-    let mut nodes = create_node_batch(count, group);
-    for node in &mut nodes {
-        node.tags
+    let nodes = create_node_batch(count, group);
+    for node in &nodes {
+        world.node_tags
+            .entry(node.id.clone())
+            .or_default()
             .insert("interconnect".into(), "slingshot".into());
     }
     world.nodes.extend(nodes);
@@ -270,7 +245,13 @@ fn when_alloc_with_domain_submitted(world: &mut LatticeWorld) {
     let has_slingshot = world
         .nodes
         .iter()
-        .any(|n| n.tags.get("interconnect").map(|v| v == "slingshot").unwrap_or(false));
+        .any(|n| {
+            world.node_tags
+                .get(&n.id)
+                .and_then(|tags| tags.get("interconnect"))
+                .map(|v| v == "slingshot")
+                .unwrap_or(false)
+        });
 
     let mut domain = create_network_domain("cxi-domain", &tenant, 5001);
     if has_slingshot {
@@ -416,15 +397,7 @@ fn then_vni_may_reuse(world: &mut LatticeWorld, vni: u32) {
     );
 }
 
-#[then(regex = r#"^the request should be rejected with reason "(\w+)"$"#)]
-fn then_rejected_with_reason(world: &mut LatticeWorld, reason: String) {
-    let err = world.last_error.as_ref().expect("Expected an error");
-    let err_str = format!("{err:?}");
-    assert!(
-        err_str.contains(&reason),
-        "Expected error to contain '{reason}', got '{err_str}'"
-    );
-}
+// Note: then_rejected_with_reason is in common.rs
 
 #[then(regex = r#"^domain creation should be blocked with reason "(\w+)"$"#)]
 fn then_domain_blocked(world: &mut LatticeWorld, reason: String) {

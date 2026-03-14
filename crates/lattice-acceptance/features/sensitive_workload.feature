@@ -25,14 +25,14 @@ Feature: Sensitive Workload Isolation
     Given a tenant "hospital-a" with strict isolation
     And a node agent for node "x1000c0s0b0n0" with 4 GPUs
     When I run the sensitive epilogue for an allocation
-    Then the sensitive wipe should have been triggered
+    Then the sensitive wipe should have been performed
     And the epilogue cleanup should have completed
 
   Scenario: Non-sensitive epilogue skips wipe
     Given a tenant "physics" with a quota of 100 nodes
     And a node agent for node "x1000c0s0b0n0" with 4 GPUs
     When I run the standard epilogue for an allocation
-    Then the sensitive wipe should not have been triggered
+    Then the sensitive wipe should not have been performed
     And the epilogue cleanup should have completed
 
   Scenario: Sensitive attach limited to one session at a time

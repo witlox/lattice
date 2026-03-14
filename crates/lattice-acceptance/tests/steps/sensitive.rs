@@ -9,20 +9,7 @@ use lattice_test_harness::fixtures::*;
 use uuid::Uuid;
 
 // ─── Given Steps ───────────────────────────────────────────
-
-#[given(regex = r#"^a running sensitive allocation owned by user "(\w[\w-]*)"$"#)]
-fn given_running_sensitive_allocation_owned_by(world: &mut LatticeWorld, user: String) {
-    let mut alloc = AllocationBuilder::new()
-        .sensitive()
-        .user(&user)
-        .state(AllocationState::Running)
-        .nodes(1)
-        .build();
-    alloc.assigned_nodes = vec!["x1000c0s0b0n0".into()];
-    alloc.started_at = Some(chrono::Utc::now());
-    world.allocations.push(alloc);
-    world.attach_owner = Some(user);
-}
+// Note: running sensitive allocation, claim node, ownership conflict steps are in common.rs
 
 #[given(regex = r#"^user "(\w[\w-]*)" has an active attach session$"#)]
 fn given_user_has_active_attach(world: &mut LatticeWorld, user: String) {
@@ -79,10 +66,9 @@ fn user_claims_node(world: &mut LatticeWorld, user: String, idx: usize) {
         claimed_by: Some(user.clone()),
         is_borrowed: false,
     };
-    let result = {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(world.registry.claim_node(&node_id, ownership))
-    };
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(world.registry.claim_node(&node_id, ownership))
+    });
     match result {
         Ok(()) => {
             // Sync world.nodes.
@@ -105,25 +91,6 @@ fn user_claims_node(world: &mut LatticeWorld, user: String, idx: usize) {
         Err(e) => {
             world.last_error = Some(e);
         }
-    }
-}
-
-#[when(regex = r#"^user "(\w[\w-]*)" attempts to claim node (\d+)$"#)]
-fn user_attempts_claim(world: &mut LatticeWorld, user: String, idx: usize) {
-    let node_id = world.nodes[idx].id.clone();
-    let ownership = NodeOwnership {
-        tenant: "other-tenant".into(),
-        vcluster: "default".into(),
-        allocation: Uuid::new_v4(),
-        claimed_by: Some(user),
-        is_borrowed: false,
-    };
-    let result = {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(world.registry.claim_node(&node_id, ownership))
-    };
-    if let Err(e) = result {
-        world.last_error = Some(e);
     }
 }
 
@@ -240,21 +207,6 @@ fn sensitive_wipe_fails(world: &mut LatticeWorld, node_id: String) {
 
 // ─── Then Steps ────────────────────────────────────────────
 
-#[then(regex = r#"^node (\d+) should be owned by user "(\w[\w-]*)"$"#)]
-fn node_owned_by(world: &mut LatticeWorld, idx: usize, user: String) {
-    let node = &world.nodes[idx];
-    let owner = node
-        .owner
-        .as_ref()
-        .unwrap_or_else(|| panic!("node {} should have an owner", node.id));
-    assert_eq!(
-        owner.claimed_by.as_deref(),
-        Some(user.as_str()),
-        "Expected node owned by {user}, got {:?}",
-        owner.claimed_by
-    );
-}
-
 #[then(regex = r#"^an audit entry should record action "(\w+)"$"#)]
 fn audit_entry_recorded(world: &mut LatticeWorld, action_str: String) {
     let action = parse_audit_action(&action_str);
@@ -262,18 +214,6 @@ fn audit_entry_recorded(world: &mut LatticeWorld, action_str: String) {
     assert!(
         !entries.is_empty(),
         "Expected at least one audit entry for action {action_str}, found none"
-    );
-}
-
-#[then(regex = r#"^user "(\w[\w-]*)" receives an OwnershipConflict error$"#)]
-fn receives_ownership_conflict(world: &mut LatticeWorld, _user: String) {
-    let err = world
-        .last_error
-        .take()
-        .expect("Expected an OwnershipConflict error");
-    assert!(
-        matches!(err, LatticeError::OwnershipConflict { .. }),
-        "Expected OwnershipConflict, got {err:?}"
     );
 }
 
@@ -317,28 +257,7 @@ fn second_attach_denied(world: &mut LatticeWorld, expected_reason: String) {
     );
 }
 
-#[then(regex = r#"^the allocation should be rejected with "(\S+)"$"#)]
-fn allocation_rejected_with(world: &mut LatticeWorld, expected_reason: String) {
-    let err = world
-        .last_error
-        .take()
-        .expect("Expected a rejection error");
-    match &err {
-        LatticeError::SensitiveIsolation(msg) => {
-            assert!(
-                msg.contains(&expected_reason),
-                "Expected rejection reason containing '{expected_reason}', got '{msg}'"
-            );
-        }
-        other => panic!("Expected SensitiveIsolation, got {other:?}"),
-    }
-    let alloc = world.last_allocation();
-    assert_eq!(
-        alloc.state,
-        AllocationState::Failed,
-        "Rejected allocation should be in Failed state"
-    );
-}
+// Note: 'the allocation should be rejected with "X"' is in common.rs
 
 #[then("the allocation should use the encrypted storage pool")]
 fn allocation_uses_encrypted_storage(world: &mut LatticeWorld) {

@@ -93,11 +93,7 @@ fn given_pending_local_allocation(world: &mut LatticeWorld) {
     world.allocations.push(alloc);
 }
 
-#[given("the local quorum is undergoing leader election")]
-fn given_leader_election(world: &mut LatticeWorld) {
-    world.quorum_leader = None;
-    world.quorum_available = false;
-}
+// Note: "the local quorum is undergoing leader election" is in common.rs
 
 // ─── When Steps ────────────────────────────────────────────
 
@@ -158,31 +154,7 @@ fn site_sends_allocation_request(world: &mut LatticeWorld, site: String) {
     world.federation_decision = Some(decision);
 }
 
-#[when("the scheduler runs a cycle")]
-fn when_scheduler_runs_cycle(world: &mut LatticeWorld) {
-    // Local scheduling proceeds regardless of federation broker state.
-    // Simulate a basic scheduling cycle: assign pending allocations to available nodes.
-    for alloc in &mut world.allocations {
-        if alloc.state == AllocationState::Pending {
-            let needed = match alloc.resources.nodes {
-                NodeCount::Exact(n) => n as usize,
-                NodeCount::Range { min, .. } => min as usize,
-            };
-            let available: Vec<String> = world
-                .nodes
-                .iter()
-                .filter(|n| n.state == NodeState::Ready)
-                .take(needed)
-                .map(|n| n.id.clone())
-                .collect();
-            if available.len() >= needed {
-                alloc.assigned_nodes = available;
-                alloc.state = AllocationState::Running;
-                alloc.started_at = Some(Utc::now());
-            }
-        }
-    }
-}
+// Note: "the scheduler runs a cycle" is in common.rs
 
 #[when(regex = r#"^site "([^"]+)" sends the same request ID twice$"#)]
 fn site_sends_same_request_twice(world: &mut LatticeWorld, site: String) {
@@ -293,24 +265,7 @@ fn offer_rejected_with_reason(world: &mut LatticeWorld, expected_reason: String)
     }
 }
 
-#[then(regex = r#"^the request should be rejected with reason "([^"]+)"$"#)]
-fn request_rejected_with_reason(world: &mut LatticeWorld, expected_reason: String) {
-    let decision = world
-        .federation_decision
-        .as_ref()
-        .expect("no federation decision recorded");
-    match decision {
-        OfferDecision::Reject { reason } => {
-            assert!(
-                reason.contains(&expected_reason),
-                "rejection reason '{reason}' does not contain '{expected_reason}'"
-            );
-        }
-        OfferDecision::Accept { .. } => {
-            panic!("expected Reject with reason containing '{expected_reason}', got Accept");
-        }
-    }
-}
+// Note: request_rejected_with_reason is in common.rs
 
 #[then("the local allocation should be scheduled normally")]
 fn local_allocation_scheduled(world: &mut LatticeWorld) {
