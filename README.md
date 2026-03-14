@@ -45,6 +45,7 @@ crates/
 ├── lattice-common/        Shared types, config, protobuf bindings
 ├── lattice-quorum/        Raft consensus, persistent WAL, snapshots, backup/restore
 ├── lattice-scheduler/     vCluster schedulers, knapsack solver, cost function
+├── hpc-scheduler-core/    Reusable HPC scheduling library (publishable to crates.io)
 ├── lattice-api/           gRPC (tonic) + REST (axum) server, OIDC, RBAC, mTLS
 ├── lattice-checkpoint/    Checkpoint broker, cost evaluator
 ├── lattice-node-agent/    Per-node daemon, GPU/memory discovery, eBPF telemetry, data staging
@@ -52,10 +53,11 @@ crates/
 ├── lattice-test-harness/  Shared mocks, fixtures, builders
 └── lattice-acceptance/    BDD scenarios (cucumber) + property tests (proptest)
 proto/                     Protobuf definitions (API contract)
-sdk/python/                Python SDK (httpx REST client, 18 async methods)
+sdk/python/                Python SDK (httpx REST client)
 tools/rm-replay/           Scheduler simulator (real + simple cost modes)
 infra/                     Dockerfiles, docker-compose, systemd, Grafana, alerting
-config/                    Example configuration files (minimal + production)
+config/                    Configuration files (minimal + production)
+examples/                  Usage examples (CLI, Python SDK, DAGs, configs, Slurm migration)
 scripts/                   Release version patching
 docs/
 ├── architecture/          30 design documents
@@ -69,14 +71,15 @@ docs/
 # Build the workspace
 cargo build --workspace
 
-# Run tests (1169 unit/integration + 68 BDD scenarios)
+# Run tests (~1368 unit/integration + 274 BDD scenarios)
 just test              # default: skips slow multi-node Raft tests
 just test-all          # full suite including slow tests
 just test-slow         # only slow tests
 
 # Or without just
-cargo test --workspace                       # skips #[ignore] (slow)
-cargo test --workspace -- --include-ignored  # everything
+cargo nextest run --workspace --exclude lattice-acceptance  # unit/integration
+cargo test -p lattice-acceptance                            # BDD acceptance tests
+cargo test --workspace -- --include-ignored                 # everything including slow
 
 # Lint and check
 cargo fmt --all -- --check
@@ -106,7 +109,7 @@ docker compose up
 
 | Component | Language | Key Dependencies |
 |---|---|---|
-| Scheduler core (9 crates) | Rust | tokio, tonic, prost, openraft, axum, flate2, tar |
+| Scheduler core (10 crates) | Rust | tokio, tonic, prost, openraft, axum, flate2, tar |
 | Security | Rust | jsonwebtoken (OIDC), rcgen (mTLS), RBAC middleware |
 | Observability | Rust | prometheus, eBPF (Linux), nvml-wrapper (NVIDIA) |
 | User SDK | Python | httpx, pytest |

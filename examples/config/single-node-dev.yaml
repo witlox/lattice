@@ -1,0 +1,50 @@
+# single-node-dev.yaml — Minimal single-node development configuration
+#
+# Use this config to run Lattice locally for development and testing.
+# Start the server with:
+#   lattice-server --config examples/config/single-node-dev.yaml
+#
+# This runs a single Raft node (no quorum peers), disables TLS and OIDC,
+# and uses local scratch storage.
+
+# Server role: a standalone quorum member (single-node cluster)
+role: QuorumMember
+
+quorum:
+  # Node ID must be unique in the cluster (only one node here)
+  node_id: 1
+  # Listen address for Raft consensus (unused in single-node mode,
+  # but required by the config schema)
+  raft_listen_address: "127.0.0.1:9000"
+  # No peers in single-node mode
+  peers: []
+  # Raft timing (defaults are fine for development)
+  election_timeout_ms: 500
+  heartbeat_interval_ms: 200
+  snapshot_threshold: 10000
+
+api:
+  # gRPC address for CLI and SDK connections
+  grpc_address: "127.0.0.1:50051"
+  # REST address for Python SDK and health checks
+  rest_address: "127.0.0.1:8080"
+  # Leave empty to disable OIDC authentication in dev mode
+  oidc_issuer: ""
+
+storage:
+  # S3-compatible endpoint (leave empty if not using data staging)
+  s3_endpoint: ""
+  # NFS home directory path
+  nfs_home_path: "/tmp/lattice/home"
+  # Local scratch storage for job data
+  local_scratch_path: "/tmp/lattice/scratch"
+
+telemetry:
+  # Telemetry mode: "prod" (30s interval) or "debug" (1s raw)
+  default_mode: "debug"
+  # TSDB endpoint (leave empty to disable metric push)
+  tsdb_endpoint: ""
+  # Metric collection interval in seconds
+  prod_interval_seconds: 10
+  # Path to eBPF programs (leave empty to use stub collectors)
+  ebpf_programs_path: ""

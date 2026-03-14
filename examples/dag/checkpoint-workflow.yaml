@@ -1,0 +1,64 @@
+# checkpoint-workflow.yaml — Checkpoint-aware training workflow
+#
+# This DAG demonstrates Lattice's checkpoint integration. The scheduler
+# coordinates checkpointing based on a cost function:
+#   Value(recompute_saved + preemptability + backlog_relief) >
+#   Cost(write_time + compute_waste + storage_cost)
+#
+# Checkpoint strategies:
+#   signal: Application handles SIGUSR1 to write checkpoint
+#   shmem:  Application polls a shared memory flag
+#   grpc:   Application implements gRPC checkpoint callback
+#   auto:   Scheduler decides (DMTCP transparent checkpointing)
+#   none:   Job is non-preemptible (no checkpointing)
+#
+# When backlog pressure is high, the scheduler increases checkpoint
+# aggressiveness to free resources for waiting jobs.
+
+dag_id: checkpoint-training
+
+allocations:
+  # Stage 1: Resume-aware training
+  # Uses signal-based checkpointing. The training script handles SIGUSR1
+  # by saving model state to /scratch/checkpoints/. On restart, it
+  # automatically resumes from the latest checkpoint.
+  - name: train-phase1
+    tenant: ml-team
+    project: llm-finetune
+    entrypoint: >-
+      python train_llm.py
+      --checkpoint-dir /scratch/checkpoints
+      --resume-from-latest
+      --epochs 50
+    nodes: 16
+    walltime_hours: 48.0
+
+  # Stage 2: Extended training with higher priority
+  # Depends on phase 1 succeeding. Uses the checkpoint from phase 1
+  # as the starting point for further training with a lower learning rate.
+  - name: train-phase2
+    tenant: ml-team
+    project: llm-finetune
+    entrypoint: >-
+      python train_llm.py
+      --checkpoint-dir /scratch/checkpoints
+      --resume-from-latest
+      --epochs 20
+      --lr 1e-5
+    nodes: 16
+    walltime_hours: 24.0
+    depends_on:
+      - name: train-phase1
+        condition: success
+
+  # Stage 3: Evaluation (no checkpointing needed)
+  # Short-running evaluation that does not need checkpoint support.
+  - name: evaluate
+    tenant: ml-team
+    project: llm-finetune
+    entrypoint: python eval_llm.py --model /scratch/checkpoints/best.pt
+    nodes: 2
+    walltime_hours: 2.0
+    depends_on:
+      - name: train-phase2
+        condition: success

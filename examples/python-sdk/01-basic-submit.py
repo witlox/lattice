@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""01-basic-submit.py — Submit a job, poll for completion, print result.
+
+Demonstrates the basic LatticeClient workflow:
+  1. Connect to the Lattice REST API
+  2. Submit an allocation with resource requirements
+  3. Poll status until the job completes
+  4. Print the final result
+
+Prerequisites:
+  pip install lattice-sdk
+"""
+
+import asyncio
+import os
+
+from lattice_sdk import LatticeClient, AllocationSpec
+
+
+async def main():
+    host = os.environ.get("LATTICE_HOST", "localhost")
+    port = int(os.environ.get("LATTICE_PORT", "8080"))
+
+    # Connect using async context manager (auto-connects and auto-closes).
+    async with LatticeClient(host=host, port=port) as client:
+        # Verify the server is reachable.
+        health = await client.health()
+        print(f"Server health: {health}")
+
+        # Define the allocation specification.
+        spec = AllocationSpec(
+            entrypoint="python train.py --epochs 50 --batch-size 128",
+            nodes=4,
+            cpus=64.0,
+            memory_gb=256.0,
+            gpus=4,
+            gpu_memory_gb=80.0,
+            priority_class="normal",
+            tenant_id="ml-team",
+            uenv="pytorch:2.3",
+        )
+
+        # Submit the allocation.
+        alloc = await client.submit(spec)
+        print(f"Submitted allocation: {alloc.id}")
+        print(f"  State: {alloc.state}")
+        print(f"  Created: {alloc.created_at}")
+
+        # Poll until the allocation reaches a terminal state.
+        terminal_states = {"completed", "failed", "cancelled"}
+        while alloc.state.value not in terminal_states:
+            await asyncio.sleep(5)
+            alloc = await client.status(alloc.id)
+            print(f"  State: {alloc.state.value}", end="")
+            if alloc.nodes_allocated:
+                print(f" (nodes: {', '.join(alloc.nodes_allocated)})", end="")
+            print()
+
+        # Print final result.
+        print(f"\nAllocation {alloc.id} finished:")
+        print(f"  Final state: {alloc.state.value}")
+        print(f"  Exit code: {alloc.exit_code}")
+        if alloc.message:
+            print(f"  Message: {alloc.message}")
+        print(f"  Started: {alloc.started_at}")
+        print(f"  Completed: {alloc.completed_at}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

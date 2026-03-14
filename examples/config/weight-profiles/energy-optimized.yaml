@@ -1,0 +1,22 @@
+# energy-optimized.yaml — Weight profile emphasizing energy cost
+#
+# This profile is designed for clusters where electricity pricing
+# varies significantly throughout the day. It heavily penalizes
+# scheduling during peak hours and encourages deferring flexible
+# workloads to off-peak periods.
+#
+# Key changes from baseline:
+#   - energy:     0.3 -> 2.0 (dominant factor)
+#   - checkpoint: 0.5 -> 0.8 (prefer checkpointable jobs that can be paused)
+#   - wait_time:  0.8 -> 0.5 (reduced, accepting longer queues for savings)
+#   - priority:   1.0 -> 0.8 (slightly reduced)
+
+priority: 0.8
+wait_time: 0.5
+fair_share: 0.7
+topology: 0.6
+data_readiness: 0.5
+backlog: 0.3
+energy: 2.0
+checkpoint: 0.8
+conformance: 0.4

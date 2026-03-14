@@ -1,0 +1,56 @@
+# baseline.yaml — Default cost function weight profile
+#
+# These are the default weights used by the scheduler's composite
+# cost function. The scheduler scores each pending allocation as:
+#
+#   Score(j) = sum( w_i * f_i(j) )
+#
+# Higher scores = higher scheduling priority.
+# Adjust weights per vCluster to match workload characteristics.
+#
+# Use rm-replay to test weight changes before deploying:
+#   rm-replay --input trace.json --weights baseline.yaml
+
+# f1: Priority class (preemption tier)
+# Higher weight makes priority class the dominant factor.
+# Priority class ranges from 0 (lowest) to 10 (highest).
+priority: 1.0
+
+# f2: Wait time factor (anti-starvation)
+# Score increases as a job waits longer in the queue.
+# Prevents indefinite starvation of low-priority jobs.
+wait_time: 0.8
+
+# f3: Fair share deficit (tenant equity)
+# Boosts score for tenants using less than their fair share.
+# Ensures no tenant monopolizes the cluster.
+fair_share: 0.7
+
+# f4: Topology fitness (Slingshot dragonfly group packing)
+# Prefers placing multi-node jobs within the same dragonfly group.
+# Also considers intra-node memory locality (NUMA awareness).
+topology: 0.6
+
+# f5: Data readiness (hot tier proximity)
+# Boosts jobs whose input data is already on the hot storage tier.
+# Reduces data staging latency.
+data_readiness: 0.5
+
+# f6: Backlog pressure (queue depth)
+# Higher when the queue is deep, encouraging throughput.
+backlog: 0.4
+
+# f7: Energy cost (time-varying electricity price)
+# Penalizes scheduling during peak energy pricing.
+# Encourages deferring flexible workloads to off-peak hours.
+energy: 0.3
+
+# f8: Checkpoint efficiency (preemption cost)
+# Favors jobs with efficient checkpoint strategies (auto/signal)
+# over non-checkpointable jobs, making preemption cheaper.
+checkpoint: 0.5
+
+# f9: Conformance fitness (node config homogeneity)
+# Prefers allocating nodes with identical hardware configuration.
+# Important for distributed training where stragglers hurt throughput.
+conformance: 0.4

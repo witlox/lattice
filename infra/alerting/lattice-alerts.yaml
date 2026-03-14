@@ -1,0 +1,599 @@
+# Prometheus alerting rules for the Lattice distributed workload scheduler.
+#
+# Metric sources:
+#   - lattice-common/src/metrics.rs (code-defined metrics)
+#   - Node agent telemetry (lattice_node_*)
+#   - Allocation telemetry (lattice_allocation_*)
+#   - vCluster metrics (lattice_vcluster_*)
+#   - Raft quorum metrics (lattice_raft_*)
+#
+# Severity levels:
+#   critical - Immediate action required, service degraded or at risk
+#   warning  - Investigate soon, approaching unhealthy thresholds
+#   info     - Informational, may indicate emerging issues
+
+groups:
+  # ────────────────────────────────────────────────────────────
+  # 1. Cluster Health
+  # ────────────────────────────────────────────────────────────
+  - name: lattice.cluster_health
+    interval: 15s
+    rules:
+      - alert: LatticeQuorumLeaderMissing
+        expr: max(lattice_raft_leader) < 1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "No Raft quorum leader elected"
+          description: >-
+            No Lattice quorum member reports itself as leader for more than 30 seconds.
+            The cluster cannot commit state changes (node ownership, sensitive audit)
+            until a leader is elected. Check network connectivity between quorum members
+            and review Raft logs for election failures.
+
+      - alert: LatticeQuorumMemberDown
+        expr: count(lattice_raft_member_state) < 3
+        for: 60s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fewer than 3 Raft quorum members reachable"
+          description: >-
+            Only {{ $value }} quorum members are reporting state. A 3-node quorum
+            requires at least 2 members for majority; a 5-node quorum requires 3.
+            If another member goes down, the cluster will lose consensus.
+
+      - alert: LatticeQuorumFrequentElections
+        expr: rate(lattice_raft_elections_total[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Frequent Raft leader elections detected"
+          description: >-
+            Leader elections are occurring at {{ $value | printf "%.2f" }}/s over the
+            last 10 minutes. This indicates instability in the quorum, possibly due to
+            network partitions, high load on quorum nodes, or misconfigured election
+            timeouts.
+
+      - alert: LatticeRaftCommitLatencyHigh
+        expr: histogram_quantile(0.99, rate(lattice_raft_commit_latency_seconds_bucket[5m])) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Raft commit latency p99 exceeds 1 second"
+          description: >-
+            The 99th percentile Raft commit latency is {{ $value | printf "%.2f" }}s.
+            This can delay node ownership changes and sensitive audit writes. Check disk
+            I/O on quorum nodes and network latency between replicas.
+
+      - alert: LatticeRaftReplicationLag
+        expr: (max(lattice_raft_commit_index) - lattice_raft_commit_index) > 1000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Raft replication lag exceeds 1000 entries on {{ $labels.instance }}"
+          description: >-
+            Instance {{ $labels.instance }} is {{ $value }} entries behind the leader.
+            This follower may be unable to serve consistent reads or take over as leader
+            without significant catch-up time.
+
+      - alert: LatticeTooFewHealthyNodes
+        expr: lattice_nodes_ready < 3
+        for: 60s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fewer than 3 nodes in Ready state"
+          description: >-
+            Only {{ $value }} nodes are in Ready state. The cluster may be unable to
+            schedule new allocations or provide adequate redundancy. Check node agent
+            health and OpenCHAMI provisioning status.
+
+      - alert: LatticeNodesDown
+        expr: lattice_nodes_down > 0
+        for: 60s
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} node(s) in Down state"
+          description: >-
+            {{ $value }} node(s) are reporting Down status. Allocations on these nodes
+            may need to be rescheduled. Investigate node agent logs and hardware health.
+
+  # ────────────────────────────────────────────────────────────
+  # 2. Node Health
+  # ────────────────────────────────────────────────────────────
+  - name: lattice.node_health
+    interval: 15s
+    rules:
+      - alert: LatticeNodeHeartbeatMissing
+        expr: (time() - lattice_node_last_heartbeat_timestamp) > 60
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.node_id }} heartbeat missing for >60s"
+          description: >-
+            Node {{ $labels.node_id }} has not sent a heartbeat for
+            {{ $value | printf "%.0f" }} seconds. The node may be down, the agent may
+            have crashed, or there is a network partition. The scheduler will mark this
+            node as unreachable if the condition persists.
+
+      - alert: LatticeNodeDegraded
+        expr: lattice_node_state == 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node_id }} in Degraded state for >5 minutes"
+          description: >-
+            Node {{ $labels.node_id }} has been in Degraded state for more than 5
+            minutes. New allocations may not be scheduled to this node. Check hardware
+            health, GPU status, and node agent diagnostics.
+
+      - alert: LatticeNodeCpuHigh
+        expr: lattice_node_cpu_usage_percent > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node_id }} CPU utilization >90% for 10 minutes"
+          description: >-
+            CPU utilization on node {{ $labels.node_id }} is {{ $value | printf "%.1f" }}%.
+            Sustained high CPU usage may indicate over-subscription or a runaway process.
+            Check running allocations and consider draining the node.
+
+      - alert: LatticeNodeMemoryHigh
+        expr: >-
+          (lattice_node_memory_used_bytes / lattice_node_memory_total_bytes) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node_id }} memory utilization >90% for 10 minutes"
+          description: >-
+            Memory utilization on node {{ $labels.node_id }} is
+            {{ $value | printf "%.1f" }}%. The node is at risk of OOM kills which will
+            terminate running allocations. Consider draining the node or terminating
+            lower-priority allocations.
+
+      - alert: LatticeNodeMemoryCritical
+        expr: >-
+          (lattice_node_memory_used_bytes / lattice_node_memory_total_bytes) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.node_id }} memory utilization >95%"
+          description: >-
+            Memory utilization on node {{ $labels.node_id }} is
+            {{ $value | printf "%.1f" }}%. OOM kills are imminent. Immediate action
+            required: drain node or preempt lower-priority allocations.
+
+      - alert: LatticeNodeGpuIdleWithAllocations
+        expr: >-
+          lattice_node_gpu_utilization_percent == 0
+          and on(node_id) lattice_node_active_allocations > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node_id }} GPU idle despite running allocations"
+          description: >-
+            GPU {{ $labels.gpu_index }} on node {{ $labels.node_id }} has 0% utilization
+            but the node has active allocations. This may indicate a stuck job, incorrect
+            GPU assignment, or an application that is not using its allocated GPUs.
+
+      - alert: LatticeNodeDiskSpaceLow
+        expr: >-
+          (1 - (lattice_node_disk_free_bytes / lattice_node_disk_total_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node_id }} disk space <10% free"
+          description: >-
+            Disk {{ $labels.device }} on node {{ $labels.node_id }} is
+            {{ $value | printf "%.1f" }}% full. Low disk space can cause checkpoint
+            failures, uenv mount failures, and allocation crashes. Clean up scratch
+            data or expand storage.
+
+      - alert: LatticeNodeDiskSpaceCritical
+        expr: >-
+          (1 - (lattice_node_disk_free_bytes / lattice_node_disk_total_bytes)) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.node_id }} disk space <5% free"
+          description: >-
+            Disk {{ $labels.device }} on node {{ $labels.node_id }} is
+            {{ $value | printf "%.1f" }}% full. Immediate action required to prevent
+            allocation failures and data loss.
+
+      - alert: LatticeAgentHeartbeatLatencyHigh
+        expr: >-
+          histogram_quantile(0.95, rate(lattice_agent_heartbeat_latency_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node_id }} heartbeat latency p95 >500ms"
+          description: >-
+            Heartbeat round-trip latency for node {{ $labels.node_id }} is
+            {{ $value | printf "%.3f" }}s at p95. This may indicate network congestion
+            on the Slingshot interconnect or high load on the quorum leader.
+
+  # ────────────────────────────────────────────────────────────
+  # 3. Scheduling
+  # ────────────────────────────────────────────────────────────
+  - name: lattice.scheduling
+    interval: 30s
+    rules:
+      - alert: LatticeSchedulingCycleSlow
+        expr: >-
+          histogram_quantile(0.95, rate(lattice_scheduling_cycle_duration_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduling cycle p95 >10s for vCluster {{ $labels.vcluster }}"
+          description: >-
+            The scheduling cycle for vCluster {{ $labels.vcluster }} is taking
+            {{ $value | printf "%.1f" }}s at p95. This delays allocation placement and
+            increases queue wait times. Consider reducing the number of pending
+            allocations, simplifying constraints, or tuning cost function weights.
+
+      - alert: LatticeSchedulingCycleCritical
+        expr: >-
+          histogram_quantile(0.95, rate(lattice_scheduling_cycle_duration_seconds_bucket[5m])) > 30
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scheduling cycle p95 >30s for vCluster {{ $labels.vcluster }}"
+          description: >-
+            The scheduling cycle for vCluster {{ $labels.vcluster }} is taking
+            {{ $value | printf "%.1f" }}s at p95. The scheduler is severely overloaded.
+            Queue wait times will grow rapidly.
+
+      - alert: LatticeQueueDepthHigh
+        expr: lattice_scheduling_queue_depth > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue depth >100 for vCluster {{ $labels.vcluster }}"
+          description: >-
+            vCluster {{ $labels.vcluster }} has {{ $value | printf "%.0f" }} pending
+            allocations in the scheduling queue. This may indicate insufficient cluster
+            capacity, blocked scheduling, or a burst of submissions.
+
+      - alert: LatticeQueueDepthCritical
+        expr: lattice_scheduling_queue_depth > 500
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queue depth >500 for vCluster {{ $labels.vcluster }}"
+          description: >-
+            vCluster {{ $labels.vcluster }} has {{ $value | printf "%.0f" }} pending
+            allocations. The queue is severely backlogged. Investigate whether the
+            scheduler is cycling, nodes are available, and constraints are satisfiable.
+
+      - alert: LatticeFairShareViolation
+        expr: lattice_vcluster_fairshare_deficit > 2.0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tenant {{ $labels.tenant }} exceeds 2x fair share in {{ $labels.vcluster }}"
+          description: >-
+            Tenant {{ $labels.tenant }} has a fair-share deficit of
+            {{ $value | printf "%.2f" }} (>2.0) in vCluster {{ $labels.vcluster }} for
+            over 30 minutes. Other tenants may be starved of resources. Review priority
+            class assignments and quota configuration.
+
+      - alert: LatticeNoSuccessfulPlacements
+        expr: >-
+          sum by (vcluster) (
+            rate(lattice_scheduling_proposals_total{result="accepted"}[5m])
+          ) == 0
+          and
+          lattice_scheduling_queue_depth > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful placements in vCluster {{ $labels.vcluster }} despite pending work"
+          description: >-
+            vCluster {{ $labels.vcluster }} has pending allocations but has not produced
+            any accepted scheduling proposals in 5 minutes. Possible causes: no
+            available nodes, unsatisfiable constraints, or scheduler errors. Check
+            scheduling proposal rejection reasons.
+
+      - alert: LatticeHighPreemptionRate
+        expr: rate(lattice_vcluster_preemptions_total[15m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High preemption rate in vCluster {{ $labels.vcluster }}"
+          description: >-
+            Preemptions in vCluster {{ $labels.vcluster }} are occurring at
+            {{ $value | printf "%.2f" }}/s. Frequent preemptions reduce cluster
+            efficiency due to checkpoint overhead and recomputation cost. Consider
+            adjusting priority tiers or adding capacity.
+
+  # ────────────────────────────────────────────────────────────
+  # 4. Allocation Lifecycle
+  # ────────────────────────────────────────────────────────────
+  - name: lattice.allocation_lifecycle
+    interval: 30s
+    rules:
+      - alert: LatticeAllocationStuckInStaging
+        expr: >-
+          lattice_allocation_state == 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Allocation {{ $labels.allocation_id }} stuck in Starting state >15 minutes"
+          description: >-
+            Allocation {{ $labels.allocation_id }} has been in Starting (staging) state
+            for over 15 minutes. This may indicate a failure in data staging, uenv mount,
+            or Sarus container pull. Check node agent logs on the assigned node.
+
+      - alert: LatticeAllocationFailureRateHigh
+        expr: >-
+          sum(rate(lattice_api_requests_total{method="SubmitAllocation", status="error"}[1h]))
+          /
+          sum(rate(lattice_api_requests_total{method="SubmitAllocation"}[1h]))
+          > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Allocation failure rate >10% over the last hour"
+          description: >-
+            {{ $value | printf "%.1f" }}% of allocation submissions are failing. This
+            may indicate systemic issues with the scheduler, node agents, or resource
+            exhaustion. Check API error logs and scheduler diagnostics.
+
+      - alert: LatticeAllocationWalltimeApproaching
+        expr: >-
+          (lattice_allocation_walltime_seconds
+            / lattice_allocation_walltime_limit_seconds) > 0.9
+          and lattice_allocation_state == 3
+        for: 0s
+        labels:
+          severity: info
+        annotations:
+          summary: "Allocation {{ $labels.allocation_id }} at >90% of walltime limit"
+          description: >-
+            Allocation {{ $labels.allocation_id }} has used
+            {{ $value | printf "%.0f" }}% of its walltime limit. It will be terminated
+            when the limit is reached. If the workload needs more time, consider
+            checkpointing and resubmitting with a longer walltime.
+
+      - alert: LatticeAllocationStartupSlow
+        expr: >-
+          histogram_quantile(0.95, rate(lattice_agent_allocation_startup_seconds_bucket[15m])) > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Allocation startup time p95 >60 seconds"
+          description: >-
+            The 95th percentile allocation startup time is
+            {{ $value | printf "%.1f" }}s. Slow startups may be caused by large uenv
+            images, slow data staging, or overloaded node agents. Check NVMe cache hit
+            rates and network throughput to storage.
+
+  # ────────────────────────────────────────────────────────────
+  # 5. Sensitive Workloads
+  # ────────────────────────────────────────────────────────────
+  - name: lattice.sensitive_workloads
+    interval: 30s
+    rules:
+      - alert: LatticeSensitiveAuditGrowthRateHigh
+        expr: rate(lattice_raft_sensitive_audit_entries_total[1h]) * 3600 > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sensitive audit log growing at >1000 entries/hour"
+          description: >-
+            The sensitive audit log is growing at
+            {{ $value | printf "%.0f" }} entries/hour, which is unusually high. This may
+            indicate a misconfigured workload generating excessive audit events, or a
+            potential security incident. Review audit log entries for anomalous patterns.
+
+      - alert: LatticeSensitiveAuditGrowthRateCritical
+        expr: rate(lattice_raft_sensitive_audit_entries_total[15m]) * 3600 > 5000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sensitive audit log growing at >5000 entries/hour"
+          description: >-
+            The sensitive audit log is growing at an extreme rate of
+            {{ $value | printf "%.0f" }} entries/hour. This could indicate an active
+            security incident or a flooding attack on sensitive resources. Investigate
+            immediately and consider rate-limiting sensitive operations.
+
+      - alert: LatticeSensitiveNodeWipeFailure
+        expr: >-
+          rate(lattice_vcluster_scheduling_decisions_total{vcluster="sensitive", decision="wipe_failed"}[15m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sensitive node wipe failure detected"
+          description: >-
+            A sensitive node wipe operation has failed. Data from a previous sensitive
+            workload may remain on the node. The node MUST NOT be reassigned until the
+            wipe is confirmed successful. This is a compliance-critical event requiring
+            immediate investigation.
+
+  # ────────────────────────────────────────────────────────────
+  # 6. Infrastructure Integration
+  # ────────────────────────────────────────────────────────────
+  - name: lattice.infrastructure
+    interval: 30s
+    rules:
+      - alert: LatticeTsdbPushFailures
+        expr: >-
+          rate(lattice_api_requests_total{method="tsdb_push", status="error"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TSDB push failures detected"
+          description: >-
+            Metrics push to VictoriaMetrics/TSDB is failing at
+            {{ $value | printf "%.2f" }}/s. Telemetry data is being lost. Check TSDB
+            endpoint connectivity, authentication, and storage capacity.
+
+      - alert: LatticeTsdbPushFailuresCritical
+        expr: >-
+          rate(lattice_api_requests_total{method="tsdb_push", status="error"}[5m])
+          /
+          rate(lattice_api_requests_total{method="tsdb_push"}[5m])
+          > 0.5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 50% of TSDB pushes failing"
+          description: >-
+            Over half of all TSDB metric pushes are failing. The observability pipeline
+            is severely degraded. Dashboards and alerting based on node/allocation
+            metrics will show stale data. Investigate TSDB health immediately.
+
+      - alert: LatticeWaldurAccountingBufferGrowing
+        expr: lattice_waldur_accounting_buffer_size > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Waldur accounting event buffer exceeds 1000 events"
+          description: >-
+            {{ $value | printf "%.0f" }} accounting events are buffered and not yet
+            sent to Waldur. This may indicate Waldur is unreachable or rejecting events.
+            Billing data will be delayed until the buffer is drained. Check Waldur API
+            endpoint health.
+
+      - alert: LatticeWaldurAccountingBufferCritical
+        expr: lattice_waldur_accounting_buffer_size > 5000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Waldur accounting buffer exceeds 5000 events"
+          description: >-
+            {{ $value | printf "%.0f" }} accounting events are buffered. The Waldur
+            integration is severely backed up. If the buffer continues growing, older
+            events may be dropped. Investigate Waldur connectivity and consider
+            increasing buffer limits.
+
+      - alert: LatticeDataStagingFailures
+        expr: >-
+          rate(lattice_api_requests_total{method="data_stage", status="error"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data staging failures detected"
+          description: >-
+            Data staging operations are failing at {{ $value | printf "%.2f" }}/s.
+            Allocations requiring pre-staged data will be delayed or fail to start.
+            Check VAST/NFS connectivity and storage tier health.
+
+      - alert: LatticeCheckpointFailureRate
+        expr: >-
+          rate(lattice_checkpoint_evaluations_total{decision="checkpoint"}[15m]) > 0
+          and
+          rate(lattice_checkpoint_operations_total{result="failed"}[15m])
+          /
+          rate(lattice_checkpoint_operations_total[15m])
+          > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 50% of checkpoint operations failing"
+          description: >-
+            Checkpoint operations are failing at a high rate. Preempted allocations will
+            lose progress and need to recompute from the last successful checkpoint.
+            Check storage space, checkpoint target path permissions, and application
+            checkpoint API health.
+
+  # ────────────────────────────────────────────────────────────
+  # 7. API Health
+  # ────────────────────────────────────────────────────────────
+  - name: lattice.api_health
+    interval: 15s
+    rules:
+      - alert: LatticeApiErrorRateHigh
+        expr: >-
+          sum(rate(lattice_api_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(lattice_api_requests_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API 5xx error rate >5%"
+          description: >-
+            The Lattice API is returning server errors at
+            {{ $value | printf "%.1f" }}% of total requests. This indicates internal
+            failures in the API server, scheduler, or downstream services. Check API
+            server logs and quorum health.
+
+      - alert: LatticeApiErrorRateCritical
+        expr: >-
+          sum(rate(lattice_api_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(lattice_api_requests_total[5m]))
+          > 0.25
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API 5xx error rate >25%"
+          description: >-
+            The Lattice API is returning server errors at
+            {{ $value | printf "%.1f" }}% of total requests. The API is severely
+            degraded. Users and agents cannot reliably submit or manage allocations.
+
+      - alert: LatticeApiLatencyHigh
+        expr: >-
+          histogram_quantile(0.95, rate(lattice_api_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API request latency p95 >5 seconds for {{ $labels.method }}"
+          description: >-
+            API method {{ $labels.method }} has a 95th percentile latency of
+            {{ $value | printf "%.2f" }}s. Users and agents will experience degraded
+            responsiveness. Check quorum leader health and scheduler cycle times.
+
+      - alert: LatticeActiveStreamsTooMany
+        expr: sum(lattice_api_active_streams) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 1000 active streaming connections"
+          description: >-
+            {{ $value | printf "%.0f" }} active streaming connections. High stream
+            counts consume server resources (file descriptors, memory, goroutines).
+            Check for leaked or abandoned stream connections and consider implementing
+            server-side stream timeouts.

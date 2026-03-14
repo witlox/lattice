@@ -1,0 +1,21 @@
+# fairness-tuned.yaml — Weight profile emphasizing tenant fairness
+#
+# This profile prioritizes fair share deficit and wait time to ensure
+# equitable resource distribution across tenants. Useful for shared
+# clusters with many competing research groups.
+#
+# Key changes from baseline:
+#   - fair_share: 1.0 -> 2.0 (doubled, strongest signal)
+#   - wait_time:  0.8 -> 1.5 (strong anti-starvation)
+#   - priority:   1.0 -> 0.5 (reduced, fairness trumps priority)
+#   - energy:     0.3 -> 0.1 (de-emphasized)
+
+priority: 0.5
+wait_time: 1.5
+fair_share: 2.0
+topology: 0.6
+data_readiness: 0.5
+backlog: 0.4
+energy: 0.1
+checkpoint: 0.5
+conformance: 0.4

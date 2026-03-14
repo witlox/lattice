@@ -1,0 +1,58 @@
+# training-pipeline.yaml — ML training pipeline with 4 stages
+#
+# This DAG defines a realistic ML training workflow:
+#   preprocess (2 nodes) -> train (8 nodes) -> evaluate (1 node) -> cleanup (1 node)
+#
+# Each stage runs only after its dependencies succeed (afterok).
+# The scheduler handles resource allocation, data staging, and
+# uenv environment setup for each stage independently.
+
+dag_id: training-pipeline
+
+allocations:
+  # Stage 1: Data preprocessing
+  # Reads raw data from S3, applies transforms, writes to hot-tier storage.
+  - name: preprocess
+    tenant: ml-team
+    project: resnet-training
+    entrypoint: python preprocess.py --input s3://data/raw --output /scratch/processed
+    nodes: 2
+    walltime_hours: 1.0
+
+  # Stage 2: Distributed training
+  # Multi-node GPU training using NCCL for all-reduce communication.
+  # Depends on preprocess completing successfully.
+  - name: train
+    tenant: ml-team
+    project: resnet-training
+    entrypoint: torchrun --nproc_per_node=4 train.py --data /scratch/processed --epochs 100
+    nodes: 8
+    walltime_hours: 24.0
+    depends_on:
+      - name: preprocess
+        condition: success
+
+  # Stage 3: Model evaluation
+  # Runs evaluation on a single node after training completes.
+  - name: evaluate
+    tenant: ml-team
+    project: resnet-training
+    entrypoint: python evaluate.py --model /scratch/checkpoints/best.pt --data /scratch/test
+    nodes: 1
+    walltime_hours: 0.5
+    depends_on:
+      - name: train
+        condition: success
+
+  # Stage 4: Cleanup
+  # Removes scratch data and archives results to S3.
+  # Runs after evaluation regardless of success or failure (afterany).
+  - name: cleanup
+    tenant: ml-team
+    project: resnet-training
+    entrypoint: python cleanup.py --archive s3://results/resnet --scratch /scratch
+    nodes: 1
+    walltime_hours: 0.25
+    depends_on:
+      - name: evaluate
+        condition: any

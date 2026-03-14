@@ -442,3 +442,345 @@ class VCluster:
             resource_filter=data.get("resource_filter", {}),
             scheduler_weights=data.get("scheduler_weights", {}),
         )
+
+
+@dataclass
+class Session:
+    """Interactive session attached to an allocation."""
+    id: str
+    allocation_id: str
+    user_id: str
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    status: str = "active"
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "id": self.id,
+            "allocation_id": self.allocation_id,
+            "user_id": self.user_id,
+            "status": self.status,
+        }
+        if self.created_at is not None:
+            d["created_at"] = _format_datetime(self.created_at)
+        if self.expires_at is not None:
+            d["expires_at"] = _format_datetime(self.expires_at)
+        if self.metadata:
+            d["metadata"] = dict(self.metadata)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Session":
+        return cls(
+            id=data["id"],
+            allocation_id=data["allocation_id"],
+            user_id=data["user_id"],
+            created_at=_parse_datetime(data.get("created_at")),
+            expires_at=_parse_datetime(data.get("expires_at")),
+            status=data.get("status", "active"),
+            metadata=data.get("metadata", {}),
+        )
+
+
+@dataclass
+class DagSpec:
+    """Specification for submitting a DAG of allocations."""
+    name: str
+    allocations: List[Dict[str, Any]]
+    edges: List[Dict[str, str]] = field(default_factory=list)
+    tenant_id: Optional[str] = None
+    user_id: Optional[str] = None
+    labels: Optional[Dict[str, str]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "name": self.name,
+            "allocations": list(self.allocations),
+            "edges": list(self.edges),
+        }
+        if self.tenant_id is not None:
+            d["tenant_id"] = self.tenant_id
+        if self.user_id is not None:
+            d["user_id"] = self.user_id
+        if self.labels:
+            d["labels"] = dict(self.labels)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DagSpec":
+        return cls(
+            name=data["name"],
+            allocations=data.get("allocations", []),
+            edges=data.get("edges", []),
+            tenant_id=data.get("tenant_id"),
+            user_id=data.get("user_id"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class Dag:
+    """Directed acyclic graph of allocations with dependency edges."""
+    id: str
+    name: str
+    state: str
+    allocations: List[str] = field(default_factory=list)
+    edges: List[Dict[str, str]] = field(default_factory=list)
+    tenant_id: str = ""
+    user_id: str = ""
+    created_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "id": self.id,
+            "name": self.name,
+            "state": self.state,
+            "allocations": list(self.allocations),
+            "edges": list(self.edges),
+            "tenant_id": self.tenant_id,
+            "user_id": self.user_id,
+        }
+        if self.created_at is not None:
+            d["created_at"] = _format_datetime(self.created_at)
+        if self.completed_at is not None:
+            d["completed_at"] = _format_datetime(self.completed_at)
+        if self.metadata:
+            d["metadata"] = dict(self.metadata)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Dag":
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            state=data.get("state", "pending"),
+            allocations=data.get("allocations", []),
+            edges=data.get("edges", []),
+            tenant_id=data.get("tenant_id", ""),
+            user_id=data.get("user_id", ""),
+            created_at=_parse_datetime(data.get("created_at")),
+            completed_at=_parse_datetime(data.get("completed_at")),
+            metadata=data.get("metadata", {}),
+        )
+
+
+@dataclass
+class AuditEntry:
+    """Audit log entry for sensitive workload operations."""
+    id: str
+    timestamp: datetime
+    action: str
+    user_id: str
+    resource_type: str
+    resource_id: str
+    details: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "timestamp": _format_datetime(self.timestamp),
+            "action": self.action,
+            "user_id": self.user_id,
+            "resource_type": self.resource_type,
+            "resource_id": self.resource_id,
+            "details": dict(self.details),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AuditEntry":
+        return cls(
+            id=data["id"],
+            timestamp=_parse_datetime(data["timestamp"]),
+            action=data["action"],
+            user_id=data["user_id"],
+            resource_type=data["resource_type"],
+            resource_id=data["resource_id"],
+            details=data.get("details", {}),
+        )
+
+
+@dataclass
+class AccountingUsage:
+    """Resource usage accounting data for a tenant."""
+    tenant_id: str
+    period_start: Optional[datetime] = None
+    period_end: Optional[datetime] = None
+    cpu_hours: float = 0.0
+    gpu_hours: float = 0.0
+    memory_gb_hours: float = 0.0
+    storage_gb_hours: float = 0.0
+    total_allocations: int = 0
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "tenant_id": self.tenant_id,
+            "cpu_hours": self.cpu_hours,
+            "gpu_hours": self.gpu_hours,
+            "memory_gb_hours": self.memory_gb_hours,
+            "storage_gb_hours": self.storage_gb_hours,
+            "total_allocations": self.total_allocations,
+        }
+        if self.period_start is not None:
+            d["period_start"] = _format_datetime(self.period_start)
+        if self.period_end is not None:
+            d["period_end"] = _format_datetime(self.period_end)
+        if self.metadata:
+            d["metadata"] = dict(self.metadata)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AccountingUsage":
+        return cls(
+            tenant_id=data["tenant_id"],
+            period_start=_parse_datetime(data.get("period_start")),
+            period_end=_parse_datetime(data.get("period_end")),
+            cpu_hours=float(data.get("cpu_hours", 0.0)),
+            gpu_hours=float(data.get("gpu_hours", 0.0)),
+            memory_gb_hours=float(data.get("memory_gb_hours", 0.0)),
+            storage_gb_hours=float(data.get("storage_gb_hours", 0.0)),
+            total_allocations=int(data.get("total_allocations", 0)),
+            metadata=data.get("metadata", {}),
+        )
+
+
+@dataclass
+class RaftStatus:
+    """Raft consensus cluster status."""
+    node_id: str
+    role: str
+    term: int
+    leader_id: Optional[str] = None
+    members: List[str] = field(default_factory=list)
+    commit_index: int = 0
+    last_applied: int = 0
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "node_id": self.node_id,
+            "role": self.role,
+            "term": self.term,
+            "commit_index": self.commit_index,
+            "last_applied": self.last_applied,
+        }
+        if self.leader_id is not None:
+            d["leader_id"] = self.leader_id
+        if self.members:
+            d["members"] = list(self.members)
+        if self.metadata:
+            d["metadata"] = dict(self.metadata)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RaftStatus":
+        return cls(
+            node_id=data["node_id"],
+            role=data["role"],
+            term=int(data["term"]),
+            leader_id=data.get("leader_id"),
+            members=data.get("members", []),
+            commit_index=int(data.get("commit_index", 0)),
+            last_applied=int(data.get("last_applied", 0)),
+            metadata=data.get("metadata", {}),
+        )
+
+
+@dataclass
+class BackupResult:
+    """Result of a backup operation (create, verify, or restore)."""
+    success: bool
+    message: str
+    backup_id: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "success": self.success,
+            "message": self.message,
+        }
+        if self.backup_id is not None:
+            d["backup_id"] = self.backup_id
+        if self.timestamp is not None:
+            d["timestamp"] = _format_datetime(self.timestamp)
+        if self.metadata:
+            d["metadata"] = dict(self.metadata)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BackupResult":
+        return cls(
+            success=data.get("success", True),
+            message=data.get("message", ""),
+            backup_id=data.get("backup_id"),
+            timestamp=_parse_datetime(data.get("timestamp")),
+            metadata=data.get("metadata", {}),
+        )
+
+
+@dataclass
+class DiagnosticsReport:
+    """Diagnostics report for an allocation."""
+    allocation_id: str
+    state: str
+    node_assignments: List[str] = field(default_factory=list)
+    scheduler_decisions: List[Dict[str, Any]] = field(default_factory=list)
+    resource_utilization: Dict[str, float] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "allocation_id": self.allocation_id,
+            "state": self.state,
+            "node_assignments": list(self.node_assignments),
+            "scheduler_decisions": list(self.scheduler_decisions),
+            "resource_utilization": dict(self.resource_utilization),
+            "warnings": list(self.warnings),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DiagnosticsReport":
+        return cls(
+            allocation_id=data["allocation_id"],
+            state=data.get("state", ""),
+            node_assignments=data.get("node_assignments", []),
+            scheduler_decisions=data.get("scheduler_decisions", []),
+            resource_utilization=data.get("resource_utilization", {}),
+            warnings=data.get("warnings", []),
+            metadata=data.get("metadata", {}),
+        )
+
+
+@dataclass
+class QueueInfo:
+    """Queue information for a vCluster."""
+    vcluster_name: str
+    pending_count: int = 0
+    running_count: int = 0
+    allocations: List[Dict[str, Any]] = field(default_factory=list)
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "vcluster_name": self.vcluster_name,
+            "pending_count": self.pending_count,
+            "running_count": self.running_count,
+            "allocations": list(self.allocations),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "QueueInfo":
+        return cls(
+            vcluster_name=data["vcluster_name"],
+            pending_count=int(data.get("pending_count", 0)),
+            running_count=int(data.get("running_count", 0)),
+            allocations=data.get("allocations", []),
+            metadata=data.get("metadata", {}),
+        )

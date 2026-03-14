@@ -1,0 +1,68 @@
+[
+  {
+    "allocation_id": "alloc-preprocess",
+    "timestamp": 1710400000,
+    "node_count": 2,
+    "priority": 5,
+    "tenant": "ml-team",
+    "checkpoint": "none",
+    "data_readiness": 0.9,
+    "target_share": 0.3,
+    "actual_usage": 0.1
+  },
+  {
+    "allocation_id": "alloc-training-large",
+    "timestamp": 1710400100,
+    "node_count": 16,
+    "priority": 8,
+    "tenant": "ml-team",
+    "checkpoint": "auto",
+    "data_readiness": 0.7,
+    "target_share": 0.3,
+    "actual_usage": 0.1
+  },
+  {
+    "allocation_id": "alloc-simulation",
+    "timestamp": 1710400200,
+    "node_count": 8,
+    "priority": 3,
+    "tenant": "physics",
+    "checkpoint": "signal",
+    "data_readiness": 0.5,
+    "target_share": 0.25,
+    "actual_usage": 0.4
+  },
+  {
+    "allocation_id": "alloc-inference-service",
+    "timestamp": 1710400300,
+    "node_count": 4,
+    "priority": 7,
+    "tenant": "platform",
+    "checkpoint": "none",
+    "data_readiness": 1.0,
+    "target_share": 0.15,
+    "actual_usage": 0.05
+  },
+  {
+    "allocation_id": "alloc-data-pipeline",
+    "timestamp": 1710400050,
+    "node_count": 1,
+    "priority": 2,
+    "tenant": "data-eng",
+    "checkpoint": "manual",
+    "data_readiness": 0.3,
+    "target_share": 0.2,
+    "actual_usage": 0.35
+  },
+  {
+    "allocation_id": "alloc-benchmark",
+    "timestamp": 1710400400,
+    "node_count": 32,
+    "priority": 1,
+    "tenant": "hpc-benchmarks",
+    "checkpoint": "none",
+    "data_readiness": 0.8,
+    "target_share": 0.1,
+    "actual_usage": 0.0
+  }
+]

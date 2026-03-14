@@ -1,0 +1,93 @@
+# multi-stage-etl.yaml — ETL pipeline with error handling
+#
+# This DAG demonstrates a 3-stage Extract-Transform-Load pipeline
+# with error recovery using afternotok dependency edges.
+#
+# Flow:
+#   extract --success--> transform --success--> load
+#              \                       \
+#               +--failure--> notify    +--failure--> notify
+#
+# The notify stage runs only if its upstream stage fails,
+# allowing for alerting and error recovery.
+
+dag_id: etl-pipeline
+
+allocations:
+  # Stage 1: Extract data from S3 source
+  # Downloads and validates input data from the data lake.
+  - name: extract
+    tenant: data-eng
+    project: daily-etl
+    entrypoint: >-
+      python extract.py
+      --source s3://datalake/raw/2026-03-14
+      --output /scratch/extracted
+      --validate-schema
+    nodes: 2
+    walltime_hours: 1.0
+
+  # Stage 2: GPU-accelerated data transformation
+  # Runs RAPIDS cuDF transformations on extracted data.
+  # Only starts after extract succeeds.
+  - name: transform
+    tenant: data-eng
+    project: daily-etl
+    entrypoint: >-
+      python transform.py
+      --input /scratch/extracted
+      --output /scratch/transformed
+      --gpu-accelerate
+    nodes: 4
+    walltime_hours: 2.0
+    depends_on:
+      - name: extract
+        condition: success
+
+  # Stage 3: Load results into output storage
+  # Writes transformed data to the target data store.
+  # Only starts after transform succeeds.
+  - name: load
+    tenant: data-eng
+    project: daily-etl
+    entrypoint: >-
+      python load.py
+      --input /scratch/transformed
+      --target s3://datalake/processed/2026-03-14
+      --partition-by date
+    nodes: 1
+    walltime_hours: 0.5
+    depends_on:
+      - name: transform
+        condition: success
+
+  # Error handler: runs if extract fails.
+  # Sends an alert and logs the failure for investigation.
+  - name: notify-extract-failure
+    tenant: data-eng
+    project: daily-etl
+    entrypoint: >-
+      python notify.py
+      --stage extract
+      --channel "#data-alerts"
+      --severity critical
+    nodes: 1
+    walltime_hours: 0.1
+    depends_on:
+      - name: extract
+        condition: failure
+
+  # Error handler: runs if transform fails.
+  - name: notify-transform-failure
+    tenant: data-eng
+    project: daily-etl
+    entrypoint: >-
+      python notify.py
+      --stage transform
+      --channel "#data-alerts"
+      --severity critical
+    nodes: 1
+    walltime_hours: 0.1
+    depends_on:
+      - name: transform
+        condition: failure

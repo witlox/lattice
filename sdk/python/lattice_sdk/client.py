@@ -11,11 +11,20 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 
 from .types import (
+    AccountingUsage,
     Allocation,
     AllocationMetrics,
     AllocationSpec,
+    AuditEntry,
+    BackupResult,
+    Dag,
+    DagSpec,
+    DiagnosticsReport,
     LogEntry,
     Node,
+    QueueInfo,
+    RaftStatus,
+    Session,
     Tenant,
     VCluster,
     WatchEvent,
@@ -161,7 +170,7 @@ class LatticeClient:
             LatticeAuthError: On authentication failure.
         """
         client = self._ensure_client()
-        response = await client.post("/v1/allocations", json=spec.to_dict())
+        response = await client.post("/api/v1/allocations", json=spec.to_dict())
         self._raise_for_status(response)
         return Allocation.from_dict(response.json())
 
@@ -179,7 +188,30 @@ class LatticeClient:
             LatticeNotFoundError: If the allocation does not exist.
         """
         client = self._ensure_client()
-        response = await client.get(f"/v1/allocations/{alloc_id}")
+        response = await client.get(f"/api/v1/allocations/{alloc_id}")
+        self._raise_for_status(response)
+        return Allocation.from_dict(response.json())
+
+    async def patch_allocation(
+        self, alloc_id: str, patch: Dict[str, Any]
+    ) -> Allocation:
+        """
+        Patch an existing allocation with partial updates.
+
+        Args:
+            alloc_id: Allocation ID to patch.
+            patch: Dictionary of fields to update.
+
+        Returns:
+            The updated Allocation.
+
+        Raises:
+            LatticeNotFoundError: If the allocation does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.patch(
+            f"/api/v1/allocations/{alloc_id}", json=patch
+        )
         self._raise_for_status(response)
         return Allocation.from_dict(response.json())
 
@@ -197,7 +229,7 @@ class LatticeClient:
             LatticeNotFoundError: If the allocation does not exist.
         """
         client = self._ensure_client()
-        response = await client.delete(f"/v1/allocations/{alloc_id}")
+        response = await client.post(f"/api/v1/allocations/{alloc_id}/cancel")
         self._raise_for_status(response)
         return True
 
@@ -226,11 +258,31 @@ class LatticeClient:
             params["tenant_id"] = tenant_id
         if state:
             params["state"] = state
-        response = await client.get("/v1/allocations", params=params)
+        response = await client.get("/api/v1/allocations", params=params)
         self._raise_for_status(response)
         data = response.json()
         items = data if isinstance(data, list) else data.get("allocations", [])
         return [Allocation.from_dict(item) for item in items]
+
+    async def get_diagnostics(self, alloc_id: str) -> DiagnosticsReport:
+        """
+        Get diagnostics report for an allocation.
+
+        Args:
+            alloc_id: Allocation ID to get diagnostics for.
+
+        Returns:
+            DiagnosticsReport with scheduler decisions, resource usage, and warnings.
+
+        Raises:
+            LatticeNotFoundError: If the allocation does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.get(
+            f"/api/v1/allocations/{alloc_id}/diagnostics"
+        )
+        self._raise_for_status(response)
+        return DiagnosticsReport.from_dict(response.json())
 
     # ── Node Operations ──
 
@@ -242,7 +294,7 @@ class LatticeClient:
             List of Node objects with availability status.
         """
         client = self._ensure_client()
-        response = await client.get("/v1/nodes")
+        response = await client.get("/api/v1/nodes")
         self._raise_for_status(response)
         data = response.json()
         items = data if isinstance(data, list) else data.get("nodes", [])
@@ -262,9 +314,45 @@ class LatticeClient:
             LatticeNotFoundError: If the node does not exist.
         """
         client = self._ensure_client()
-        response = await client.get(f"/v1/nodes/{node_name}")
+        response = await client.get(f"/api/v1/nodes/{node_name}")
         self._raise_for_status(response)
         return Node.from_dict(response.json())
+
+    async def drain_node(self, node_id: str) -> bool:
+        """
+        Drain a node, preventing new allocations from being scheduled on it.
+
+        Args:
+            node_id: Node ID to drain.
+
+        Returns:
+            True if the drain request was accepted.
+
+        Raises:
+            LatticeNotFoundError: If the node does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.post(f"/api/v1/nodes/{node_id}/drain")
+        self._raise_for_status(response)
+        return True
+
+    async def undrain_node(self, node_id: str) -> bool:
+        """
+        Undrain a node, allowing new allocations to be scheduled on it.
+
+        Args:
+            node_id: Node ID to undrain.
+
+        Returns:
+            True if the undrain request was accepted.
+
+        Raises:
+            LatticeNotFoundError: If the node does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.post(f"/api/v1/nodes/{node_id}/undrain")
+        self._raise_for_status(response)
+        return True
 
     # ── Observability ──
 
@@ -283,7 +371,7 @@ class LatticeClient:
         client = self._ensure_client()
         async with client.stream(
             "GET",
-            f"/v1/allocations/{alloc_id}/watch",
+            f"/api/v1/allocations/{alloc_id}/watch",
             headers={"Accept": "text/event-stream"},
         ) as response:
             self._raise_for_status(response)
@@ -320,7 +408,7 @@ class LatticeClient:
         if follow:
             async with client.stream(
                 "GET",
-                f"/v1/allocations/{alloc_id}/logs",
+                f"/api/v1/allocations/{alloc_id}/logs",
                 params=params,
                 headers={"Accept": "text/event-stream"},
             ) as response:
@@ -337,13 +425,44 @@ class LatticeClient:
                                 continue
         else:
             response = await client.get(
-                f"/v1/allocations/{alloc_id}/logs", params=params
+                f"/api/v1/allocations/{alloc_id}/logs", params=params
             )
             self._raise_for_status(response)
             data = response.json()
             items = data if isinstance(data, list) else data.get("entries", [])
             for item in items:
                 yield LogEntry.from_dict(item)
+
+    async def stream_logs(self, alloc_id: str) -> AsyncIterator[LogEntry]:
+        """
+        Stream logs from an allocation via SSE (dedicated streaming endpoint).
+
+        Unlike logs(follow=True), this uses the dedicated /logs/stream endpoint
+        which is optimized for real-time log streaming.
+
+        Args:
+            alloc_id: Allocation ID to stream logs from.
+
+        Yields:
+            LogEntry objects with timestamp, level, and message.
+        """
+        client = self._ensure_client()
+        async with client.stream(
+            "GET",
+            f"/api/v1/allocations/{alloc_id}/logs/stream",
+            headers={"Accept": "text/event-stream"},
+        ) as response:
+            self._raise_for_status(response)
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if line.startswith("data:"):
+                    data_str = line[5:].strip()
+                    if data_str:
+                        try:
+                            entry_data = json.loads(data_str)
+                            yield LogEntry.from_dict(entry_data)
+                        except (json.JSONDecodeError, KeyError):
+                            continue
 
     async def metrics(self, alloc_id: str) -> AllocationMetrics:
         """
@@ -356,7 +475,7 @@ class LatticeClient:
             AllocationMetrics object with current utilization data.
         """
         client = self._ensure_client()
-        response = await client.get(f"/v1/allocations/{alloc_id}/metrics")
+        response = await client.get(f"/api/v1/allocations/{alloc_id}/metrics")
         self._raise_for_status(response)
         return AllocationMetrics.from_dict(response.json())
 
@@ -373,7 +492,7 @@ class LatticeClient:
         client = self._ensure_client()
         async with client.stream(
             "GET",
-            f"/v1/allocations/{alloc_id}/metrics/stream",
+            f"/api/v1/allocations/{alloc_id}/metrics/stream",
             headers={"Accept": "text/event-stream"},
         ) as response:
             self._raise_for_status(response)
@@ -388,7 +507,215 @@ class LatticeClient:
                         except (json.JSONDecodeError, KeyError):
                             continue
 
+    # ── Session Operations ──
+
+    async def create_session(
+        self, allocation_id: str, user_id: Optional[str] = None
+    ) -> Session:
+        """
+        Create an interactive session attached to an allocation.
+
+        Args:
+            allocation_id: Allocation ID to attach the session to.
+            user_id: Optional user ID for the session.
+
+        Returns:
+            The created Session.
+
+        Raises:
+            LatticeNotFoundError: If the allocation does not exist.
+        """
+        client = self._ensure_client()
+        body: Dict[str, Any] = {"allocation_id": allocation_id}
+        if user_id is not None:
+            body["user_id"] = user_id
+        response = await client.post("/api/v1/sessions", json=body)
+        self._raise_for_status(response)
+        return Session.from_dict(response.json())
+
+    async def get_session(self, session_id: str) -> Session:
+        """
+        Get details for a specific session.
+
+        Args:
+            session_id: Session ID.
+
+        Returns:
+            Session object.
+
+        Raises:
+            LatticeNotFoundError: If the session does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.get(f"/api/v1/sessions/{session_id}")
+        self._raise_for_status(response)
+        return Session.from_dict(response.json())
+
+    async def delete_session(self, session_id: str) -> bool:
+        """
+        Delete (terminate) a session.
+
+        Args:
+            session_id: Session ID to delete.
+
+        Returns:
+            True if the session was deleted.
+
+        Raises:
+            LatticeNotFoundError: If the session does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.delete(f"/api/v1/sessions/{session_id}")
+        self._raise_for_status(response)
+        return True
+
+    # ── DAG Operations ──
+
+    async def submit_dag(self, spec: DagSpec) -> Dag:
+        """
+        Submit a DAG (directed acyclic graph) of allocations.
+
+        Args:
+            spec: DagSpec describing the DAG structure and allocations.
+
+        Returns:
+            The created Dag with its assigned ID and initial state.
+
+        Raises:
+            LatticeError: On submission failure.
+        """
+        client = self._ensure_client()
+        response = await client.post("/api/v1/dags", json=spec.to_dict())
+        self._raise_for_status(response)
+        return Dag.from_dict(response.json())
+
+    async def list_dags(
+        self,
+        tenant_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dag]:
+        """
+        List DAGs with optional filtering.
+
+        Args:
+            tenant_id: Filter by tenant ID. Optional.
+            limit: Maximum number of results to return. Defaults to 100.
+            offset: Offset for pagination. Defaults to 0.
+
+        Returns:
+            List of Dag objects.
+        """
+        client = self._ensure_client()
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if tenant_id:
+            params["tenant_id"] = tenant_id
+        response = await client.get("/api/v1/dags", params=params)
+        self._raise_for_status(response)
+        data = response.json()
+        items = data if isinstance(data, list) else data.get("dags", [])
+        return [Dag.from_dict(item) for item in items]
+
+    async def get_dag(self, dag_id: str) -> Dag:
+        """
+        Get details for a specific DAG.
+
+        Args:
+            dag_id: DAG ID.
+
+        Returns:
+            Dag object.
+
+        Raises:
+            LatticeNotFoundError: If the DAG does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.get(f"/api/v1/dags/{dag_id}")
+        self._raise_for_status(response)
+        return Dag.from_dict(response.json())
+
+    async def cancel_dag(self, dag_id: str) -> bool:
+        """
+        Cancel a DAG and all its pending allocations.
+
+        Args:
+            dag_id: DAG ID to cancel.
+
+        Returns:
+            True if cancellation was accepted.
+
+        Raises:
+            LatticeNotFoundError: If the DAG does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.post(f"/api/v1/dags/{dag_id}/cancel")
+        self._raise_for_status(response)
+        return True
+
+    # ── Audit Operations ──
+
+    async def query_audit(
+        self,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[AuditEntry]:
+        """
+        Query audit log entries with optional filtering.
+
+        Args:
+            tenant_id: Filter by tenant ID. Optional.
+            user_id: Filter by user ID. Optional.
+            action: Filter by action type. Optional.
+            limit: Maximum number of results to return. Defaults to 100.
+            offset: Offset for pagination. Defaults to 0.
+
+        Returns:
+            List of AuditEntry objects.
+        """
+        client = self._ensure_client()
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if tenant_id:
+            params["tenant_id"] = tenant_id
+        if user_id:
+            params["user_id"] = user_id
+        if action:
+            params["action"] = action
+        response = await client.get("/api/v1/audit", params=params)
+        self._raise_for_status(response)
+        data = response.json()
+        items = data if isinstance(data, list) else data.get("entries", [])
+        return [AuditEntry.from_dict(item) for item in items]
+
     # ── Tenant Operations ──
+
+    async def create_tenant(
+        self, name: str, quota_cpus: float, quota_memory_gb: float, quota_gpus: int = 0
+    ) -> Tenant:
+        """
+        Create a new tenant.
+
+        Args:
+            name: Tenant name.
+            quota_cpus: CPU quota for the tenant.
+            quota_memory_gb: Memory quota in GB.
+            quota_gpus: GPU quota. Defaults to 0.
+
+        Returns:
+            The created Tenant.
+        """
+        client = self._ensure_client()
+        body: Dict[str, Any] = {
+            "name": name,
+            "quota_cpus": quota_cpus,
+            "quota_memory_gb": quota_memory_gb,
+            "quota_gpus": quota_gpus,
+        }
+        response = await client.post("/api/v1/tenants", json=body)
+        self._raise_for_status(response)
+        return Tenant.from_dict(response.json())
 
     async def list_tenants(self) -> List[Tenant]:
         """
@@ -398,7 +725,7 @@ class LatticeClient:
             List of Tenant objects.
         """
         client = self._ensure_client()
-        response = await client.get("/v1/tenants")
+        response = await client.get("/api/v1/tenants")
         self._raise_for_status(response)
         data = response.json()
         items = data if isinstance(data, list) else data.get("tenants", [])
@@ -418,11 +745,66 @@ class LatticeClient:
             LatticeNotFoundError: If the tenant does not exist.
         """
         client = self._ensure_client()
-        response = await client.get(f"/v1/tenants/{tenant_id}")
+        response = await client.get(f"/api/v1/tenants/{tenant_id}")
+        self._raise_for_status(response)
+        return Tenant.from_dict(response.json())
+
+    async def update_tenant(
+        self, tenant_id: str, updates: Dict[str, Any]
+    ) -> Tenant:
+        """
+        Update a tenant's configuration.
+
+        Args:
+            tenant_id: Tenant ID to update.
+            updates: Dictionary of fields to update (e.g., quota_cpus, name).
+
+        Returns:
+            The updated Tenant.
+
+        Raises:
+            LatticeNotFoundError: If the tenant does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.put(
+            f"/api/v1/tenants/{tenant_id}", json=updates
+        )
         self._raise_for_status(response)
         return Tenant.from_dict(response.json())
 
     # ── VCluster Operations ──
+
+    async def create_vcluster(
+        self,
+        name: str,
+        scheduler_type: str,
+        resource_filter: Optional[Dict[str, str]] = None,
+        scheduler_weights: Optional[Dict[str, float]] = None,
+    ) -> VCluster:
+        """
+        Create a new vCluster.
+
+        Args:
+            name: VCluster name.
+            scheduler_type: Scheduler type (e.g., "hpc_backfill", "service_bin_pack").
+            resource_filter: Optional resource filter for node selection.
+            scheduler_weights: Optional cost function weight overrides.
+
+        Returns:
+            The created VCluster.
+        """
+        client = self._ensure_client()
+        body: Dict[str, Any] = {
+            "name": name,
+            "scheduler_type": scheduler_type,
+        }
+        if resource_filter:
+            body["resource_filter"] = resource_filter
+        if scheduler_weights:
+            body["scheduler_weights"] = scheduler_weights
+        response = await client.post("/api/v1/vclusters", json=body)
+        self._raise_for_status(response)
+        return VCluster.from_dict(response.json())
 
     async def list_vclusters(self) -> List[VCluster]:
         """
@@ -432,7 +814,7 @@ class LatticeClient:
             List of VCluster objects.
         """
         client = self._ensure_client()
-        response = await client.get("/v1/vclusters")
+        response = await client.get("/api/v1/vclusters")
         self._raise_for_status(response)
         data = response.json()
         items = data if isinstance(data, list) else data.get("vclusters", [])
@@ -452,9 +834,110 @@ class LatticeClient:
             LatticeNotFoundError: If the vCluster does not exist.
         """
         client = self._ensure_client()
-        response = await client.get(f"/v1/vclusters/{name}")
+        response = await client.get(f"/api/v1/vclusters/{name}")
         self._raise_for_status(response)
         return VCluster.from_dict(response.json())
+
+    async def vcluster_queue(self, name: str) -> QueueInfo:
+        """
+        Get queue information for a specific vCluster.
+
+        Args:
+            name: VCluster name.
+
+        Returns:
+            QueueInfo with pending/running counts and allocation details.
+
+        Raises:
+            LatticeNotFoundError: If the vCluster does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.get(f"/api/v1/vclusters/{name}/queue")
+        self._raise_for_status(response)
+        return QueueInfo.from_dict(response.json())
+
+    # ── Accounting Operations ──
+
+    async def accounting_usage(
+        self,
+        tenant_id: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+    ) -> AccountingUsage:
+        """
+        Get resource usage accounting data.
+
+        Args:
+            tenant_id: Filter by tenant ID. Optional.
+            start: Start of reporting period (ISO 8601). Optional.
+            end: End of reporting period (ISO 8601). Optional.
+
+        Returns:
+            AccountingUsage with resource consumption totals.
+        """
+        client = self._ensure_client()
+        params: Dict[str, Any] = {}
+        if tenant_id:
+            params["tenant_id"] = tenant_id
+        if start:
+            params["start"] = start
+        if end:
+            params["end"] = end
+        response = await client.get("/api/v1/accounting/usage", params=params)
+        self._raise_for_status(response)
+        return AccountingUsage.from_dict(response.json())
+
+    # ── Raft Operations ──
+
+    async def raft_status(self) -> RaftStatus:
+        """
+        Get the Raft consensus cluster status.
+
+        Returns:
+            RaftStatus with node role, term, leader, and member information.
+        """
+        client = self._ensure_client()
+        response = await client.get("/api/v1/raft/status")
+        self._raise_for_status(response)
+        return RaftStatus.from_dict(response.json())
+
+    # ── Admin Operations ──
+
+    async def create_backup(self) -> BackupResult:
+        """
+        Create a backup of the Raft state.
+
+        Returns:
+            BackupResult with backup ID and status.
+        """
+        client = self._ensure_client()
+        response = await client.post("/api/v1/admin/backup")
+        self._raise_for_status(response)
+        return BackupResult.from_dict(response.json())
+
+    async def verify_backup(self) -> BackupResult:
+        """
+        Verify the integrity of the most recent backup.
+
+        Returns:
+            BackupResult indicating verification status.
+        """
+        client = self._ensure_client()
+        response = await client.post("/api/v1/admin/backup/verify")
+        self._raise_for_status(response)
+        return BackupResult.from_dict(response.json())
+
+    async def restore_backup(self) -> BackupResult:
+        """
+        Restore from the most recent backup.
+
+        Returns:
+            BackupResult indicating restore status.
+        """
+        client = self._ensure_client()
+        response = await client.post("/api/v1/admin/backup/restore")
+        self._raise_for_status(response)
+        return BackupResult.from_dict(response.json())
 
     # ── Health ──
 

@@ -20,13 +20,22 @@ from lattice_sdk import (
     LatticeError,
     LatticeNotFoundError,
     LatticeAuthError,
+    AccountingUsage,
     Allocation,
     AllocationMetrics,
     AllocationSpec,
     AllocationState,
+    AuditEntry,
+    BackupResult,
+    Dag,
+    DagSpec,
+    DiagnosticsReport,
     LogEntry,
     Node,
+    QueueInfo,
+    RaftStatus,
     ResourceRequest,
+    Session,
     Tenant,
     VCluster,
     WatchEvent,
@@ -102,6 +111,97 @@ def _sample_metrics_dict(alloc_id="alloc-001"):
         "network_out_mbps": 300.0,
         "io_read_mbps": 100.0,
         "io_write_mbps": 50.0,
+    }
+
+
+def _sample_session_dict(session_id="session-001"):
+    return {
+        "id": session_id,
+        "allocation_id": "alloc-001",
+        "user_id": "user-001",
+        "status": "active",
+        "created_at": "2025-01-15T10:00:00+00:00",
+    }
+
+
+def _sample_dag_dict(dag_id="dag-001"):
+    return {
+        "id": dag_id,
+        "name": "training-pipeline",
+        "state": "pending",
+        "allocations": ["alloc-001", "alloc-002"],
+        "edges": [{"from": "alloc-001", "to": "alloc-002", "type": "afterok"}],
+        "tenant_id": "tenant-001",
+        "user_id": "user-001",
+    }
+
+
+def _sample_audit_entry_dict(entry_id="audit-001"):
+    return {
+        "id": entry_id,
+        "timestamp": "2025-01-15T10:00:00+00:00",
+        "action": "node_claim",
+        "user_id": "user-001",
+        "resource_type": "node",
+        "resource_id": "node-001",
+        "details": {"reason": "sensitive workload"},
+    }
+
+
+def _sample_accounting_usage_dict():
+    return {
+        "tenant_id": "tenant-001",
+        "period_start": "2025-01-01T00:00:00+00:00",
+        "period_end": "2025-01-31T23:59:59+00:00",
+        "cpu_hours": 5000.0,
+        "gpu_hours": 1200.0,
+        "memory_gb_hours": 80000.0,
+        "storage_gb_hours": 10000.0,
+        "total_allocations": 150,
+    }
+
+
+def _sample_raft_status_dict():
+    return {
+        "node_id": "node-1",
+        "role": "leader",
+        "term": 5,
+        "leader_id": "node-1",
+        "members": ["node-1", "node-2", "node-3"],
+        "commit_index": 42,
+        "last_applied": 42,
+    }
+
+
+def _sample_backup_result_dict():
+    return {
+        "success": True,
+        "message": "Backup created successfully",
+        "backup_id": "backup-001",
+        "timestamp": "2025-01-15T10:30:00+00:00",
+    }
+
+
+def _sample_diagnostics_dict(alloc_id="alloc-001"):
+    return {
+        "allocation_id": alloc_id,
+        "state": "running",
+        "node_assignments": ["node-001", "node-002"],
+        "scheduler_decisions": [{"step": "placement", "result": "success"}],
+        "resource_utilization": {"cpu": 0.75, "gpu": 0.95},
+        "warnings": ["High GPU memory usage"],
+    }
+
+
+def _sample_queue_info_dict(name="hpc-backfill"):
+    return {
+        "vcluster_name": name,
+        "pending_count": 5,
+        "running_count": 10,
+        "allocations": [
+            {"id": "alloc-001", "state": "running"},
+            {"id": "alloc-002", "state": "pending"},
+        ],
     }
 
 
@@ -185,7 +285,7 @@ class TestSubmit:
         """Test successful allocation submission."""
         alloc_dict = _sample_allocation_dict()
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations",
+            url="http://localhost:8080/api/v1/allocations",
             method="POST",
             json=alloc_dict,
             status_code=201,
@@ -200,7 +300,7 @@ class TestSubmit:
     async def test_submit_auth_error(self, httpx_mock):
         """Test submission with auth failure."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations",
+            url="http://localhost:8080/api/v1/allocations",
             method="POST",
             status_code=401,
             text="Unauthorized",
@@ -214,7 +314,7 @@ class TestSubmit:
     async def test_submit_server_error(self, httpx_mock):
         """Test submission with server error."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations",
+            url="http://localhost:8080/api/v1/allocations",
             method="POST",
             status_code=500,
             text="Internal Server Error",
@@ -237,7 +337,7 @@ class TestStatus:
         """Test successful status query."""
         alloc_dict = _sample_allocation_dict("alloc-123", "running")
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations/alloc-123",
+            url="http://localhost:8080/api/v1/allocations/alloc-123",
             method="GET",
             json=alloc_dict,
         )
@@ -250,7 +350,7 @@ class TestStatus:
     async def test_status_not_found(self, httpx_mock):
         """Test status query for non-existent allocation."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations/nonexistent",
+            url="http://localhost:8080/api/v1/allocations/nonexistent",
             method="GET",
             status_code=404,
             text="Not Found",
@@ -263,7 +363,7 @@ class TestStatus:
     async def test_status_forbidden(self, httpx_mock):
         """Test status query with permission denied."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations/alloc-123",
+            url="http://localhost:8080/api/v1/allocations/alloc-123",
             method="GET",
             status_code=403,
             text="Forbidden",
@@ -271,6 +371,40 @@ class TestStatus:
         async with LatticeClient() as client:
             with pytest.raises(LatticeAuthError):
                 await client.status("alloc-123")
+
+
+# ── Patch Allocation Tests ──
+
+
+class TestPatchAllocation:
+    """Tests for patch_allocation() method."""
+
+    @pytest.mark.asyncio
+    async def test_patch_allocation_success(self, httpx_mock):
+        """Test successful allocation patch."""
+        alloc_dict = _sample_allocation_dict("alloc-123", "running")
+        alloc_dict["priority_class"] = "high"
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/allocations/alloc-123",
+            method="PATCH",
+            json=alloc_dict,
+        )
+        async with LatticeClient() as client:
+            alloc = await client.patch_allocation("alloc-123", {"priority_class": "high"})
+            assert alloc.priority_class == "high"
+
+    @pytest.mark.asyncio
+    async def test_patch_allocation_not_found(self, httpx_mock):
+        """Test patching non-existent allocation."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/allocations/nonexistent",
+            method="PATCH",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.patch_allocation("nonexistent", {"priority_class": "high"})
 
 
 # ── Cancel Tests ──
@@ -283,8 +417,8 @@ class TestCancel:
     async def test_cancel_success(self, httpx_mock):
         """Test successful cancellation."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations/alloc-123",
-            method="DELETE",
+            url="http://localhost:8080/api/v1/allocations/alloc-123/cancel",
+            method="POST",
             status_code=200,
             json={"status": "cancelled"},
         )
@@ -296,8 +430,8 @@ class TestCancel:
     async def test_cancel_not_found(self, httpx_mock):
         """Test cancellation of non-existent allocation."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations/nonexistent",
-            method="DELETE",
+            url="http://localhost:8080/api/v1/allocations/nonexistent/cancel",
+            method="POST",
             status_code=404,
             text="Not Found",
         )
@@ -317,7 +451,7 @@ class TestListAllocations:
         """Test listing allocations with array response."""
         allocs = [_sample_allocation_dict("a1"), _sample_allocation_dict("a2", "running")]
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations",
+            url="http://localhost:8080/api/v1/allocations",
             method="GET",
             json=allocs,
         )
@@ -331,7 +465,7 @@ class TestListAllocations:
     async def test_list_allocations_object_response(self, httpx_mock):
         """Test listing allocations with wrapped object response."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations",
+            url="http://localhost:8080/api/v1/allocations",
             method="GET",
             json={"allocations": [_sample_allocation_dict("a1")], "total": 1},
         )
@@ -343,13 +477,48 @@ class TestListAllocations:
     async def test_list_allocations_empty(self, httpx_mock):
         """Test listing allocations with empty result."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations",
+            url="http://localhost:8080/api/v1/allocations",
             method="GET",
             json=[],
         )
         async with LatticeClient() as client:
             result = await client.list_allocations()
             assert len(result) == 0
+
+
+# ── Diagnostics Tests ──
+
+
+class TestDiagnostics:
+    """Tests for get_diagnostics() method."""
+
+    @pytest.mark.asyncio
+    async def test_get_diagnostics_success(self, httpx_mock):
+        """Test successful diagnostics retrieval."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/allocations/alloc-001/diagnostics",
+            method="GET",
+            json=_sample_diagnostics_dict(),
+        )
+        async with LatticeClient() as client:
+            diag = await client.get_diagnostics("alloc-001")
+            assert diag.allocation_id == "alloc-001"
+            assert diag.state == "running"
+            assert len(diag.node_assignments) == 2
+            assert len(diag.warnings) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_diagnostics_not_found(self, httpx_mock):
+        """Test diagnostics for non-existent allocation."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/allocations/nonexistent/diagnostics",
+            method="GET",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.get_diagnostics("nonexistent")
 
 
 # ── Node Tests ──
@@ -363,7 +532,7 @@ class TestNodes:
         """Test listing nodes."""
         nodes = [_sample_node_dict("n1"), _sample_node_dict("n2")]
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/nodes",
+            url="http://localhost:8080/api/v1/nodes",
             method="GET",
             json=nodes,
         )
@@ -376,7 +545,7 @@ class TestNodes:
     async def test_get_node(self, httpx_mock):
         """Test getting a specific node."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/nodes/node-001",
+            url="http://localhost:8080/api/v1/nodes/node-001",
             method="GET",
             json=_sample_node_dict(),
         )
@@ -384,6 +553,58 @@ class TestNodes:
             node = await client.get_node("node-001")
             assert node.name == "node-001"
             assert node.total_gpus == 4
+
+    @pytest.mark.asyncio
+    async def test_drain_node_success(self, httpx_mock):
+        """Test successful node drain."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/nodes/node-001/drain",
+            method="POST",
+            status_code=200,
+            json={"status": "draining"},
+        )
+        async with LatticeClient() as client:
+            result = await client.drain_node("node-001")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_drain_node_not_found(self, httpx_mock):
+        """Test draining non-existent node."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/nodes/nonexistent/drain",
+            method="POST",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.drain_node("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_undrain_node_success(self, httpx_mock):
+        """Test successful node undrain."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/nodes/node-001/undrain",
+            method="POST",
+            status_code=200,
+            json={"status": "available"},
+        )
+        async with LatticeClient() as client:
+            result = await client.undrain_node("node-001")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_undrain_node_not_found(self, httpx_mock):
+        """Test undraining non-existent node."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/nodes/nonexistent/undrain",
+            method="POST",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.undrain_node("nonexistent")
 
 
 # ── Metrics Tests ──
@@ -396,7 +617,7 @@ class TestMetrics:
     async def test_metrics_success(self, httpx_mock):
         """Test getting allocation metrics."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations/alloc-001/metrics",
+            url="http://localhost:8080/api/v1/allocations/alloc-001/metrics",
             method="GET",
             json=_sample_metrics_dict(),
         )
@@ -422,7 +643,7 @@ class TestLogs:
             {"timestamp": now_str, "level": "INFO", "message": "Running"},
         ]
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/allocations/alloc-001/logs",
+            url="http://localhost:8080/api/v1/allocations/alloc-001/logs",
             method="GET",
             json=log_entries,
         )
@@ -435,6 +656,260 @@ class TestLogs:
             assert entries[1].level == "INFO"
 
 
+# ── Session Tests ──
+
+
+class TestSessions:
+    """Tests for session methods."""
+
+    @pytest.mark.asyncio
+    async def test_create_session_success(self, httpx_mock):
+        """Test successful session creation."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/sessions",
+            method="POST",
+            json=_sample_session_dict(),
+            status_code=201,
+        )
+        async with LatticeClient() as client:
+            session = await client.create_session("alloc-001", user_id="user-001")
+            assert session.id == "session-001"
+            assert session.allocation_id == "alloc-001"
+            assert session.status == "active"
+
+    @pytest.mark.asyncio
+    async def test_create_session_without_user(self, httpx_mock):
+        """Test session creation without explicit user_id."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/sessions",
+            method="POST",
+            json=_sample_session_dict(),
+            status_code=201,
+        )
+        async with LatticeClient() as client:
+            session = await client.create_session("alloc-001")
+            assert session.id == "session-001"
+
+    @pytest.mark.asyncio
+    async def test_get_session_success(self, httpx_mock):
+        """Test successful session retrieval."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/sessions/session-001",
+            method="GET",
+            json=_sample_session_dict(),
+        )
+        async with LatticeClient() as client:
+            session = await client.get_session("session-001")
+            assert session.id == "session-001"
+            assert session.user_id == "user-001"
+
+    @pytest.mark.asyncio
+    async def test_get_session_not_found(self, httpx_mock):
+        """Test session retrieval for non-existent session."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/sessions/nonexistent",
+            method="GET",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.get_session("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_delete_session_success(self, httpx_mock):
+        """Test successful session deletion."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/sessions/session-001",
+            method="DELETE",
+            status_code=200,
+            json={"status": "deleted"},
+        )
+        async with LatticeClient() as client:
+            result = await client.delete_session("session-001")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_delete_session_not_found(self, httpx_mock):
+        """Test deleting non-existent session."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/sessions/nonexistent",
+            method="DELETE",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.delete_session("nonexistent")
+
+
+# ── DAG Tests ──
+
+
+class TestDags:
+    """Tests for DAG methods."""
+
+    @pytest.mark.asyncio
+    async def test_submit_dag_success(self, httpx_mock):
+        """Test successful DAG submission."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/dags",
+            method="POST",
+            json=_sample_dag_dict(),
+            status_code=201,
+        )
+        async with LatticeClient() as client:
+            spec = DagSpec(
+                name="training-pipeline",
+                allocations=[{"entrypoint": "echo step1"}, {"entrypoint": "echo step2"}],
+                edges=[{"from": "alloc-001", "to": "alloc-002", "type": "afterok"}],
+                tenant_id="tenant-001",
+            )
+            dag = await client.submit_dag(spec)
+            assert dag.id == "dag-001"
+            assert dag.name == "training-pipeline"
+            assert dag.state == "pending"
+
+    @pytest.mark.asyncio
+    async def test_submit_dag_error(self, httpx_mock):
+        """Test DAG submission with server error."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/dags",
+            method="POST",
+            status_code=400,
+            text="Invalid DAG: cycle detected",
+        )
+        async with LatticeClient() as client:
+            spec = DagSpec(name="bad-dag", allocations=[])
+            with pytest.raises(LatticeError) as exc_info:
+                await client.submit_dag(spec)
+            assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_list_dags_success(self, httpx_mock):
+        """Test listing DAGs."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/dags",
+            method="GET",
+            json=[_sample_dag_dict("dag-001"), _sample_dag_dict("dag-002")],
+        )
+        async with LatticeClient() as client:
+            dags = await client.list_dags()
+            assert len(dags) == 2
+            assert dags[0].id == "dag-001"
+
+    @pytest.mark.asyncio
+    async def test_list_dags_empty(self, httpx_mock):
+        """Test listing DAGs with empty result."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/dags",
+            method="GET",
+            json=[],
+        )
+        async with LatticeClient() as client:
+            dags = await client.list_dags()
+            assert len(dags) == 0
+
+    @pytest.mark.asyncio
+    async def test_get_dag_success(self, httpx_mock):
+        """Test getting a specific DAG."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/dags/dag-001",
+            method="GET",
+            json=_sample_dag_dict(),
+        )
+        async with LatticeClient() as client:
+            dag = await client.get_dag("dag-001")
+            assert dag.id == "dag-001"
+            assert len(dag.allocations) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_dag_not_found(self, httpx_mock):
+        """Test getting non-existent DAG."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/dags/nonexistent",
+            method="GET",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.get_dag("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_cancel_dag_success(self, httpx_mock):
+        """Test successful DAG cancellation."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/dags/dag-001/cancel",
+            method="POST",
+            status_code=200,
+            json={"status": "cancelled"},
+        )
+        async with LatticeClient() as client:
+            result = await client.cancel_dag("dag-001")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_cancel_dag_not_found(self, httpx_mock):
+        """Test cancelling non-existent DAG."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/dags/nonexistent/cancel",
+            method="POST",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.cancel_dag("nonexistent")
+
+
+# ── Audit Tests ──
+
+
+class TestAudit:
+    """Tests for audit query methods."""
+
+    @pytest.mark.asyncio
+    async def test_query_audit_success(self, httpx_mock):
+        """Test successful audit query."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/audit",
+            method="GET",
+            json=[_sample_audit_entry_dict()],
+        )
+        async with LatticeClient() as client:
+            entries = await client.query_audit()
+            assert len(entries) == 1
+            assert entries[0].id == "audit-001"
+            assert entries[0].action == "node_claim"
+
+    @pytest.mark.asyncio
+    async def test_query_audit_with_filters(self, httpx_mock):
+        """Test audit query with filters."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/audit",
+            method="GET",
+            json=[_sample_audit_entry_dict()],
+        )
+        async with LatticeClient() as client:
+            entries = await client.query_audit(
+                tenant_id="tenant-001", user_id="user-001", action="node_claim"
+            )
+            assert len(entries) == 1
+
+    @pytest.mark.asyncio
+    async def test_query_audit_empty(self, httpx_mock):
+        """Test audit query with no results."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/audit",
+            method="GET",
+            json=[],
+        )
+        async with LatticeClient() as client:
+            entries = await client.query_audit()
+            assert len(entries) == 0
+
+
 # ── Tenant Tests ──
 
 
@@ -442,10 +917,26 @@ class TestTenants:
     """Tests for tenant methods."""
 
     @pytest.mark.asyncio
+    async def test_create_tenant_success(self, httpx_mock):
+        """Test successful tenant creation."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/tenants",
+            method="POST",
+            json=_sample_tenant_dict(),
+            status_code=201,
+        )
+        async with LatticeClient() as client:
+            tenant = await client.create_tenant(
+                name="team-ai", quota_cpus=1000.0, quota_memory_gb=10000.0, quota_gpus=100
+            )
+            assert tenant.name == "team-ai"
+            assert tenant.quota_cpus == 1000.0
+
+    @pytest.mark.asyncio
     async def test_list_tenants(self, httpx_mock):
         """Test listing tenants."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/tenants",
+            url="http://localhost:8080/api/v1/tenants",
             method="GET",
             json=[_sample_tenant_dict()],
         )
@@ -458,7 +949,7 @@ class TestTenants:
     async def test_get_tenant(self, httpx_mock):
         """Test getting a specific tenant."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/tenants/tenant-001",
+            url="http://localhost:8080/api/v1/tenants/tenant-001",
             method="GET",
             json=_sample_tenant_dict(),
         )
@@ -466,6 +957,33 @@ class TestTenants:
             tenant = await client.get_tenant("tenant-001")
             assert tenant.id == "tenant-001"
             assert tenant.quota_gpus == 100
+
+    @pytest.mark.asyncio
+    async def test_update_tenant_success(self, httpx_mock):
+        """Test successful tenant update."""
+        updated = _sample_tenant_dict()
+        updated["quota_cpus"] = 2000.0
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/tenants/tenant-001",
+            method="PUT",
+            json=updated,
+        )
+        async with LatticeClient() as client:
+            tenant = await client.update_tenant("tenant-001", {"quota_cpus": 2000.0})
+            assert tenant.quota_cpus == 2000.0
+
+    @pytest.mark.asyncio
+    async def test_update_tenant_not_found(self, httpx_mock):
+        """Test updating non-existent tenant."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/tenants/nonexistent",
+            method="PUT",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.update_tenant("nonexistent", {"name": "new"})
 
 
 # ── VCluster Tests ──
@@ -475,10 +993,28 @@ class TestVClusters:
     """Tests for vCluster methods."""
 
     @pytest.mark.asyncio
+    async def test_create_vcluster_success(self, httpx_mock):
+        """Test successful vCluster creation."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/vclusters",
+            method="POST",
+            json=_sample_vcluster_dict(),
+            status_code=201,
+        )
+        async with LatticeClient() as client:
+            vc = await client.create_vcluster(
+                name="hpc-backfill",
+                scheduler_type="hpc_backfill",
+                resource_filter={"gpu_type": "h100"},
+            )
+            assert vc.name == "hpc-backfill"
+            assert vc.scheduler_type == "hpc_backfill"
+
+    @pytest.mark.asyncio
     async def test_list_vclusters(self, httpx_mock):
         """Test listing vClusters."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/vclusters",
+            url="http://localhost:8080/api/v1/vclusters",
             method="GET",
             json=[_sample_vcluster_dict()],
         )
@@ -491,13 +1027,160 @@ class TestVClusters:
     async def test_get_vcluster(self, httpx_mock):
         """Test getting a specific vCluster."""
         httpx_mock.add_response(
-            url="http://localhost:8080/v1/vclusters/hpc-backfill",
+            url="http://localhost:8080/api/v1/vclusters/hpc-backfill",
             method="GET",
             json=_sample_vcluster_dict(),
         )
         async with LatticeClient() as client:
             vc = await client.get_vcluster("hpc-backfill")
             assert vc.scheduler_type == "hpc_backfill"
+
+    @pytest.mark.asyncio
+    async def test_vcluster_queue_success(self, httpx_mock):
+        """Test getting vCluster queue info."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/vclusters/hpc-backfill/queue",
+            method="GET",
+            json=_sample_queue_info_dict(),
+        )
+        async with LatticeClient() as client:
+            queue = await client.vcluster_queue("hpc-backfill")
+            assert queue.vcluster_name == "hpc-backfill"
+            assert queue.pending_count == 5
+            assert queue.running_count == 10
+            assert len(queue.allocations) == 2
+
+    @pytest.mark.asyncio
+    async def test_vcluster_queue_not_found(self, httpx_mock):
+        """Test queue info for non-existent vCluster."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/vclusters/nonexistent/queue",
+            method="GET",
+            status_code=404,
+            text="Not Found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.vcluster_queue("nonexistent")
+
+
+# ── Accounting Tests ──
+
+
+class TestAccounting:
+    """Tests for accounting usage methods."""
+
+    @pytest.mark.asyncio
+    async def test_accounting_usage_success(self, httpx_mock):
+        """Test successful accounting usage query."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/accounting/usage",
+            method="GET",
+            json=_sample_accounting_usage_dict(),
+        )
+        async with LatticeClient() as client:
+            usage = await client.accounting_usage(tenant_id="tenant-001")
+            assert usage.tenant_id == "tenant-001"
+            assert usage.cpu_hours == 5000.0
+            assert usage.gpu_hours == 1200.0
+            assert usage.total_allocations == 150
+
+    @pytest.mark.asyncio
+    async def test_accounting_usage_with_period(self, httpx_mock):
+        """Test accounting usage with date range."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/accounting/usage",
+            method="GET",
+            json=_sample_accounting_usage_dict(),
+        )
+        async with LatticeClient() as client:
+            usage = await client.accounting_usage(
+                tenant_id="tenant-001",
+                start="2025-01-01T00:00:00Z",
+                end="2025-01-31T23:59:59Z",
+            )
+            assert usage.tenant_id == "tenant-001"
+
+
+# ── Raft Status Tests ──
+
+
+class TestRaftStatus:
+    """Tests for Raft status methods."""
+
+    @pytest.mark.asyncio
+    async def test_raft_status_success(self, httpx_mock):
+        """Test successful Raft status query."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/raft/status",
+            method="GET",
+            json=_sample_raft_status_dict(),
+        )
+        async with LatticeClient() as client:
+            status = await client.raft_status()
+            assert status.node_id == "node-1"
+            assert status.role == "leader"
+            assert status.term == 5
+            assert len(status.members) == 3
+            assert status.commit_index == 42
+
+
+# ── Admin Backup Tests ──
+
+
+class TestAdminBackup:
+    """Tests for admin backup operations."""
+
+    @pytest.mark.asyncio
+    async def test_create_backup_success(self, httpx_mock):
+        """Test successful backup creation."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/admin/backup",
+            method="POST",
+            json=_sample_backup_result_dict(),
+        )
+        async with LatticeClient() as client:
+            result = await client.create_backup()
+            assert result.success is True
+            assert result.backup_id == "backup-001"
+
+    @pytest.mark.asyncio
+    async def test_verify_backup_success(self, httpx_mock):
+        """Test successful backup verification."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/admin/backup/verify",
+            method="POST",
+            json={"success": True, "message": "Backup verified"},
+        )
+        async with LatticeClient() as client:
+            result = await client.verify_backup()
+            assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_restore_backup_success(self, httpx_mock):
+        """Test successful backup restore."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/admin/backup/restore",
+            method="POST",
+            json={"success": True, "message": "Restore complete"},
+        )
+        async with LatticeClient() as client:
+            result = await client.restore_backup()
+            assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_create_backup_server_error(self, httpx_mock):
+        """Test backup creation with server error."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/admin/backup",
+            method="POST",
+            status_code=500,
+            text="Internal Server Error",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeError) as exc_info:
+                await client.create_backup()
+            assert exc_info.value.status_code == 500
 
 
 # ── Health Tests ──
@@ -723,6 +1406,192 @@ class TestVClusterSerialization:
         restored = VCluster.from_dict(d)
         assert restored.name == "hpc"
         assert restored.scheduler_weights["priority_class"] == 1.0
+
+
+class TestSessionSerialization:
+    """Tests for Session to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        now = datetime.now(timezone.utc)
+        s = Session(
+            id="s1",
+            allocation_id="a1",
+            user_id="u1",
+            created_at=now,
+            status="active",
+        )
+        d = s.to_dict()
+        restored = Session.from_dict(d)
+        assert restored.id == "s1"
+        assert restored.allocation_id == "a1"
+        assert restored.status == "active"
+
+    def test_from_dict_defaults(self):
+        data = {"id": "s1", "allocation_id": "a1", "user_id": "u1"}
+        s = Session.from_dict(data)
+        assert s.status == "active"
+        assert s.metadata == {}
+
+
+class TestDagSerialization:
+    """Tests for Dag to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        dag = Dag(
+            id="d1",
+            name="pipeline",
+            state="running",
+            allocations=["a1", "a2"],
+            edges=[{"from": "a1", "to": "a2", "type": "afterok"}],
+            tenant_id="t1",
+            user_id="u1",
+        )
+        d = dag.to_dict()
+        restored = Dag.from_dict(d)
+        assert restored.id == "d1"
+        assert restored.name == "pipeline"
+        assert len(restored.allocations) == 2
+        assert len(restored.edges) == 1
+
+
+class TestDagSpecSerialization:
+    """Tests for DagSpec to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        spec = DagSpec(
+            name="pipeline",
+            allocations=[{"entrypoint": "step1"}, {"entrypoint": "step2"}],
+            edges=[{"from": "step1", "to": "step2", "type": "afterok"}],
+            tenant_id="t1",
+        )
+        d = spec.to_dict()
+        restored = DagSpec.from_dict(d)
+        assert restored.name == "pipeline"
+        assert len(restored.allocations) == 2
+        assert restored.tenant_id == "t1"
+
+
+class TestAuditEntrySerialization:
+    """Tests for AuditEntry to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        now = datetime.now(timezone.utc)
+        entry = AuditEntry(
+            id="ae1",
+            timestamp=now,
+            action="node_claim",
+            user_id="u1",
+            resource_type="node",
+            resource_id="n1",
+            details={"reason": "sensitive"},
+        )
+        d = entry.to_dict()
+        restored = AuditEntry.from_dict(d)
+        assert restored.id == "ae1"
+        assert restored.action == "node_claim"
+        assert restored.details["reason"] == "sensitive"
+
+
+class TestAccountingUsageSerialization:
+    """Tests for AccountingUsage to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        usage = AccountingUsage(
+            tenant_id="t1",
+            cpu_hours=5000.0,
+            gpu_hours=1200.0,
+            total_allocations=150,
+        )
+        d = usage.to_dict()
+        restored = AccountingUsage.from_dict(d)
+        assert restored.tenant_id == "t1"
+        assert restored.cpu_hours == 5000.0
+        assert restored.total_allocations == 150
+
+    def test_from_dict_defaults(self):
+        data = {"tenant_id": "t1"}
+        usage = AccountingUsage.from_dict(data)
+        assert usage.cpu_hours == 0.0
+        assert usage.gpu_hours == 0.0
+        assert usage.total_allocations == 0
+
+
+class TestRaftStatusSerialization:
+    """Tests for RaftStatus to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        status = RaftStatus(
+            node_id="n1",
+            role="leader",
+            term=5,
+            leader_id="n1",
+            members=["n1", "n2", "n3"],
+            commit_index=42,
+            last_applied=42,
+        )
+        d = status.to_dict()
+        restored = RaftStatus.from_dict(d)
+        assert restored.node_id == "n1"
+        assert restored.role == "leader"
+        assert restored.term == 5
+        assert len(restored.members) == 3
+
+
+class TestBackupResultSerialization:
+    """Tests for BackupResult to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        now = datetime.now(timezone.utc)
+        result = BackupResult(
+            success=True,
+            message="Backup created",
+            backup_id="b1",
+            timestamp=now,
+        )
+        d = result.to_dict()
+        restored = BackupResult.from_dict(d)
+        assert restored.success is True
+        assert restored.backup_id == "b1"
+
+    def test_from_dict_defaults(self):
+        data = {}
+        result = BackupResult.from_dict(data)
+        assert result.success is True
+        assert result.message == ""
+        assert result.backup_id is None
+
+
+class TestDiagnosticsReportSerialization:
+    """Tests for DiagnosticsReport to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        diag = DiagnosticsReport(
+            allocation_id="a1",
+            state="running",
+            node_assignments=["n1", "n2"],
+            warnings=["High GPU usage"],
+        )
+        d = diag.to_dict()
+        restored = DiagnosticsReport.from_dict(d)
+        assert restored.allocation_id == "a1"
+        assert len(restored.node_assignments) == 2
+        assert restored.warnings[0] == "High GPU usage"
+
+
+class TestQueueInfoSerialization:
+    """Tests for QueueInfo to_dict/from_dict."""
+
+    def test_roundtrip(self):
+        qi = QueueInfo(
+            vcluster_name="hpc",
+            pending_count=5,
+            running_count=10,
+        )
+        d = qi.to_dict()
+        restored = QueueInfo.from_dict(d)
+        assert restored.vcluster_name == "hpc"
+        assert restored.pending_count == 5
+        assert restored.running_count == 10
 
 
 # ── AllocationState Enum Tests ──

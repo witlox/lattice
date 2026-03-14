@@ -1,0 +1,56 @@
+# agent-nvidia.yaml — Node agent configuration for NVIDIA GPU nodes
+#
+# The node agent runs on each compute node. It handles:
+#   - Node registration and heartbeat with the quorum
+#   - GPU discovery (NVIDIA via nvml-wrapper)
+#   - Telemetry collection (proc/sys collectors, optional eBPF)
+#   - uenv/Sarus lifecycle management
+#   - Checkpoint signal forwarding
+#
+# Start the agent with:
+#   lattice-agent --config examples/config/agent-nvidia.yaml
+
+# Unique node name (typically the hostname)
+node_name: "nid001234"
+
+# Address of the Lattice API server (gRPC)
+api_endpoint: "lattice-api.example.com:50051"
+
+# Heartbeat interval in seconds (how often to report health to quorum)
+heartbeat_interval_seconds: 30
+
+# GPU discovery configuration
+gpu:
+  # Provider: "nvidia", "amd", or "auto" (auto-detects available hardware)
+  provider: "nvidia"
+
+# Memory topology discovery
+memory:
+  # Enable NUMA and memory topology detection via sysfs
+  # Detects CXL memory, unified memory (GH200 superchip), and NUMA domains
+  enabled: true
+
+# Telemetry collection
+telemetry:
+  # Push endpoint for VictoriaMetrics (or compatible TSDB)
+  tsdb_endpoint: "http://victoriametrics.example.com:8428"
+  # Collection interval in seconds
+  interval_seconds: 30
+  # Path to compiled eBPF programs (optional, uses /proc fallback if empty)
+  ebpf_programs_path: "/opt/lattice/ebpf"
+
+# Software delivery
+runtime:
+  # Path to uenv mount binary
+  uenv_binary: "/usr/bin/squashfs-mount"
+  # Path to Sarus container runtime (optional, for OCI containers)
+  sarus_binary: "/usr/bin/sarus"
+  # Path to DMTCP for transparent checkpointing (optional)
+  dmtcp_binary: "/usr/bin/dmtcp_launch"
+
+# Storage paths
+storage:
+  # Local NVMe scratch for job data
+  scratch_path: "/scratch"
+  # uenv image cache directory (NVMe-backed for fast mounts)
+  uenv_cache_path: "/var/cache/lattice/uenv"
