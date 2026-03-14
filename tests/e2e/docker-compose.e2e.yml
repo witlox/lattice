@@ -1,0 +1,66 @@
+# Lightweight Lattice stack for e2e tests
+# Single server (no Raft peers) + single agent + VictoriaMetrics
+# Used by testcontainers in test_e2e.py
+
+services:
+  lattice-server:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.server
+    command:
+      - "--config"
+      - "/etc/lattice/config.yaml"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+      LATTICE_QUORUM_NODE_ID: "1"
+      LATTICE_API_GRPC_ADDRESS: "0.0.0.0:50051"
+      LATTICE_API_REST_ADDRESS: "0.0.0.0:8080"
+      LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
+    ports:
+      - "8080"
+      - "50051"
+    volumes:
+      - ./e2e-server.yaml:/etc/lattice/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  lattice-agent:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.agent
+    command:
+      - "--node-id"
+      - "e2e-node-001"
+      - "--quorum-endpoint"
+      - "http://lattice-server:50051"
+      - "--cpu-cores"
+      - "64"
+      - "--memory-gb"
+      - "256"
+      - "--gpu-count"
+      - "4"
+      - "--gpu-type"
+      - "GH200"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+      LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
+    depends_on:
+      lattice-server:
+        condition: service_healthy
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.101.0
+    command:
+      - "-retentionPeriod=1d"
+      - "-httpListenAddr=:8428"
+    ports:
+      - "8428"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
