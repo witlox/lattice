@@ -96,7 +96,7 @@ jobs:
       - name: Collect coverage (unit & integration tests)
         run: cargo llvm-cov --no-report nextest --workspace --all-features --no-tests=pass --exclude lattice-acceptance --exclude lattice-test-harness
       - name: Collect coverage (acceptance tests)
-        run: cargo llvm-cov --no-report -p lattice-acceptance --all-features -- --test-threads=1
+        run: cargo llvm-cov --no-report -p lattice-acceptance --all-features
       - name: Generate coverage report
         run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '(lattice-acceptance|lattice-test-harness)'
       - uses: codecov/codecov-action@v5

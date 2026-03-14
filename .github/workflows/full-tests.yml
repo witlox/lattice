@@ -30,3 +30,20 @@ jobs:
       - uses: arduino/setup-protoc@v3
       - name: Run acceptance tests (cucumber, custom harness)
         run: cargo test -p lattice-acceptance --all-features
+
+  e2e-tests:
+    name: E2E Tests (testcontainers)
+    runs-on: ubuntu-latest
+    needs: [unit-tests, acceptance-tests]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: pip install -r tests/e2e/requirements.txt
+      - name: Install Lattice SDK
+        run: pip install -e sdk/python
+      - name: Run e2e tests
+        run: pytest tests/e2e/ -v --timeout=300
+        timeout-minutes: 10
