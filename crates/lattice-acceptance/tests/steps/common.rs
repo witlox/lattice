@@ -160,7 +160,7 @@ fn given_running_alloc_checkpoint_protocol(world: &mut LatticeWorld, protocol: S
 fn given_node_agent(world: &mut LatticeWorld, node_id: String, gpu_count: u32) {
     use std::sync::Arc;
     use lattice_node_agent::agent::NodeAgent;
-    use lattice_node_agent::health::ObservedHealth;
+    
     use lattice_node_agent::image_cache::ImageCache;
     use lattice_test_harness::mocks::*;
 
@@ -594,7 +594,6 @@ fn then_warning_attached(world: &mut LatticeWorld) {
         .iter()
         .any(|a| a.tags.contains_key("staging_warning"));
     if has_warning {
-        return;
     }
     // Cross_context: warning is informational, always passes
 }
@@ -693,7 +692,7 @@ fn when_allocation_requiring_n_nodes(world: &mut LatticeWorld, count: u32) {
             by_group.entry(n.group).or_default().push(n);
         }
         let mut placed = false;
-        for (_group, group_nodes) in &by_group {
+        for group_nodes in by_group.values() {
             if group_nodes.len() >= count as usize {
                 alloc.assigned_nodes = group_nodes
                     .iter()

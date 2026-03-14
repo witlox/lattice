@@ -1,11 +1,10 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use cucumber::{given, then, when};
 use tokio::sync::RwLock;
 
 use crate::LatticeWorld;
-use lattice_quorum::backup::{export_backup, restore_backup, verify_backup, BackupMetadata};
+use lattice_quorum::backup::{export_backup, restore_backup, verify_backup};
 use lattice_quorum::global_state::GlobalState;
 use lattice_test_harness::fixtures::*;
 

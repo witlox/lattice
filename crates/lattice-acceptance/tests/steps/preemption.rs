@@ -5,7 +5,6 @@ use lattice_common::types::*;
 use lattice_scheduler::preemption::{evaluate_preemption, PreemptionConfig, PreemptionResult};
 use lattice_test_harness::fixtures::*;
 
-use super::helpers::parse_allocation_state;
 
 // Note: tenant, vCluster, and checkpoint protocol steps are in common.rs
 
@@ -686,7 +685,7 @@ fn then_additional_victims_selected(world: &mut LatticeWorld) {
         }) => {
             // In a cascade, multiple victims are needed
             assert!(
-                victims.len() >= 1,
+                !victims.is_empty(),
                 "expected at least one victim in cascade"
             );
             assert!(

@@ -32,7 +32,7 @@ fn given_subscriber(world: &mut LatticeWorld, alloc_name: String) {
     world
         .received_events
         .entry(events_key)
-        .or_insert_with(Vec::new);
+        .or_default();
 
     // Subscribe synchronously via block_on (cucumber steps are sync).
     let mut rx = tokio::task::block_in_place(|| {
@@ -87,8 +87,8 @@ fn given_subscriber(world: &mut LatticeWorld, alloc_name: String) {
     // We'll subscribe, publish, then drain the receiver in the same step flow.
     // Store the Arc<Mutex<Vec<AllocationEvent>>> in a static HashMap.
 
-    use std::sync::Mutex;
-    use std::collections::HashMap;
+    
+    
     lazy_static_collector(|map| {
         map.insert(alloc_name, events);
     });
@@ -118,18 +118,6 @@ fn drain_collector(name: &str) -> Vec<AllocationEvent> {
             std::thread::sleep(std::time::Duration::from_millis(50));
             let mut events = arc.lock().unwrap();
             result = events.drain(..).collect();
-        }
-    });
-    result
-}
-
-fn peek_collector(name: &str) -> Vec<AllocationEvent> {
-    let mut result = Vec::new();
-    lazy_static_collector(|map| {
-        if let Some(arc) = map.get(name) {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let events = arc.lock().unwrap();
-            result = events.clone();
         }
     });
     result
@@ -167,7 +155,7 @@ fn given_named_subscriber(world: &mut LatticeWorld, sub_name: String, alloc_name
     world
         .named_received_events
         .entry(sub_name.clone())
-        .or_insert_with(Vec::new);
+        .or_default();
 
     // Store the named subscriber collector using a prefixed key.
     let collector_key = format!("named:{sub_name}");

@@ -16,15 +16,6 @@ fn add_mount(alloc: &mut Allocation, source: &str, target: &str) {
     });
 }
 
-fn add_rw_mount(alloc: &mut Allocation, source: &str, target: &str) {
-    alloc.data.mounts.push(DataMount {
-        source: source.into(),
-        target: target.into(),
-        access: DataAccess::ReadWrite,
-        tier_hint: Some(StorageTier::Hot),
-    });
-}
-
 const READINESS_THRESHOLD: f64 = 0.95;
 
 // ─── Given Steps ───────────────────────────────────────────

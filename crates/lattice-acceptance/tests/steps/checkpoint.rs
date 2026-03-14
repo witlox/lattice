@@ -34,15 +34,6 @@ fn make_running_alloc(node_count: usize, elapsed: Duration) -> Allocation {
     alloc
 }
 
-fn backlog_from_world(world: &LatticeWorld) -> f64 {
-    world
-        .allocations
-        .first()
-        .and_then(|a| a.tags.get("backlog_pressure"))
-        .map(|v| v.parse::<f64>().unwrap())
-        .unwrap_or(0.0)
-}
-
 // ─── Given steps ───────────────────────────────────────────
 
 #[given(regex = r"^a running allocation with (\d+) nodes and (.+) elapsed$")]

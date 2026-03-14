@@ -261,7 +261,7 @@ fn given_fence_coordinator(world: &mut LatticeWorld, node_count: u32, head_index
 fn when_rank_fullinit(world: &mut LatticeWorld) {
     let msg = "cmd=fullinit;pmi_version=2;pmi_subversion=0;\n";
     let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path").clone();
-    let (mut conn, resp) = tokio::task::block_in_place(|| {
+    let (conn, resp) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
             let mut conn = pmi_connect(&socket_path).await;
             let resp = pmi_send_on_conn(&mut conn, msg).await;
@@ -404,7 +404,7 @@ fn then_pmi_shuts_down(world: &mut LatticeWorld) {
 fn when_rank_puts_key(world: &mut LatticeWorld, _rank: u32, key: String, value: String) {
     let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path").clone();
     // Each rank connects and sends fullinit + kvsput on its own persistent connection
-    let (mut conn, resp) = tokio::task::block_in_place(|| {
+    let (conn, resp) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
             let mut conn = pmi_connect(&socket_path).await;
             // fullinit first (PMI-2 requires it before any other command)

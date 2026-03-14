@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use cucumber::{given, then, when};
 use uuid::Uuid;
@@ -8,7 +7,6 @@ use super::helpers::parse_allocation_state;
 use lattice_common::traits::{AuditAction, AuditEntry, AuditLog, AllocationStore, NodeRegistry};
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
-use lattice_test_harness::mocks::*;
 
 // ═══════════════════════════════════════════════════════════
 // Concurrent vCluster Proposals
@@ -129,7 +127,7 @@ fn given_service_proposal_rejected(world: &mut LatticeWorld) {
 }
 
 #[when("the Service scheduler runs its next scheduling cycle")]
-fn when_service_scheduler_runs(world: &mut LatticeWorld) {
+fn when_service_scheduler_runs(_world: &mut LatticeWorld) {
     // Service scheduler observes current node ownership
     // Nothing to do — the assertions check world state
 }

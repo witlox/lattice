@@ -2,7 +2,7 @@ use cucumber::{given, then, when};
 
 use crate::LatticeWorld;
 use super::helpers::{parse_operation, parse_role};
-use lattice_api::middleware::rbac::{Operation, RbacContext, RbacPolicy, Role};
+use lattice_api::middleware::rbac::{RbacContext, RbacPolicy};
 
 // ─── Given Steps ───────────────────────────────────────────
 

@@ -8,7 +8,6 @@ use lattice_node_agent::agent::{AgentCommand, NodeAgent};
 use lattice_node_agent::data_stage::{MockDataStageExecutor, NoopDataStageExecutor};
 use lattice_node_agent::epilogue::{EpilogueConfig, EpiloguePipeline, NoopEpilogueReporter, NoopSensitiveWiper};
 use lattice_node_agent::health::ObservedHealth;
-use lattice_node_agent::image_cache::ImageCache;
 use lattice_node_agent::prologue::{NoopReporter, ProloguePipeline};
 use lattice_node_agent::runtime::{ExitStatus, MockRuntime, PrepareConfig, Runtime};
 use lattice_node_agent::telemetry::log_buffer::LogRingBuffer;

@@ -1,3 +1,18 @@
+// Acceptance tests prioritize readability over clippy perfection
+#![allow(
+    clippy::single_match,
+    clippy::match_like_matches_macro,
+    clippy::get_unwrap,
+    clippy::bool_comparison,
+    clippy::overly_complex_bool_expr,
+    clippy::unnecessary_get_then_check,
+    clippy::type_complexity,
+    clippy::absurd_extreme_comparisons,
+    clippy::redundant_pattern_matching,
+    clippy::async_yields_async,
+    unused_comparisons
+)]
+
 mod steps;
 
 use std::collections::HashMap;

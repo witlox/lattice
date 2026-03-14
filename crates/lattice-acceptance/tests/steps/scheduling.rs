@@ -1,6 +1,5 @@
 use chrono::{Duration, Utc};
 use cucumber::{given, then, when};
-use uuid::Uuid;
 
 use crate::LatticeWorld;
 use super::helpers::parse_allocation_state;
@@ -638,7 +637,7 @@ fn tenant_allocation_scheduled_first(world: &mut LatticeWorld, tenant_name: Stri
     let tenant_alloc = world
         .named_allocations
         .get(&format!("tenant_{tenant_name}"))
-        .expect(&format!("no allocation for tenant {tenant_name}"));
+        .unwrap_or_else(|| panic!("no allocation for tenant {tenant_name}"));
     let tid = tenant_alloc.id;
     let alloc = world
         .allocations
