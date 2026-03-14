@@ -102,6 +102,8 @@ mod tests {
                 allocation_count: 0,
                 tenant_count: 0,
                 audit_entry_count: 0,
+                audit_archive_count: 0,
+                total_audit_entries: 0,
             },
         };
         let metadata_json = serde_json::to_vec(&metadata).unwrap();

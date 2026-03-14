@@ -485,6 +485,16 @@ impl AuditLog for MockAuditLog {
             .collect();
         Ok(result)
     }
+
+    async fn archive_info(
+        &self,
+    ) -> Result<Vec<lattice_common::traits::AuditArchiveInfo>, LatticeError> {
+        Ok(Vec::new())
+    }
+
+    async fn total_entry_count(&self) -> Result<usize, LatticeError> {
+        Ok(self.entries.lock().unwrap().len())
+    }
 }
 
 // ─── MockCheckpointBroker ───────────────────────────────────

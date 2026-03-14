@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use lattice_common::error::LatticeError;
 use lattice_common::traits::{
-    AllocationFilter, AllocationStore, AuditEntry, AuditFilter, AuditLog, NodeFilter, NodeRegistry,
+    AllocationFilter, AllocationStore, AuditArchiveInfo, AuditEntry, AuditFilter, AuditLog,
+    NodeFilter, NodeRegistry,
 };
 use lattice_common::types::{
     AllocId, Allocation, AllocationState, Node, NodeId, NodeOwnership, NodeState, TenantId,
@@ -257,5 +258,24 @@ impl AuditLog for QuorumClient {
     async fn query(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>, LatticeError> {
         let state = self.state.read().await;
         Ok(state.query_audit(filter))
+    }
+
+    async fn archive_info(&self) -> Result<Vec<AuditArchiveInfo>, LatticeError> {
+        let state = self.state.read().await;
+        Ok(state
+            .archive_summary()
+            .iter()
+            .map(|a| AuditArchiveInfo {
+                object_key: a.object_key.clone(),
+                entry_count: a.entry_count,
+                first_timestamp: a.first_timestamp,
+                last_timestamp: a.last_timestamp,
+            })
+            .collect())
+    }
+
+    async fn total_entry_count(&self) -> Result<usize, LatticeError> {
+        let state = self.state.read().await;
+        Ok(state.total_audit_entry_count())
     }
 }

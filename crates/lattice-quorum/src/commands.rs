@@ -91,6 +91,16 @@ pub enum Command {
 
     // ── Audit commands ──────────────────────────────────────
     RecordAudit(AuditEntry),
+
+    /// Archive old audit entries and remove them from in-memory state.
+    /// The archived entries are stored externally (S3); only metadata is kept.
+    /// The caller must upload the entries to the given object_key before proposing this command.
+    CompactAuditLog {
+        /// S3 object key where the entries were archived.
+        object_key: String,
+        /// Number of entries to remove from the front of the log.
+        entries_to_archive: usize,
+    },
 }
 
 impl fmt::Display for Command {
@@ -123,6 +133,9 @@ impl fmt::Display for Command {
             Command::UpdateTopology(_) => write!(f, "UpdateTopology"),
             Command::SetSensitivePoolSize(s) => write!(f, "SetSensitivePoolSize({s:?})"),
             Command::RecordAudit(e) => write!(f, "RecordAudit({:?})", e.action),
+            Command::CompactAuditLog {
+                entries_to_archive, ..
+            } => write!(f, "CompactAuditLog({entries_to_archive} entries)"),
         }
     }
 }

@@ -93,6 +93,19 @@ pub trait AllocationStore: Send + Sync {
     async fn count_running(&self, tenant: &TenantId) -> Result<u32, LatticeError>;
 }
 
+/// Summary of an archived audit log chunk stored in external storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditArchiveInfo {
+    /// S3 object key where the archived entries are stored.
+    pub object_key: String,
+    /// Number of entries in this archive chunk.
+    pub entry_count: usize,
+    /// Timestamp of the first entry in the chunk.
+    pub first_timestamp: DateTime<Utc>,
+    /// Timestamp of the last entry in the chunk.
+    pub last_timestamp: DateTime<Utc>,
+}
+
 /// Audit log for compliance (sensitive workloads, security events).
 #[async_trait]
 pub trait AuditLog: Send + Sync {
@@ -101,6 +114,13 @@ pub trait AuditLog: Send + Sync {
 
     /// Query audit entries matching a filter.
     async fn query(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>, LatticeError>;
+
+    /// Return metadata about archived audit log chunks.
+    /// Returns an empty vec if no archival has occurred.
+    async fn archive_info(&self) -> Result<Vec<AuditArchiveInfo>, LatticeError>;
+
+    /// Total number of audit entries including both in-memory and archived.
+    async fn total_entry_count(&self) -> Result<usize, LatticeError>;
 }
 
 /// Per-vCluster scheduling strategy.

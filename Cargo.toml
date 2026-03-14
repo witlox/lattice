@@ -80,6 +80,10 @@ nvml-wrapper = "0.12"
 # Hex encoding (CXI credentials)
 hex = "0.4"
 
+# Ed25519 signing (audit log)
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+
 # Test cert generation
 rcgen = "0.14"
 

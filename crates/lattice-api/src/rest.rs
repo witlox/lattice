@@ -53,6 +53,7 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
         .route("/api/v1/dags/{id}", get(get_dag))
         .route("/api/v1/dags/{id}/cancel", post(cancel_dag))
         .route("/api/v1/audit", get(query_audit))
+        .route("/api/v1/audit/archives", get(audit_archives))
         .route("/api/v1/tenants", post(create_tenant))
         .route("/api/v1/tenants", get(list_tenants))
         .route("/api/v1/tenants/{id}", get(get_tenant))
@@ -211,6 +212,20 @@ pub struct AuditEntryResponse {
     pub user: String,
     pub action: String,
     pub details: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AuditArchiveEntry {
+    pub object_key: String,
+    pub entry_count: usize,
+    pub first_timestamp: String,
+    pub last_timestamp: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AuditArchivesResponse {
+    pub archives: Vec<AuditArchiveEntry>,
+    pub total_entries: usize,
 }
 
 #[derive(Deserialize)]
@@ -965,6 +980,34 @@ async fn query_audit(
                     details: e.details.clone(),
                 })
                 .collect();
+            (StatusCode::OK, Json(resp)).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn audit_archives(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+    match state.audit.archive_info().await {
+        Ok(archives) => {
+            let total = state.audit.total_entry_count().await.unwrap_or(0);
+            let resp = AuditArchivesResponse {
+                archives: archives
+                    .iter()
+                    .map(|a| AuditArchiveEntry {
+                        object_key: a.object_key.clone(),
+                        entry_count: a.entry_count,
+                        first_timestamp: a.first_timestamp.to_rfc3339(),
+                        last_timestamp: a.last_timestamp.to_rfc3339(),
+                    })
+                    .collect(),
+                total_entries: total,
+            };
             (StatusCode::OK, Json(resp)).into_response()
         }
         Err(e) => (
