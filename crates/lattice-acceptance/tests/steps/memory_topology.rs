@@ -296,7 +296,7 @@ fn when_submit_prefer_numa(world: &mut LatticeWorld) {
     // Score all nodes by memory locality.
     let mut scores: Vec<(String, f64)> = node_refs
         .iter()
-        .map(|n| (n.id.clone(), memory_locality_score(n)))
+        .map(|n| (n.id.clone(), memory_locality_score(*n)))
         .collect();
     scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     world.locality_scores = scores;
@@ -360,7 +360,7 @@ fn when_submit_without_cxl_pref(world: &mut LatticeWorld) {
     // Score all nodes by memory locality (DRAM-only scores higher than CXL).
     let mut scores: Vec<(String, f64)> = node_refs
         .iter()
-        .map(|n| (n.id.clone(), memory_locality_score(n)))
+        .map(|n| (n.id.clone(), memory_locality_score(*n)))
         .collect();
     scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     world.locality_scores = scores;

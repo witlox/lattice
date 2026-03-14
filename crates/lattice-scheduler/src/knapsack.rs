@@ -1,28 +1,28 @@
 //! Greedy topology-aware backfill knapsack solver.
 //!
-//! Implements the `GreedyTopologyAwareBackfill` algorithm from
-//! docs/architecture/scheduling-algorithm.md, extended with
-//! reservation-based backfill via a resource timeline.
+//! Delegates to hpc-scheduler-core for the scheduling logic, with a thin
+//! wrapper that converts Lattice types to core types.
 
-use std::collections::HashSet;
-
-use chrono::Utc;
+use lattice_common::scheduler_core_impls::{to_core_topology, to_core_weights};
 use lattice_common::types::*;
 
-use crate::conformance::{filter_by_constraints, select_conformant_nodes};
 use crate::cost::{CostContext, CostEvaluator};
-use crate::placement::{PlacementDecision, SchedulingResult};
+use crate::placement::SchedulingResult;
 use crate::resource_timeline::ResourceTimeline;
-use crate::topology::select_nodes_topology_aware;
 
 /// The greedy knapsack solver.
+///
+/// Wraps `hpc_scheduler_core::knapsack::KnapsackSolver` to accept Lattice types.
 pub struct KnapsackSolver {
+    inner: hpc_scheduler_core::knapsack::KnapsackSolver,
     evaluator: CostEvaluator,
 }
 
 impl KnapsackSolver {
     pub fn new(weights: CostWeights) -> Self {
+        let core_weights = to_core_weights(&weights);
         Self {
+            inner: hpc_scheduler_core::knapsack::KnapsackSolver::new(core_weights),
             evaluator: CostEvaluator::new(weights),
         }
     }
@@ -37,191 +37,9 @@ impl KnapsackSolver {
         ctx: &CostContext,
         timeline: &ResourceTimeline,
     ) -> SchedulingResult {
-        if pending.is_empty() || available_nodes.is_empty() {
-            return SchedulingResult::default();
-        }
-
-        // 1. Score and sort pending allocations descending
-        let mut scored: Vec<(&Allocation, f64)> = pending
-            .iter()
-            .map(|a| (a, self.evaluator.score(a, ctx)))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Track which nodes are still available
-        let mut used_nodes: HashSet<NodeId> = HashSet::new();
-        let mut decisions = Vec::new();
-        let mut deferred_candidates: Vec<&Allocation> = Vec::new();
-
-        // 2. Pass 1 — Primary placement (greedy assignment)
-        for (alloc, _score) in &scored {
-            let (min_nodes, max_nodes) = match alloc.resources.nodes {
-                NodeCount::Exact(n) => (n, n),
-                NodeCount::Range { min, max } => (min, max),
-            };
-
-            // Filter: only operational, unused nodes matching constraints
-            let candidates: Vec<&Node> = available_nodes
-                .iter()
-                .filter(|n| !used_nodes.contains(&n.id))
-                .filter(|n| n.state.is_operational())
-                .filter(|n| n.owner.is_none())
-                .collect();
-
-            let constrained = filter_by_constraints(&candidates, &alloc.resources.constraints);
-
-            if (constrained.len() as u32) < min_nodes {
-                deferred_candidates.push(alloc);
-                continue;
-            }
-
-            // For moldable jobs, try to use as many nodes as possible (up to max)
-            let requested = (constrained.len() as u32).min(max_nodes).max(min_nodes);
-
-            // 2a. Try conformance-aware selection first.
-            // Sensitive allocations require hard conformance — no topology fallback.
-            let is_sensitive = alloc.lifecycle.preemption_class >= 10
-                || alloc
-                    .tags
-                    .get("workload_class")
-                    .is_some_and(|v| v == "sensitive");
-
-            let selected = if is_sensitive {
-                select_conformant_nodes(requested, &constrained)
-            } else {
-                select_conformant_nodes(requested, &constrained).or_else(|| {
-                    select_nodes_topology_aware(
-                        requested,
-                        alloc.resources.constraints.topology.as_ref(),
-                        &constrained,
-                        topology,
-                    )
-                })
-            };
-
-            match selected {
-                Some(nodes) => {
-                    for n in &nodes {
-                        used_nodes.insert(n.clone());
-                    }
-                    decisions.push(PlacementDecision::Place {
-                        allocation_id: alloc.id,
-                        nodes,
-                    });
-                }
-                None => {
-                    deferred_candidates.push(alloc);
-                }
-            }
-        }
-
-        // 3. Reservation: highest-priority deferred candidate gets a reservation
-        let now = Utc::now();
-        let free_count = available_nodes
-            .iter()
-            .filter(|n| !used_nodes.contains(&n.id))
-            .filter(|n| n.state.is_operational())
-            .filter(|n| n.owner.is_none())
-            .count() as u32;
-
-        let reservation = if let Some(holder) = deferred_candidates.first() {
-            let needed = match holder.resources.nodes {
-                NodeCount::Exact(n) => n,
-                NodeCount::Range { min, .. } => min,
-            };
-            timeline
-                .earliest_start(needed, free_count, |_| true)
-                .map(|time| (holder.id, time))
-        } else {
-            None
-        };
-
-        // 4. Pass 2 — Backfill: remaining deferred candidates (excluding reservation holder)
-        if let Some((reservation_holder_id, reservation_time)) = reservation {
-            let backfill_candidates: Vec<&Allocation> = deferred_candidates
-                .iter()
-                .filter(|a| a.id != reservation_holder_id)
-                .copied()
-                .collect();
-
-            for alloc in &backfill_candidates {
-                // Only bounded allocations with walltime can backfill
-                let walltime = match &alloc.lifecycle.lifecycle_type {
-                    LifecycleType::Bounded { walltime } => *walltime,
-                    _ => continue,
-                };
-
-                if !ResourceTimeline::is_backfill_safe(now, walltime, reservation_time) {
-                    continue;
-                }
-
-                let (bf_min_nodes, bf_max_nodes) = match alloc.resources.nodes {
-                    NodeCount::Exact(n) => (n, n),
-                    NodeCount::Range { min, max } => (min, max),
-                };
-
-                let candidates: Vec<&Node> = available_nodes
-                    .iter()
-                    .filter(|n| !used_nodes.contains(&n.id))
-                    .filter(|n| n.state.is_operational())
-                    .filter(|n| n.owner.is_none())
-                    .collect();
-
-                let constrained = filter_by_constraints(&candidates, &alloc.resources.constraints);
-
-                if (constrained.len() as u32) < bf_min_nodes {
-                    continue;
-                }
-
-                let requested = (constrained.len() as u32)
-                    .min(bf_max_nodes)
-                    .max(bf_min_nodes);
-
-                let bf_sensitive = alloc.lifecycle.preemption_class >= 10
-                    || alloc
-                        .tags
-                        .get("workload_class")
-                        .is_some_and(|v| v == "sensitive");
-
-                let selected = if bf_sensitive {
-                    select_conformant_nodes(requested, &constrained)
-                } else {
-                    select_conformant_nodes(requested, &constrained).or_else(|| {
-                        select_nodes_topology_aware(
-                            requested,
-                            alloc.resources.constraints.topology.as_ref(),
-                            &constrained,
-                            topology,
-                        )
-                    })
-                };
-
-                if let Some(nodes) = selected {
-                    for n in &nodes {
-                        used_nodes.insert(n.clone());
-                    }
-                    decisions.push(PlacementDecision::Backfill {
-                        allocation_id: alloc.id,
-                        nodes,
-                        reservation_holder: reservation_holder_id,
-                        must_complete_by: reservation_time,
-                    });
-                }
-            }
-        }
-
-        // 5. Emit Defer decisions for everything not placed or backfilled
-        let placed_ids: HashSet<AllocId> = decisions.iter().map(|d| d.allocation_id()).collect();
-        for alloc in &deferred_candidates {
-            if !placed_ids.contains(&alloc.id) {
-                decisions.push(PlacementDecision::Defer {
-                    allocation_id: alloc.id,
-                    reason: "insufficient nodes or no suitable node set found".into(),
-                });
-            }
-        }
-
-        SchedulingResult { decisions }
+        let core_topology = to_core_topology(topology);
+        self.inner
+            .solve(pending, available_nodes, &core_topology, ctx, timeline)
     }
 
     /// Get the underlying cost evaluator (for testing/inspection).
@@ -233,7 +51,9 @@ impl KnapsackSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::placement::PlacementDecision;
     use crate::resource_timeline::ReleaseEvent;
+    use chrono::Utc;
     use lattice_test_harness::fixtures::{
         create_node_batch, create_test_topology, AllocationBuilder, NodeBuilder,
     };
@@ -320,7 +140,6 @@ mod tests {
             checkpoint_efficiency: 0.0,
             conformance: 0.0,
         });
-        // Only 2 nodes available; both jobs need 2
         let high = AllocationBuilder::new()
             .nodes(2)
             .preemption_class(8)
@@ -360,7 +179,6 @@ mod tests {
             &default_ctx(),
             &empty_timeline(),
         );
-        // Only room for one (3 + 3 > 4)
         assert_eq!(result.placed().len(), 1);
         assert_eq!(result.deferred().len(), 1);
     }
@@ -395,7 +213,6 @@ mod tests {
         );
         assert_eq!(result.placed().len(), 1);
         if let PlacementDecision::Place { nodes, .. } = &result.decisions[0] {
-            // n2 is owned, so should not be in the assignment
             assert!(!nodes.contains(&"n2".to_string()));
             assert_eq!(nodes.len(), 2);
         } else {
@@ -445,7 +262,7 @@ mod tests {
         let solver = KnapsackSolver::new(CostWeights::default());
         let alloc = AllocationBuilder::new().nodes(2).build();
 
-        let n1 = NodeBuilder::new().id("n1").group(0).build(); // Ready
+        let n1 = NodeBuilder::new().id("n1").group(0).build();
         let n2 = NodeBuilder::new()
             .id("n2")
             .group(0)
@@ -453,7 +270,7 @@ mod tests {
                 reason: "failed".into(),
             })
             .build();
-        let n3 = NodeBuilder::new().id("n3").group(0).build(); // Ready
+        let n3 = NodeBuilder::new().id("n3").group(0).build();
         let nodes = vec![n1, n2, n3];
         let topology = create_test_topology(1, 3);
 
@@ -470,11 +287,10 @@ mod tests {
         }
     }
 
-    // ─── Reservation-based backfill tests ────────────────────────
+    // ── Reservation-based backfill tests ──
 
     #[test]
     fn no_running_bounded_graceful_noop() {
-        // No timeline events → no reservation → pure greedy (same as before)
         let solver = KnapsackSolver::new(CostWeights::default());
         let large = AllocationBuilder::new().nodes(6).build();
         let small = AllocationBuilder::new().nodes(2).build();
@@ -488,7 +304,6 @@ mod tests {
             &default_ctx(),
             &empty_timeline(),
         );
-        // small fits in pass 1, large deferred, no backfills
         assert_eq!(result.placed().len(), 1);
         assert_eq!(result.deferred().len(), 1);
         assert!(!result.decisions.iter().any(|d| d.is_backfill()));
@@ -496,9 +311,6 @@ mod tests {
 
     #[test]
     fn timeline_events_do_not_break_greedy() {
-        // Timeline has events but small jobs still get placed in pass 1 (greedy).
-        // Large is deferred (reservation holder). No backfills within a single cycle
-        // because pass 1 already places everything that fits.
         let solver = KnapsackSolver::new(CostWeights {
             priority: 1.0,
             ..CostWeights::default()
@@ -535,7 +347,6 @@ mod tests {
             &timeline,
         );
 
-        // Large deferred (2 free < 4 needed), small placed via greedy pass 1
         assert_eq!(result.placed().len(), 1);
         assert_eq!(result.placed()[0].allocation_id(), small.id);
         assert_eq!(result.deferred().len(), 1);
@@ -571,7 +382,6 @@ mod tests {
             }],
         };
 
-        // Service fits on 2 free nodes → placed in pass 1
         let result = solver.solve(
             &[large, service.clone()],
             &nodes[2..],
@@ -586,32 +396,6 @@ mod tests {
     }
 
     #[test]
-    fn no_reservation_when_all_unbounded_running() {
-        // Timeline has no events (all running are unbounded) → no reservation possible
-        let solver = KnapsackSolver::new(CostWeights::default());
-        let large = AllocationBuilder::new().nodes(6).build();
-        let small = AllocationBuilder::new()
-            .nodes(2)
-            .lifecycle_bounded(1)
-            .build();
-        let nodes = create_node_batch(4, 0);
-        let topology = create_test_topology(1, 4);
-
-        let result = solver.solve(
-            &[large, small],
-            &nodes,
-            &topology,
-            &default_ctx(),
-            &empty_timeline(),
-        );
-
-        // small placed (greedy), large deferred, no backfills
-        assert_eq!(result.placed().len(), 1);
-        assert_eq!(result.deferred().len(), 1);
-        assert!(!result.decisions.iter().any(|d| d.is_backfill()));
-    }
-
-    #[test]
     fn reservation_holder_not_backfilled() {
         let solver = KnapsackSolver::new(CostWeights {
             priority: 1.0,
@@ -619,7 +403,6 @@ mod tests {
         });
         let now = Utc::now();
 
-        // Large needs 6 (deferred), it's the only deferred candidate → reservation holder
         let large = AllocationBuilder::new()
             .nodes(6)
             .preemption_class(8)
@@ -644,7 +427,6 @@ mod tests {
             &timeline,
         );
 
-        // Large is deferred (reservation holder), never backfilled
         assert_eq!(result.deferred().len(), 1);
         assert_eq!(result.deferred()[0].allocation_id(), large.id);
         assert!(!result.decisions.iter().any(|d| d.is_backfill()));
@@ -652,7 +434,6 @@ mod tests {
 
     #[test]
     fn greedy_with_timeline_places_same_as_without() {
-        // Verify that adding a timeline doesn't change greedy placement behavior
         let solver = KnapsackSolver::new(CostWeights::default());
         let a1 = AllocationBuilder::new().nodes(2).build();
         let a2 = AllocationBuilder::new().nodes(2).build();
@@ -696,9 +477,6 @@ mod tests {
 
     #[test]
     fn all_deferred_with_large_gap_no_backfill() {
-        // All jobs need more nodes than available → all deferred.
-        // Reservation is set for highest priority, but remaining deferred jobs
-        // also can't fit on the available nodes.
         let solver = KnapsackSolver::new(CostWeights {
             priority: 1.0,
             ..CostWeights::default()
@@ -734,7 +512,6 @@ mod tests {
             &timeline,
         );
 
-        // Both deferred — large is reservation holder, medium still can't fit (6 > 4 free)
         assert_eq!(result.deferred().len(), 2);
         assert!(!result.decisions.iter().any(|d| d.is_backfill()));
     }

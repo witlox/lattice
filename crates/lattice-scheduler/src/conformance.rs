@@ -1,165 +1,32 @@
 //! Conformance group management.
 //!
-//! Groups nodes by their conformance fingerprint (SHA-256 of driver/firmware/kernel)
-//! and selects the largest group that can satisfy an allocation's constraints.
+//! Delegates to hpc-scheduler-core for generic logic, with a convenience
+//! wrapper for Lattice-specific `ResourceConstraints` → `NodeConstraints` conversion.
 
-use std::collections::HashMap;
+pub use hpc_scheduler_core::conformance::{
+    conformance_fitness, group_by_conformance, memory_locality_score, select_conformant_nodes,
+};
+
+use hpc_scheduler_core::conformance as core_conformance;
+use hpc_scheduler_core::types::NodeConstraints;
 
 use lattice_common::types::*;
 
-/// Group nodes by conformance fingerprint.
-///
-/// Nodes without a fingerprint are placed in a special "unknown" group.
-pub fn group_by_conformance<'a>(nodes: &[&'a Node]) -> HashMap<String, Vec<&'a Node>> {
-    let mut groups: HashMap<String, Vec<&'a Node>> = HashMap::new();
-    for node in nodes {
-        let key = node
-            .conformance_fingerprint
-            .clone()
-            .unwrap_or_else(|| "unknown".into());
-        groups.entry(key).or_default().push(node);
-    }
-    groups
-}
-
-/// Select the largest conformance group that has enough nodes.
-///
-/// Returns node IDs from the largest conformant group that can satisfy
-/// the request, or `None` if no single group is large enough.
-pub fn select_conformant_nodes(requested: u32, nodes: &[&Node]) -> Option<Vec<NodeId>> {
-    let groups = group_by_conformance(nodes);
-
-    // Sort groups by size descending
-    let mut sorted: Vec<(String, Vec<&Node>)> = groups.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-
-    // Return the first group large enough
-    for (_fingerprint, group_nodes) in &sorted {
-        if group_nodes.len() >= requested as usize {
-            return Some(
-                group_nodes
-                    .iter()
-                    .take(requested as usize)
-                    .map(|n| n.id.clone())
-                    .collect(),
-            );
-        }
-    }
-
-    None
-}
-
-/// Compute f₉ conformance fitness score for a set of candidate nodes.
-///
-/// Score = largest_conformance_group_size / requested_nodes
-/// Returns 1.0 when all candidates share the same fingerprint.
-pub fn conformance_fitness(candidates: &[&Node], requested_nodes: u32) -> f64 {
-    if requested_nodes == 0 {
-        return 1.0;
-    }
-    let groups = group_by_conformance(candidates);
-    let max_group_size = groups
-        .values()
-        .map(|g: &Vec<&Node>| g.len())
-        .max()
-        .unwrap_or(0);
-    max_group_size as f64 / requested_nodes as f64
-}
-
 /// Filter nodes that satisfy an allocation's hardware constraints.
+///
+/// This is a thin wrapper that converts Lattice's `ResourceConstraints` to
+/// hpc-scheduler-core's `NodeConstraints` before delegating.
 pub fn filter_by_constraints<'a>(
     nodes: &[&'a Node],
     constraints: &ResourceConstraints,
 ) -> Vec<&'a Node> {
-    nodes
-        .iter()
-        .filter(|node| {
-            // GPU type constraint
-            if let Some(ref required_gpu) = constraints.gpu_type {
-                if let Some(ref node_gpu) = node.capabilities.gpu_type {
-                    if node_gpu != required_gpu {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-
-            // Feature constraints
-            for feature in &constraints.features {
-                if !node.capabilities.features.contains(feature) {
-                    return false;
-                }
-            }
-
-            // Unified memory constraint
-            if constraints.require_unified_memory {
-                let has_unified = node
-                    .capabilities
-                    .memory_topology
-                    .as_ref()
-                    .is_some_and(|topo| {
-                        topo.domains
-                            .iter()
-                            .any(|d| d.domain_type == MemoryDomainType::Unified)
-                    });
-                if !has_unified {
-                    return false;
-                }
-            }
-
-            // CXL memory constraint: when disallowed, skip nodes that only have CXL memory
-            // (nodes without memory topology are always allowed)
-            if !constraints.allow_cxl_memory {
-                if let Some(ref topo) = node.capabilities.memory_topology {
-                    let non_cxl_capacity: u64 = topo
-                        .domains
-                        .iter()
-                        .filter(|d| d.domain_type != MemoryDomainType::CxlAttached)
-                        .map(|d| d.capacity_bytes)
-                        .sum();
-                    if non_cxl_capacity == 0 && topo.total_capacity_bytes > 0 {
-                        return false;
-                    }
-                }
-            }
-
-            true
-        })
-        .copied()
-        .collect()
-}
-
-/// Compute memory locality score for a node: fraction of resources sharing a memory domain.
-///
-/// Returns 1.0 if all requested resources fit in one domain, 0.5 if no topology info.
-pub fn memory_locality_score(node: &Node) -> f64 {
-    let topo = match &node.capabilities.memory_topology {
-        Some(t) => t,
-        None => return 0.5, // neutral when unknown
+    let core_constraints = NodeConstraints {
+        gpu_type: constraints.gpu_type.clone(),
+        features: constraints.features.clone(),
+        require_unified_memory: constraints.require_unified_memory,
+        allow_cxl_memory: constraints.allow_cxl_memory,
     };
-
-    if topo.domains.len() <= 1 {
-        return 1.0; // single domain = perfect locality
-    }
-
-    // For each domain, count how many of the node's resources it covers
-    let total_cpus = node.capabilities.cpu_cores;
-    let total_gpus = node.capabilities.gpu_count;
-    if total_cpus == 0 && total_gpus == 0 {
-        return 1.0;
-    }
-
-    let total_resources = total_cpus as f64 + total_gpus as f64;
-
-    // Find the domain with the most attached resources
-    let best_domain_resources = topo
-        .domains
-        .iter()
-        .map(|d| d.attached_cpus.len() as f64 + d.attached_gpus.len() as f64)
-        .fold(0.0_f64, f64::max);
-
-    (best_domain_resources / total_resources).min(1.0)
+    core_conformance::filter_by_constraints(nodes, &core_constraints)
 }
 
 #[cfg(test)]
@@ -202,7 +69,6 @@ mod tests {
 
         let selected = select_conformant_nodes(2, &nodes).unwrap();
         assert_eq!(selected.len(), 2);
-        // Should come from fp-a (the larger group)
     }
 
     #[test]
@@ -232,7 +98,6 @@ mod tests {
         let n3 = NodeBuilder::new().id("n3").conformance("fp-b").build();
         let nodes: Vec<&Node> = vec![&n1, &n2, &n3];
 
-        // Largest group = 2, requested = 3
         let score = conformance_fitness(&nodes, 3);
         assert!((score - 2.0 / 3.0).abs() < f64::EPSILON);
     }
