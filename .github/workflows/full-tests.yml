@@ -8,8 +8,8 @@ env:
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
-  test-all:
-    name: All Tests
+  unit-tests:
+    name: All Unit & Integration Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -18,6 +18,15 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - uses: arduino/setup-protoc@v3
       - name: Run tests (nextest, including slow)
-        run: cargo nextest run --workspace --all-features --profile ci --no-tests=pass --run-ignored all --exclude lattice-acceptance
+        run: cargo nextest run --workspace --all-features --profile ci --no-tests=pass --run-ignored all --exclude lattice-acceptance --exclude lattice-test-harness
+
+  acceptance-tests:
+    name: Acceptance Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
       - name: Run acceptance tests (cucumber, custom harness)
         run: cargo test -p lattice-acceptance --all-features
