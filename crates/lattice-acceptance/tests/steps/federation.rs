@@ -4,7 +4,9 @@ use uuid::Uuid;
 
 use crate::LatticeWorld;
 use lattice_common::types::*;
-use lattice_scheduler::federation::{FederationBroker, FederationConfig, FederationOffer, OfferDecision};
+use lattice_scheduler::federation::{
+    FederationBroker, FederationConfig, FederationOffer, OfferDecision,
+};
 use lattice_test_harness::fixtures::*;
 
 // ─── Helper ────────────────────────────────────────────────
@@ -104,8 +106,11 @@ fn site_offers_non_sensitive(world: &mut LatticeWorld, site: String, nodes: u32)
         .federation_broker
         .as_ref()
         .expect("federation broker required");
-    let decision =
-        broker.evaluate_offer(&offer, world.federation_idle_nodes, world.federation_total_nodes);
+    let decision = broker.evaluate_offer(
+        &offer,
+        world.federation_idle_nodes,
+        world.federation_total_nodes,
+    );
     world.federation_decision = Some(decision);
 }
 
@@ -116,8 +121,11 @@ fn site_offers_sensitive(world: &mut LatticeWorld, site: String, nodes: u32) {
         .federation_broker
         .as_ref()
         .expect("federation broker required");
-    let decision =
-        broker.evaluate_offer(&offer, world.federation_idle_nodes, world.federation_total_nodes);
+    let decision = broker.evaluate_offer(
+        &offer,
+        world.federation_idle_nodes,
+        world.federation_total_nodes,
+    );
     world.federation_decision = Some(decision);
 }
 
@@ -149,8 +157,11 @@ fn site_sends_allocation_request(world: &mut LatticeWorld, site: String) {
         return;
     }
 
-    let decision =
-        broker.evaluate_offer(&offer, world.federation_idle_nodes, world.federation_total_nodes);
+    let decision = broker.evaluate_offer(
+        &offer,
+        world.federation_idle_nodes,
+        world.federation_total_nodes,
+    );
     world.federation_decision = Some(decision);
 }
 
@@ -165,12 +176,18 @@ fn site_sends_same_request_twice(world: &mut LatticeWorld, site: String) {
         .expect("federation broker required");
 
     // First evaluation
-    let decision1 =
-        broker.evaluate_offer(&offer, world.federation_idle_nodes, world.federation_total_nodes);
+    let decision1 = broker.evaluate_offer(
+        &offer,
+        world.federation_idle_nodes,
+        world.federation_total_nodes,
+    );
 
     // Second evaluation with the same offer (same allocation_id)
-    let decision2 =
-        broker.evaluate_offer(&offer, world.federation_idle_nodes, world.federation_total_nodes);
+    let decision2 = broker.evaluate_offer(
+        &offer,
+        world.federation_idle_nodes,
+        world.federation_total_nodes,
+    );
 
     // Both decisions should be equivalent — idempotent evaluation
     // Store both for assertion; use the first as the canonical decision
@@ -207,7 +224,10 @@ fn site_forwards_to_unreachable(world: &mut LatticeWorld, _local: String, remote
 
     world.prologue_retry_count = retry_count;
     world.federation_decision = Some(OfferDecision::Reject {
-        reason: format!("remote_unreachable: site '{}' not reachable after {} retries", remote, retry_count),
+        reason: format!(
+            "remote_unreachable: site '{}' not reachable after {} retries",
+            remote, retry_count
+        ),
     });
 }
 
@@ -270,10 +290,7 @@ fn offer_rejected_with_reason(world: &mut LatticeWorld, expected_reason: String)
 #[then("the local allocation should be scheduled normally")]
 fn local_allocation_scheduled(world: &mut LatticeWorld) {
     // The scheduler cycle should have assigned the pending allocation
-    let alloc = world
-        .allocations
-        .last()
-        .expect("no allocations in world");
+    let alloc = world.allocations.last().expect("no allocations in world");
     assert_eq!(
         alloc.state,
         AllocationState::Running,

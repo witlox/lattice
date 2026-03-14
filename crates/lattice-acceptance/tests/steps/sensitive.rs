@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::parse_audit_action;
+use crate::LatticeWorld;
 use lattice_common::error::LatticeError;
 use lattice_common::traits::*;
 use lattice_common::types::*;
@@ -45,7 +45,12 @@ fn given_nodes_claimed_for_sensitive(world: &mut LatticeWorld, count: usize) {
                 is_borrowed: false,
             })
             .build();
-        world.registry.nodes.lock().unwrap().insert(node_id, node.clone());
+        world
+            .registry
+            .nodes
+            .lock()
+            .unwrap()
+            .insert(node_id, node.clone());
         world.nodes.push(node);
     }
 }
@@ -118,7 +123,11 @@ fn submit_sensitive_unsigned_image(world: &mut LatticeWorld) {
 
 #[when(regex = r#"^user "(\w[\w-]*)" attempts a second concurrent attach$"#)]
 fn user_attempts_second_attach(world: &mut LatticeWorld, user: String) {
-    let session_count = world.active_sessions_per_user.get(&user).copied().unwrap_or(0);
+    let session_count = world
+        .active_sessions_per_user
+        .get(&user)
+        .copied()
+        .unwrap_or(0);
     // Sensitive allocations allow at most 1 attach session.
     if session_count >= 1 {
         world.last_error = Some(LatticeError::SensitiveIsolation(

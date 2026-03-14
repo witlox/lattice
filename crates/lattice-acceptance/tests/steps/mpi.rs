@@ -5,11 +5,11 @@ use cucumber::{given, then, when};
 use uuid::Uuid;
 
 use crate::LatticeWorld;
-use lattice_common::types::*;
-use lattice_node_agent::pmi2::protocol::{parse_command, Pmi2Command};
-use lattice_node_agent::pmi2::fence::{FenceCoordinator, MockFenceTransport};
-use lattice_node_agent::process_launcher::{LaunchConfig, ProcessLauncher};
 use lattice_api::mpi::{MpiLaunchOrchestrator, NodeAgentPool, StubNodeAgentPool};
+use lattice_common::types::*;
+use lattice_node_agent::pmi2::fence::{FenceCoordinator, MockFenceTransport};
+use lattice_node_agent::pmi2::protocol::{parse_command, Pmi2Command};
+use lattice_node_agent::process_launcher::{LaunchConfig, ProcessLauncher};
 
 // ─── FailingNodeAgentPool ──────────────────────────────────
 
@@ -22,10 +22,12 @@ impl NodeAgentPool for FailingNodeAgentPool {
         _node_address: &str,
         _request: lattice_common::proto::lattice::v1::LaunchProcessesRequest,
     ) -> Result<lattice_common::proto::lattice::v1::LaunchProcessesResponse, String> {
-        Ok(lattice_common::proto::lattice::v1::LaunchProcessesResponse {
-            accepted: false,
-            message: "node rejected launch".into(),
-        })
+        Ok(
+            lattice_common::proto::lattice::v1::LaunchProcessesResponse {
+                accepted: false,
+                message: "node rejected launch".into(),
+            },
+        )
     }
 }
 
@@ -65,9 +67,7 @@ fn make_launch_config(
 }
 
 #[cfg(unix)]
-async fn pmi_connect(
-    socket_path: &std::path::Path,
-) -> crate::PmiConnection {
+async fn pmi_connect(socket_path: &std::path::Path) -> crate::PmiConnection {
     use tokio::io::BufReader;
     use tokio::net::UnixStream;
 
@@ -82,10 +82,7 @@ async fn pmi_connect(
 }
 
 #[cfg(unix)]
-async fn pmi_send_on_conn(
-    conn: &mut crate::PmiConnection,
-    msg: &str,
-) -> String {
+async fn pmi_send_on_conn(conn: &mut crate::PmiConnection, msg: &str) -> String {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
     conn.writer
@@ -156,10 +153,9 @@ fn given_nodes_with_tasks(world: &mut LatticeWorld, node_count: u32, tasks_per_n
     world.mpi_tasks_per_node_cfg = tasks_per_node;
     world.mpi_num_nodes_cfg = node_count;
     for nid in &world.mpi_node_ids {
-        world.mpi_node_addresses.insert(
-            nid.clone(),
-            format!("http://{}:50052", nid),
-        );
+        world
+            .mpi_node_addresses
+            .insert(nid.clone(), format!("http://{}:50052", nid));
     }
 }
 
@@ -170,10 +166,9 @@ fn given_nodes_with_total_tasks(world: &mut LatticeWorld, node_count: u32, total
     world.mpi_tasks_per_node_cfg = total_tasks.div_ceil(node_count);
     world.mpi_num_nodes_cfg = node_count;
     for nid in &world.mpi_node_ids {
-        world.mpi_node_addresses.insert(
-            nid.clone(),
-            format!("http://{}:50052", nid),
-        );
+        world
+            .mpi_node_addresses
+            .insert(nid.clone(), format!("http://{}:50052", nid));
     }
 }
 
@@ -193,10 +188,9 @@ fn given_failing_orchestrator(world: &mut LatticeWorld) {
 fn given_assigned_nodes(world: &mut LatticeWorld, count: u32) {
     world.mpi_node_ids = (0..count).map(|i| format!("node-{i}")).collect();
     for nid in &world.mpi_node_ids {
-        world.mpi_node_addresses.insert(
-            nid.clone(),
-            format!("http://{}:50052", nid),
-        );
+        world
+            .mpi_node_addresses
+            .insert(nid.clone(), format!("http://{}:50052", nid));
     }
 }
 
@@ -205,13 +199,10 @@ fn given_pmi_parser(_world: &mut LatticeWorld) {
     // Parser is stateless; nothing to set up.
 }
 
-#[given(regex = r#"^a launch config for (\d+) ranks starting at rank (\d+) with world size (\d+)$"#)]
-fn given_launch_config(
-    world: &mut LatticeWorld,
-    tasks: u32,
-    first_rank: u32,
-    world_size: u32,
-) {
+#[given(
+    regex = r#"^a launch config for (\d+) ranks starting at rank (\d+) with world size (\d+)$"#
+)]
+fn given_launch_config(world: &mut LatticeWorld, tasks: u32, first_rank: u32, world_size: u32) {
     let config = make_launch_config(tasks, first_rank, world_size, None);
     let transport = Arc::new(MockFenceTransport::new());
     let launcher = ProcessLauncher::new(config, transport);
@@ -245,10 +236,7 @@ fn given_fence_coordinator(world: &mut LatticeWorld, node_count: u32, head_index
 
     let transport = Arc::new(MockFenceTransport::new());
     let coordinator = FenceCoordinator::new(
-        launch_id,
-        peers,
-        head_index,
-        head_index, // my_index == head for testing
+        launch_id, peers, head_index, head_index, // my_index == head for testing
         transport,
     );
     world.fence_coordinator = Some(coordinator);
@@ -260,7 +248,11 @@ fn given_fence_coordinator(world: &mut LatticeWorld, node_count: u32, head_index
 #[when("a rank connects and performs fullinit")]
 fn when_rank_fullinit(world: &mut LatticeWorld) {
     let msg = "cmd=fullinit;pmi_version=2;pmi_subversion=0;\n";
-    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path").clone();
+    let socket_path = world
+        .pmi_socket_path
+        .as_ref()
+        .expect("no PMI socket path")
+        .clone();
     let (conn, resp) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
             let mut conn = pmi_connect(&socket_path).await;
@@ -302,17 +294,19 @@ fn when_launch_mpi(world: &mut LatticeWorld, num_tasks: u32, tasks_per_node: u32
         .mpi_orchestrator
         .as_ref()
         .expect("no orchestrator set up");
-    let result = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(orch.launch(
-        Uuid::new_v4(),
-        &world.mpi_node_ids,
-        &world.mpi_node_addresses,
-        "/bin/echo",
-        &[],
-        &HashMap::new(),
-        num_tasks,
-        tasks_per_node,
-        PmiMode::Pmi2,
-    )));
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(orch.launch(
+            Uuid::new_v4(),
+            &world.mpi_node_ids,
+            &world.mpi_node_addresses,
+            "/bin/echo",
+            &[],
+            &HashMap::new(),
+            num_tasks,
+            tasks_per_node,
+            PmiMode::Pmi2,
+        ))
+    });
     world.launch_result = Some(result.map_err(|e| e.to_string()));
 }
 
@@ -359,7 +353,10 @@ fn when_head_executes_fence(world: &mut LatticeWorld) {
 #[when("the rank performs kvsfence")]
 fn when_rank_kvsfence(world: &mut LatticeWorld) {
     let msg = "cmd=kvsfence;\n";
-    let conn = world.pmi_connections.first_mut().expect("no PMI connection");
+    let conn = world
+        .pmi_connections
+        .first_mut()
+        .expect("no PMI connection");
     let resp = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(pmi_send_on_conn(conn, msg))
     });
@@ -380,7 +377,10 @@ fn then_fence_completes(world: &mut LatticeWorld) {
 #[when("the rank finalizes")]
 fn when_rank_finalizes(world: &mut LatticeWorld) {
     let msg = "cmd=finalize;\n";
-    let conn = world.pmi_connections.first_mut().expect("no PMI connection");
+    let conn = world
+        .pmi_connections
+        .first_mut()
+        .expect("no PMI connection");
     let resp = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(pmi_send_on_conn(conn, msg))
     });
@@ -402,14 +402,20 @@ fn then_pmi_shuts_down(world: &mut LatticeWorld) {
 #[cfg(unix)]
 #[when(regex = r#"^rank (\d+) connects and puts key "([^"]+)" with value "([^"]+)"$"#)]
 fn when_rank_puts_key(world: &mut LatticeWorld, _rank: u32, key: String, value: String) {
-    let socket_path = world.pmi_socket_path.as_ref().expect("no PMI socket path").clone();
+    let socket_path = world
+        .pmi_socket_path
+        .as_ref()
+        .expect("no PMI socket path")
+        .clone();
     // Each rank connects and sends fullinit + kvsput on its own persistent connection
     let (conn, resp) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
             let mut conn = pmi_connect(&socket_path).await;
             // fullinit first (PMI-2 requires it before any other command)
             let _init_resp = pmi_send_on_conn(&mut conn, "cmd=fullinit;pmi_version=2;\n").await;
-            let resp = pmi_send_on_conn(&mut conn, &format!("cmd=kvsput;key={key};value={value};\n")).await;
+            let resp =
+                pmi_send_on_conn(&mut conn, &format!("cmd=kvsput;key={key};value={value};\n"))
+                    .await;
             (conn, resp)
         })
     });
@@ -432,10 +438,7 @@ fn when_both_ranks_fence(world: &mut LatticeWorld) {
     let conn1 = &mut rest[0];
     let (resp0, resp1) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            tokio::join!(
-                pmi_send_on_conn(conn0, msg),
-                pmi_send_on_conn(conn1, msg),
-            )
+            tokio::join!(pmi_send_on_conn(conn0, msg), pmi_send_on_conn(conn1, msg),)
         })
     });
     world.pmi_responses.push(resp0);
@@ -447,7 +450,9 @@ fn when_both_ranks_fence(world: &mut LatticeWorld) {
 fn then_rank_gets_key(world: &mut LatticeWorld, rank: u32, key: String, expected: String) {
     // After fence, KVS should have been merged. Verify by sending kvsget on the rank's connection.
     let msg = format!("cmd=kvsget;key={key};\n");
-    let conn = world.pmi_connections.get_mut(rank as usize)
+    let conn = world
+        .pmi_connections
+        .get_mut(rank as usize)
         .unwrap_or_else(|| panic!("no PMI connection for rank {rank}"));
     let resp = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(pmi_send_on_conn(conn, &msg))
@@ -521,10 +526,7 @@ fn then_launch_fails(world: &mut LatticeWorld) {
 
 #[then(regex = r#"^the command should be FullInit with version (\d+)$"#)]
 fn then_command_fullinit(world: &mut LatticeWorld, version: u32) {
-    let parsed = world
-        .parsed_command
-        .as_ref()
-        .expect("no parsed command");
+    let parsed = world.parsed_command.as_ref().expect("no parsed command");
     match parsed {
         Ok(Pmi2Command::FullInit { pmi_version, .. }) => {
             assert_eq!(
@@ -538,10 +540,7 @@ fn then_command_fullinit(world: &mut LatticeWorld, version: u32) {
 
 #[then(regex = r#"^the command should be KvsPut with key "([^"]+)" and value "([^"]+)"$"#)]
 fn then_command_kvsput(world: &mut LatticeWorld, expected_key: String, expected_value: String) {
-    let parsed = world
-        .parsed_command
-        .as_ref()
-        .expect("no parsed command");
+    let parsed = world.parsed_command.as_ref().expect("no parsed command");
     match parsed {
         Ok(Pmi2Command::KvsPut { key, value }) => {
             assert_eq!(key, &expected_key, "key mismatch");
@@ -553,10 +552,7 @@ fn then_command_kvsput(world: &mut LatticeWorld, expected_key: String, expected_
 
 #[then(regex = r#"^the command should be Abort with message "([^"]+)"$"#)]
 fn then_command_abort(world: &mut LatticeWorld, expected_msg: String) {
-    let parsed = world
-        .parsed_command
-        .as_ref()
-        .expect("no parsed command");
+    let parsed = world.parsed_command.as_ref().expect("no parsed command");
     match parsed {
         Ok(Pmi2Command::Abort { message }) => {
             assert!(
@@ -570,7 +566,10 @@ fn then_command_abort(world: &mut LatticeWorld, expected_msg: String) {
 
 #[then(regex = r#"^the environment should contain "([^"]+)" = "([^"]+)"$"#)]
 fn then_env_contains(world: &mut LatticeWorld, key: String, expected_value: String) {
-    let env = world.rank_env.as_ref().expect("no rank environment computed");
+    let env = world
+        .rank_env
+        .as_ref()
+        .expect("no rank environment computed");
     let actual = env
         .get(&key)
         .unwrap_or_else(|| panic!("environment does not contain key '{key}'"));

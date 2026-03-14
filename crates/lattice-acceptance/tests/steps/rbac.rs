@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::{parse_operation, parse_role};
+use crate::LatticeWorld;
 use lattice_api::middleware::rbac::{RbacContext, RbacPolicy};
 
 // ─── Given Steps ───────────────────────────────────────────
@@ -31,11 +31,7 @@ fn given_user_with_role_in_tenant(
 
 #[when(regex = r#"^the user attempts operation "(\w+)"$"#)]
 fn attempt_operation(world: &mut LatticeWorld, op_str: String) {
-    let role = world
-        .current_role
-        .as_ref()
-        .expect("no role set")
-        .clone();
+    let role = world.current_role.as_ref().expect("no role set").clone();
     let user = world
         .current_user
         .as_deref()
@@ -55,16 +51,8 @@ fn attempt_operation(world: &mut LatticeWorld, op_str: String) {
 }
 
 #[when(regex = r#"^the user attempts operation "(\w+)" on tenant "(\w[\w-]*)"$"#)]
-fn attempt_operation_on_tenant(
-    world: &mut LatticeWorld,
-    op_str: String,
-    target_tenant: String,
-) {
-    let role = world
-        .current_role
-        .as_ref()
-        .expect("no role set")
-        .clone();
+fn attempt_operation_on_tenant(world: &mut LatticeWorld, op_str: String, target_tenant: String) {
+    let role = world.current_role.as_ref().expect("no role set").clone();
     let user = world
         .current_user
         .as_deref()
@@ -87,17 +75,16 @@ fn attempt_operation_on_tenant(
 
 #[then("the operation should be allowed")]
 fn operation_allowed(world: &mut LatticeWorld) {
-    let result = world
-        .last_rbac_result
-        .expect("no RBAC result recorded");
-    assert!(result, "Expected operation to be allowed, but it was denied");
+    let result = world.last_rbac_result.expect("no RBAC result recorded");
+    assert!(
+        result,
+        "Expected operation to be allowed, but it was denied"
+    );
 }
 
 #[then("the operation should be denied")]
 fn operation_denied(world: &mut LatticeWorld) {
-    let result = world
-        .last_rbac_result
-        .expect("no RBAC result recorded");
+    let result = world.last_rbac_result.expect("no RBAC result recorded");
     assert!(
         !result,
         "Expected operation to be denied, but it was allowed"

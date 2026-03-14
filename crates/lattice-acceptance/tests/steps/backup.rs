@@ -14,9 +14,7 @@ fn build_test_state(node_count: usize, alloc_count: usize) -> GlobalState {
     let mut state = GlobalState::new();
 
     for i in 0..node_count {
-        let node = NodeBuilder::new()
-            .id(&format!("backup-node-{i}"))
-            .build();
+        let node = NodeBuilder::new().id(&format!("backup-node-{i}")).build();
         state.nodes.insert(node.id.clone(), node);
     }
 
@@ -24,9 +22,7 @@ fn build_test_state(node_count: usize, alloc_count: usize) -> GlobalState {
     state.tenants.insert(tenant.id.clone(), tenant);
 
     for _ in 0..alloc_count {
-        let alloc = AllocationBuilder::new()
-            .tenant("backup-tenant")
-            .build();
+        let alloc = AllocationBuilder::new().tenant("backup-tenant").build();
         state.allocations.insert(alloc.id, alloc);
     }
 
@@ -45,14 +41,8 @@ fn given_quorum_with_state(world: &mut LatticeWorld, node_count: usize, alloc_co
 
 #[given("I export a backup")]
 fn given_export_backup(world: &mut LatticeWorld) {
-    let state = world
-        .backup_state
-        .as_ref()
-        .expect("no quorum state set up");
-    let tempdir = world
-        ._backup_tempdir
-        .as_ref()
-        .expect("no tempdir");
+    let state = world.backup_state.as_ref().expect("no quorum state set up");
+    let tempdir = world._backup_tempdir.as_ref().expect("no tempdir");
     let backup_path = tempdir.path().join("test-backup.tar.gz");
 
     let metadata = tokio::task::block_in_place(|| {
@@ -75,15 +65,11 @@ fn given_corrupt_backup(world: &mut LatticeWorld) {
 
 #[given("a data directory with existing WAL files")]
 fn given_data_dir_with_wal(world: &mut LatticeWorld) {
-    let tempdir = world
-        ._backup_tempdir
-        .as_ref()
-        .expect("no tempdir");
+    let tempdir = world._backup_tempdir.as_ref().expect("no tempdir");
     let data_dir = tempdir.path().join("restore-with-wal");
     let wal_dir = data_dir.join("raft").join("wal");
     std::fs::create_dir_all(&wal_dir).expect("failed to create WAL dir");
-    std::fs::write(wal_dir.join("wal-00001.log"), b"fake wal data")
-        .expect("failed to write WAL");
+    std::fs::write(wal_dir.join("wal-00001.log"), b"fake wal data").expect("failed to write WAL");
     world.restore_data_dir = Some(data_dir);
 }
 
@@ -91,14 +77,8 @@ fn given_data_dir_with_wal(world: &mut LatticeWorld) {
 
 #[when("I export a backup")]
 fn when_export_backup(world: &mut LatticeWorld) {
-    let state = world
-        .backup_state
-        .as_ref()
-        .expect("no quorum state set up");
-    let tempdir = world
-        ._backup_tempdir
-        .as_ref()
-        .expect("no tempdir");
+    let state = world.backup_state.as_ref().expect("no quorum state set up");
+    let tempdir = world._backup_tempdir.as_ref().expect("no tempdir");
     let backup_path = tempdir.path().join("test-backup.tar.gz");
 
     let metadata = tokio::task::block_in_place(|| {
@@ -112,10 +92,7 @@ fn when_export_backup(world: &mut LatticeWorld) {
 
 #[when("I verify the backup")]
 fn when_verify_backup(world: &mut LatticeWorld) {
-    let backup_path = world
-        .backup_path
-        .as_ref()
-        .expect("no backup path set");
+    let backup_path = world.backup_path.as_ref().expect("no backup path set");
     match verify_backup(backup_path) {
         Ok(meta) => {
             world.verified_metadata = Some(meta);
@@ -130,14 +107,8 @@ fn when_verify_backup(world: &mut LatticeWorld) {
 
 #[when("I restore the backup to a new data directory")]
 fn when_restore_to_new_dir(world: &mut LatticeWorld) {
-    let backup_path = world
-        .backup_path
-        .as_ref()
-        .expect("no backup path set");
-    let tempdir = world
-        ._backup_tempdir
-        .as_ref()
-        .expect("no tempdir");
+    let backup_path = world.backup_path.as_ref().expect("no backup path set");
+    let tempdir = world._backup_tempdir.as_ref().expect("no tempdir");
     let data_dir = tempdir.path().join("restored-new");
     std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
 
@@ -155,10 +126,7 @@ fn when_restore_to_new_dir(world: &mut LatticeWorld) {
 
 #[when("I restore the backup to that data directory")]
 fn when_restore_to_existing_dir(world: &mut LatticeWorld) {
-    let backup_path = world
-        .backup_path
-        .as_ref()
-        .expect("no backup path set");
+    let backup_path = world.backup_path.as_ref().expect("no backup path set");
     let data_dir = world
         .restore_data_dir
         .as_ref()
@@ -183,10 +151,7 @@ fn then_backup_metadata_counts(
     expected_nodes: usize,
     expected_allocs: usize,
 ) {
-    let meta = world
-        .backup_metadata
-        .as_ref()
-        .expect("no backup metadata");
+    let meta = world.backup_metadata.as_ref().expect("no backup metadata");
     assert_eq!(
         meta.app.node_count, expected_nodes,
         "expected {} nodes in backup, got {}",
@@ -220,10 +185,7 @@ fn then_verify_succeeds(world: &mut LatticeWorld) {
 
 #[then("the verified metadata should match the export metadata")]
 fn then_verified_matches_export(world: &mut LatticeWorld) {
-    let export_meta = world
-        .backup_metadata
-        .as_ref()
-        .expect("no export metadata");
+    let export_meta = world.backup_metadata.as_ref().expect("no export metadata");
     let verify_meta = world
         .verified_metadata
         .as_ref()
@@ -249,7 +211,9 @@ fn then_verify_fails(world: &mut LatticeWorld, expected_fragment: String) {
         .as_ref()
         .expect("expected verification to fail, but it succeeded");
     assert!(
-        error.to_lowercase().contains(&expected_fragment.to_lowercase()),
+        error
+            .to_lowercase()
+            .contains(&expected_fragment.to_lowercase()),
         "expected error containing '{expected_fragment}', got '{error}'"
     );
 }
@@ -275,13 +239,11 @@ fn then_snapshot_valid_json(world: &mut LatticeWorld) {
         .as_ref()
         .expect("no restore data dir");
     let snap_dir = data_dir.join("raft").join("snapshots");
-    let current = std::fs::read_to_string(snap_dir.join("current"))
-        .expect("failed to read current pointer");
+    let current =
+        std::fs::read_to_string(snap_dir.join("current")).expect("failed to read current pointer");
     let snapshot_path = snap_dir.join(current.trim());
-    let contents =
-        std::fs::read_to_string(&snapshot_path).expect("failed to read snapshot file");
-    let _: serde_json::Value =
-        serde_json::from_str(&contents).expect("snapshot is not valid JSON");
+    let contents = std::fs::read_to_string(&snapshot_path).expect("failed to read snapshot file");
+    let _: serde_json::Value = serde_json::from_str(&contents).expect("snapshot is not valid JSON");
 }
 
 #[then("the WAL directory should be empty")]

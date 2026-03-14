@@ -67,9 +67,13 @@ fn given_node_with_software_stack(
         .build();
     world.nodes.push(node);
     // Store the components for later verification.
-    world
-        .allocations
-        .push(AllocationBuilder::new().tag("os", &os).tag("driver", &driver).tag("libs", &libs).build());
+    world.allocations.push(
+        AllocationBuilder::new()
+            .tag("os", &os)
+            .tag("driver", &driver)
+            .tag("libs", &libs)
+            .build(),
+    );
 }
 
 #[given(regex = r#"^a node "([^"]+)" with conformance fingerprint "([^"]+)"$"#)]
@@ -86,11 +90,7 @@ fn given_named_node_with_fingerprint(
 }
 
 #[given(regex = r#"^a node "([^"]+)" with drifted conformance fingerprint "([^"]+)"$"#)]
-fn given_node_drifted_fingerprint(
-    world: &mut LatticeWorld,
-    node_id: String,
-    fingerprint: String,
-) {
+fn given_node_drifted_fingerprint(world: &mut LatticeWorld, node_id: String, fingerprint: String) {
     let node = NodeBuilder::new()
         .id(&node_id)
         .conformance(&fingerprint)
@@ -98,9 +98,7 @@ fn given_node_drifted_fingerprint(
     world.nodes.push(node);
     // Mark the node as having drifted from baseline.
     if let Some(alloc) = world.allocations.last_mut() {
-        alloc
-            .tags
-            .insert("drifted_node".into(), node_id);
+        alloc.tags.insert("drifted_node".into(), node_id);
     } else {
         let alloc = AllocationBuilder::new()
             .tag("drifted_node", &node_id)
@@ -111,11 +109,7 @@ fn given_node_drifted_fingerprint(
 }
 
 #[given(regex = r#"^(\d+) nodes with conformance fingerprint "([^"]+)"$"#)]
-fn given_conformance_nodes_no_group(
-    world: &mut LatticeWorld,
-    count: usize,
-    fingerprint: String,
-) {
+fn given_conformance_nodes_no_group(world: &mut LatticeWorld, count: usize, fingerprint: String) {
     for i in 0..count {
         let node = NodeBuilder::new()
             .id(&format!("conf-{fingerprint}-{i}"))
@@ -132,7 +126,10 @@ fn given_conformance_nodes_no_group(
 #[when("the conformance fingerprint is computed")]
 fn when_fingerprint_computed(world: &mut LatticeWorld) {
     // The fingerprint was already composed in the given step.
-    let node = world.nodes.last().expect("no node to compute fingerprint for");
+    let node = world
+        .nodes
+        .last()
+        .expect("no node to compute fingerprint for");
     assert!(
         node.conformance_fingerprint.is_some(),
         "Expected conformance fingerprint to be set"
@@ -148,10 +145,7 @@ fn when_node_reports_new_fingerprint(world: &mut LatticeWorld, new_fingerprint: 
     // Record drift detection.
     let drifted = old_fingerprint.as_deref() != Some(&new_fingerprint);
     let alloc = AllocationBuilder::new()
-        .tag(
-            "conformance_drift",
-            if drifted { "true" } else { "false" },
-        )
+        .tag("conformance_drift", if drifted { "true" } else { "false" })
         .tag(
             "old_fingerprint",
             old_fingerprint.as_deref().unwrap_or("none"),
@@ -214,10 +208,7 @@ fn when_node_reports_post_reimage(world: &mut LatticeWorld) {
     let node = world.nodes.last_mut().expect("no node");
     node.state = NodeState::Ready;
     // After reimage, the fingerprint matches baseline, so no drift.
-    let fp = node
-        .conformance_fingerprint
-        .clone()
-        .unwrap_or_default();
+    let fp = node.conformance_fingerprint.clone().unwrap_or_default();
     let alloc = AllocationBuilder::new()
         .tag("conformance_drift", "false")
         .tag("new_fingerprint", &fp)
@@ -230,10 +221,7 @@ fn when_node_reports_post_reimage(world: &mut LatticeWorld) {
 #[then("all assigned nodes should share the same conformance fingerprint")]
 fn then_same_conformance(world: &mut LatticeWorld) {
     let alloc = world.last_allocation();
-    assert!(
-        !alloc.assigned_nodes.is_empty(),
-        "No nodes were assigned"
-    );
+    assert!(!alloc.assigned_nodes.is_empty(), "No nodes were assigned");
     let fingerprints: Vec<Option<&str>> = alloc
         .assigned_nodes
         .iter()
@@ -315,10 +303,7 @@ fn then_drift_alert_raised(world: &mut LatticeWorld) {
 
 #[then(regex = r#"^the node's fingerprint should be updated to "([^"]+)"$"#)]
 fn then_node_fingerprint_updated(world: &mut LatticeWorld, expected: String) {
-    let node = world
-        .nodes
-        .last()
-        .expect("no node");
+    let node = world.nodes.last().expect("no node");
     assert_eq!(
         node.conformance_fingerprint.as_deref(),
         Some(expected.as_str()),
@@ -329,10 +314,7 @@ fn then_node_fingerprint_updated(world: &mut LatticeWorld, expected: String) {
 #[then(regex = r#"^all assigned nodes must have fingerprint "([^"]+)"$"#)]
 fn then_all_assigned_exact_fingerprint(world: &mut LatticeWorld, expected: String) {
     let alloc = world.last_allocation();
-    assert!(
-        !alloc.assigned_nodes.is_empty(),
-        "No nodes were assigned"
-    );
+    assert!(!alloc.assigned_nodes.is_empty(), "No nodes were assigned");
     for node_id in &alloc.assigned_nodes {
         let node = world
             .nodes
@@ -351,10 +333,7 @@ fn then_all_assigned_exact_fingerprint(world: &mut LatticeWorld, expected: Strin
 #[then("the allocation spans both conformance groups")]
 fn then_allocation_spans_groups(world: &mut LatticeWorld) {
     let alloc = world.last_allocation();
-    assert!(
-        !alloc.assigned_nodes.is_empty(),
-        "No nodes were assigned"
-    );
+    assert!(!alloc.assigned_nodes.is_empty(), "No nodes were assigned");
     let mut fingerprints: Vec<String> = alloc
         .assigned_nodes
         .iter()
@@ -398,7 +377,11 @@ fn then_homogeneous_scores_higher(world: &mut LatticeWorld) {
     let score_homo = conformance_fitness(&group_a, requested_nodes(alloc));
 
     // Score for a mixed group.
-    let mixed: Vec<&Node> = node_refs.iter().take(requested_nodes(alloc) as usize).copied().collect();
+    let mixed: Vec<&Node> = node_refs
+        .iter()
+        .take(requested_nodes(alloc) as usize)
+        .copied()
+        .collect();
     let score_mixed = conformance_fitness(&mixed, requested_nodes(alloc));
 
     assert!(

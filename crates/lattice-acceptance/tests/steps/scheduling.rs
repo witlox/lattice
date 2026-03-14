@@ -1,24 +1,24 @@
 use chrono::{Duration, Utc};
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::parse_allocation_state;
+use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 
 // ─── Given steps ───────────────────────────────────────────
 // Note: tenant, vCluster, ready nodes, and scheduler cycle steps are in common.rs
 
-#[given(regex = r#"^a tenant "(\w+)" with fair_share_target ([0-9.]+) and current usage ([0-9.]+)$"#)]
+#[given(
+    regex = r#"^a tenant "(\w+)" with fair_share_target ([0-9.]+) and current usage ([0-9.]+)$"#
+)]
 fn given_tenant_with_fair_share(
     world: &mut LatticeWorld,
     tenant: String,
     fair_share: f64,
     usage: f64,
 ) {
-    let t = TenantBuilder::new(&tenant)
-        .fair_share(fair_share)
-        .build();
+    let t = TenantBuilder::new(&tenant).fair_share(fair_share).build();
     world.tenants.push(t);
 
     // Simulate current usage by creating running allocations.
@@ -104,12 +104,10 @@ fn given_nodes_all_running(world: &mut LatticeWorld, count: usize, group: u32) {
     world.nodes.extend(nodes);
 }
 
-#[given(regex = r#"^a reservation for a high-priority allocation needing (\d+) nodes in (\d+) hour$"#)]
-fn given_reservation_for_high_priority(
-    world: &mut LatticeWorld,
-    node_count: u32,
-    _hours: u32,
-) {
+#[given(
+    regex = r#"^a reservation for a high-priority allocation needing (\d+) nodes in (\d+) hour$"#
+)]
+fn given_reservation_for_high_priority(world: &mut LatticeWorld, node_count: u32, _hours: u32) {
     // The high-priority allocation that has a reservation: it's pending and
     // high-priority. The scheduler should protect its reservation window.
     let alloc = AllocationBuilder::new()
@@ -131,11 +129,7 @@ fn given_reservation_for_high_priority(
 }
 
 #[given(regex = r#"^a pending allocation submitted (\d+) hours ago requesting (\d+) nodes$"#)]
-fn given_old_pending_allocation(
-    world: &mut LatticeWorld,
-    hours_ago: i64,
-    node_count: u32,
-) {
+fn given_old_pending_allocation(world: &mut LatticeWorld, hours_ago: i64, node_count: u32) {
     let tenant = world
         .tenants
         .first()
@@ -227,12 +221,10 @@ fn submit_high_priority(world: &mut LatticeWorld, node_count: u32) {
     world.allocations.push(alloc);
 }
 
-#[when(regex = r#"^I submit a high-priority allocation requesting (\d+) nodes with walltime "([^"]+)"$"#)]
-fn submit_high_priority_with_walltime(
-    world: &mut LatticeWorld,
-    node_count: u32,
-    walltime: String,
-) {
+#[when(
+    regex = r#"^I submit a high-priority allocation requesting (\d+) nodes with walltime "([^"]+)"$"#
+)]
+fn submit_high_priority_with_walltime(world: &mut LatticeWorld, node_count: u32, walltime: String) {
     let hours = super::helpers::parse_duration_str(&walltime).num_hours() as u64;
     let tenant = world
         .tenants

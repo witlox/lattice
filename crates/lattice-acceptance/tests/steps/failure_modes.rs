@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::parse_allocation_state;
+use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 
@@ -115,7 +115,9 @@ fn given_pending_with_staging(world: &mut LatticeWorld) {
         .nodes(1)
         .state(AllocationState::Pending)
         .build();
-    alloc.tags.insert("data_mounts".into(), "/data/input".into());
+    alloc
+        .tags
+        .insert("data_mounts".into(), "/data/input".into());
     world.allocations.push(alloc);
 }
 
@@ -241,7 +243,9 @@ fn when_checkpoint_broker_crashes(world: &mut LatticeWorld) {
 fn when_node_partitioned(world: &mut LatticeWorld, node_id: String) {
     world.network_partitioned = true;
     if let Some(node) = world.nodes.iter_mut().find(|n| n.id == node_id) {
-        node.state = NodeState::Degraded { reason: "heartbeat timeout".into() };
+        node.state = NodeState::Degraded {
+            reason: "heartbeat timeout".into(),
+        };
     }
 }
 
@@ -249,8 +253,7 @@ fn when_node_partitioned(world: &mut LatticeWorld, node_id: String) {
 fn when_partition_heals(world: &mut LatticeWorld) {
     world.network_partitioned = false;
     for node in &mut world.nodes {
-        if matches!(&node.state, NodeState::Degraded { reason } if reason == "heartbeat timeout")
-        {
+        if matches!(&node.state, NodeState::Degraded { reason } if reason == "heartbeat timeout") {
             node.state = NodeState::Ready;
         }
     }
@@ -425,7 +428,8 @@ fn then_degradation_reason(world: &mut LatticeWorld, expected: String) {
         _ => unreachable!(),
     };
     assert_eq!(
-        actual_reason, expected.as_str(),
+        actual_reason,
+        expected.as_str(),
         "degradation reason mismatch"
     );
 }
@@ -442,10 +446,7 @@ fn then_remaining_form_majority(world: &mut LatticeWorld, count: usize) {
 
 #[then("proposals continue to be committed")]
 fn then_proposals_continue(world: &mut LatticeWorld) {
-    assert!(
-        world.quorum_available,
-        "quorum not available for proposals"
-    );
+    assert!(world.quorum_available, "quorum not available for proposals");
 }
 
 #[then("running allocations are unaffected")]
@@ -461,24 +462,21 @@ fn then_running_unaffected(world: &mut LatticeWorld) {
 
 #[then(regex = r#"^a new leader is elected within (\d+) seconds$"#)]
 fn then_new_leader_elected(world: &mut LatticeWorld, _seconds: u32) {
-    assert!(
-        world.quorum_leader.is_some(),
-        "no new leader elected"
-    );
+    assert!(world.quorum_leader.is_some(), "no new leader elected");
     assert!(world.quorum_available, "quorum should be available");
 }
 
 #[then("in-flight proposals are retried by schedulers")]
 fn then_proposals_retried(world: &mut LatticeWorld) {
-    assert!(world.quorum_available, "quorum should be available for retries");
+    assert!(
+        world.quorum_available,
+        "quorum should be available for retries"
+    );
 }
 
 #[then("no new allocations can be committed")]
 fn then_no_new_commits(world: &mut LatticeWorld) {
-    assert!(
-        !world.quorum_available,
-        "quorum should not be available"
-    );
+    assert!(!world.quorum_available, "quorum should not be available");
 }
 
 #[then("running allocations continue on their nodes")]
@@ -531,10 +529,7 @@ fn then_vc_running_unaffected(world: &mut LatticeWorld, _vc_name: String) {
 
 #[then("client requests are routed to the surviving replica")]
 fn then_requests_routed(world: &mut LatticeWorld) {
-    assert!(
-        world.api_crashed,
-        "one API server should be crashed"
-    );
+    assert!(world.api_crashed, "one API server should be crashed");
     // The other replica handles requests (load balancer routing)
 }
 
@@ -694,20 +689,23 @@ fn then_suboptimal_scores(world: &mut LatticeWorld) {
         .allocations
         .iter()
         .any(|a| a.state == AllocationState::Running || a.state == AllocationState::Pending);
-    assert!(attempted, "allocations should still be scheduled or pending");
+    assert!(
+        attempted,
+        "allocations should still be scheduled or pending"
+    );
 }
 
 #[then("autoscaling is paused")]
 fn then_autoscaling_paused(world: &mut LatticeWorld) {
-    assert!(!world.tsdb_available, "TSDB unavailable means autoscaling paused");
+    assert!(
+        !world.tsdb_available,
+        "TSDB unavailable means autoscaling paused"
+    );
 }
 
 #[then("the allocation is retried on different nodes")]
 fn then_retried_on_different(world: &mut LatticeWorld) {
-    assert!(
-        world.prologue_retry_count > 0,
-        "expected retry count > 0"
-    );
+    assert!(world.prologue_retry_count > 0, "expected retry count > 0");
 }
 
 #[then("the retry count increments")]
@@ -739,10 +737,7 @@ fn then_failure_reason_includes(world: &mut LatticeWorld, fragment: String) {
 
 #[then("the allocation is requeued")]
 fn then_requeued(world: &mut LatticeWorld) {
-    assert!(
-        world.requeue_count > 0,
-        "expected requeue count > 0"
-    );
+    assert!(world.requeue_count > 0, "expected requeue count > 0");
 }
 
 #[then("the requeue count increments")]
@@ -754,11 +749,7 @@ fn then_requeue_count_increments(world: &mut LatticeWorld) {
 }
 
 #[then(regex = r#"^the allocation transitions to "(\w+)" with reason "([^"]+)"$"#)]
-fn then_alloc_transitions_with_reason(
-    world: &mut LatticeWorld,
-    expected: String,
-    reason: String,
-) {
+fn then_alloc_transitions_with_reason(world: &mut LatticeWorld, expected: String, reason: String) {
     let expected_state = parse_allocation_state(&expected);
     let found = world.allocations.iter().any(|a| {
         a.state == expected_state

@@ -192,21 +192,15 @@ fn submit_new_for_tenant(world: &mut LatticeWorld, tenant: String) {
         }
     }
 
-    let alloc = AllocationBuilder::new()
-        .tenant(&tenant)
-        .nodes(1)
-        .build();
+    let alloc = AllocationBuilder::new().tenant(&tenant).nodes(1).build();
     world.allocations.push(alloc);
     world.last_error = None;
 }
 
-#[when(regex = r#"^I submit an allocation requesting (\d+) GPUs with walltime "(\w+)" for tenant "(\w[\w-]*)"$"#)]
-fn submit_gpu_allocation(
-    world: &mut LatticeWorld,
-    gpus: u32,
-    walltime: String,
-    tenant: String,
-) {
+#[when(
+    regex = r#"^I submit an allocation requesting (\d+) GPUs with walltime "(\w+)" for tenant "(\w[\w-]*)"$"#
+)]
+fn submit_gpu_allocation(world: &mut LatticeWorld, gpus: u32, walltime: String, tenant: String) {
     use super::helpers::parse_duration_str;
 
     let dur = parse_duration_str(&walltime);
@@ -246,10 +240,7 @@ fn submit_gpu_allocation(
 
 #[when(regex = r#"^I submit an allocation for tenant "(\w[\w-]*)"$"#)]
 fn submit_alloc_for_tenant(world: &mut LatticeWorld, tenant: String) {
-    let alloc = AllocationBuilder::new()
-        .tenant(&tenant)
-        .nodes(1)
-        .build();
+    let alloc = AllocationBuilder::new().tenant(&tenant).nodes(1).build();
     world.allocations.push(alloc);
     world.last_error = None;
 }
@@ -266,11 +257,7 @@ fn admin_reduces_quota(world: &mut LatticeWorld, tenant: String, new_max: u32) {
 #[when("a new sensitive node claim is submitted")]
 fn submit_sensitive_claim(world: &mut LatticeWorld) {
     // Check if all nodes are already claimed
-    let unclaimed = world
-        .nodes
-        .iter()
-        .filter(|n| n.owner.is_none())
-        .count();
+    let unclaimed = world.nodes.iter().filter(|n| n.owner.is_none()).count();
 
     if unclaimed == 0 {
         world.last_error = Some(LatticeError::QuotaExceeded {
@@ -278,10 +265,7 @@ fn submit_sensitive_claim(world: &mut LatticeWorld) {
             detail: "no unclaimed nodes in sensitive pool".into(),
         });
     } else {
-        let alloc = AllocationBuilder::new()
-            .sensitive()
-            .nodes(1)
-            .build();
+        let alloc = AllocationBuilder::new().sensitive().nodes(1).build();
         world.allocations.push(alloc);
         world.last_error = None;
     }
@@ -345,7 +329,9 @@ fn running_continue_unaffected(world: &mut LatticeWorld) {
     );
 }
 
-#[then(regex = r#"^new allocations for tenant "(\w[\w-]*)" should be rejected until usage drops below (\d+)$"#)]
+#[then(
+    regex = r#"^new allocations for tenant "(\w[\w-]*)" should be rejected until usage drops below (\d+)$"#
+)]
 fn new_allocs_rejected_until(world: &mut LatticeWorld, tenant: String, _limit: u32) {
     let nodes_in_use: u32 = world
         .allocations
@@ -373,13 +359,13 @@ fn new_allocs_rejected_until(world: &mut LatticeWorld, tenant: String, _limit: u
     if nodes_in_use + 1 > tenant_obj.quota.max_nodes {
         world.last_error = Some(LatticeError::QuotaExceeded {
             tenant: tenant.clone(),
-            detail: format!("max_nodes: {nodes_in_use} + 1 > {}", tenant_obj.quota.max_nodes),
+            detail: format!(
+                "max_nodes: {nodes_in_use} + 1 > {}",
+                tenant_obj.quota.max_nodes
+            ),
         });
     } else {
-        let alloc = AllocationBuilder::new()
-            .tenant(&tenant)
-            .nodes(1)
-            .build();
+        let alloc = AllocationBuilder::new().tenant(&tenant).nodes(1).build();
         world.allocations.push(alloc);
         world.last_error = None;
     }
@@ -415,10 +401,7 @@ fn quota_raft_committed(world: &mut LatticeWorld) {
 
 #[then(regex = r#"^subsequent allocations can use up to (\d+) nodes$"#)]
 fn subsequent_allocs_up_to(world: &mut LatticeWorld, limit: u32) {
-    let tenant = world
-        .tenants
-        .last()
-        .expect("no tenants found");
+    let tenant = world.tenants.last().expect("no tenants found");
     assert_eq!(
         tenant.quota.max_nodes, limit,
         "Expected max_nodes to be {limit}, got {}",

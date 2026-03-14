@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::parse_duration_str;
+use crate::LatticeWorld;
 use lattice_scheduler::walltime::{ExpiryPhase, WalltimeEnforcer};
 
 use chrono::{Duration, Utc};
@@ -17,8 +17,9 @@ fn given_walltime_enforcer_default(world: &mut LatticeWorld) {
 
 #[given(regex = r#"^a walltime enforcer with grace period (\d+) seconds$"#)]
 fn given_walltime_enforcer_custom(world: &mut LatticeWorld, grace_secs: i64) {
-    world.walltime_enforcer =
-        Some(WalltimeEnforcer::with_grace_period(Duration::seconds(grace_secs)));
+    world.walltime_enforcer = Some(WalltimeEnforcer::with_grace_period(Duration::seconds(
+        grace_secs,
+    )));
     world.walltime_start = Some(Utc::now());
 }
 
@@ -42,11 +43,7 @@ fn given_alloc_with_walltime(world: &mut LatticeWorld, walltime_str: String) {
 }
 
 #[given(regex = r#"^a running allocation "(\S+)" registered with walltime "(\w+)"$"#)]
-fn given_named_alloc_with_walltime(
-    world: &mut LatticeWorld,
-    name: String,
-    walltime_str: String,
-) {
+fn given_named_alloc_with_walltime(world: &mut LatticeWorld, name: String, walltime_str: String) {
     let enforcer = world
         .walltime_enforcer
         .as_mut()
@@ -143,9 +140,7 @@ fn when_unregister_walltime(world: &mut LatticeWorld) {
 
 #[then(regex = r#"^the allocation should be in "(\w+)" phase$"#)]
 fn then_alloc_in_phase(world: &mut LatticeWorld, expected_phase: String) {
-    let alloc_id = world
-        .walltime_alloc_id
-        .expect("no walltime alloc_id set");
+    let alloc_id = world.walltime_alloc_id.expect("no walltime alloc_id set");
     let expiry = world
         .walltime_expired
         .iter()
@@ -225,9 +220,7 @@ fn then_named_alloc_not_expired(world: &mut LatticeWorld, name: String) {
 fn then_checkpoint_has_grace_period(world: &mut LatticeWorld) {
     // The allocation is in Terminate phase (SIGTERM sent), which means the
     // application has the grace period to finish its checkpoint before Kill.
-    let alloc_id = world
-        .walltime_alloc_id
-        .expect("no walltime alloc_id set");
+    let alloc_id = world.walltime_alloc_id.expect("no walltime alloc_id set");
     let expiry = world
         .walltime_expired
         .iter()

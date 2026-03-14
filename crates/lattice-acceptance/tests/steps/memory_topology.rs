@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::make_dram_domain;
+use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_scheduler::conformance::{filter_by_constraints, memory_locality_score};
 use lattice_test_harness::fixtures::*;
@@ -160,12 +160,7 @@ fn given_single_numa_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
 }
 
 #[given(regex = r"^(\d+) nodes with (\d+) NUMA domains in group (\d+)$")]
-fn given_multi_numa_nodes(
-    world: &mut LatticeWorld,
-    count: usize,
-    domains: u32,
-    group: u32,
-) {
+fn given_multi_numa_nodes(world: &mut LatticeWorld, count: usize, domains: u32, group: u32) {
     for i in 0..count {
         let node = NodeBuilder::new()
             .id(&format!("numa{domains}-g{group}-{i}"))
@@ -319,16 +314,17 @@ fn when_submit_prefer_numa(world: &mut LatticeWorld) {
 fn when_prologue_numactl(world: &mut LatticeWorld) {
     let alloc = world.last_allocation();
     let policy = alloc
-        .resources.constraints
+        .resources
+        .constraints
         .memory_policy
         .expect("memory_policy not set on allocation");
 
     let node = world.nodes.last().expect("no node");
-    let is_unified = node
-        .capabilities
-        .memory_topology
-        .as_ref()
-        .is_some_and(|t| t.domains.iter().any(|d| d.domain_type == MemoryDomainType::Unified));
+    let is_unified = node.capabilities.memory_topology.as_ref().is_some_and(|t| {
+        t.domains
+            .iter()
+            .any(|d| d.domain_type == MemoryDomainType::Unified)
+    });
 
     let args = if is_unified {
         // Unified memory does not need numactl.
@@ -344,9 +340,7 @@ fn when_prologue_numactl(world: &mut LatticeWorld) {
 
     // Store the generated arguments for verification.
     let alloc = world.last_allocation_mut();
-    alloc
-        .tags
-        .insert("numactl_args".into(), args.join(" "));
+    alloc.tags.insert("numactl_args".into(), args.join(" "));
 }
 
 #[when("memory topology is discovered")]
@@ -409,11 +403,11 @@ fn then_placed_on_unified(world: &mut LatticeWorld) {
             .iter()
             .find(|n| n.id == *node_id)
             .unwrap_or_else(|| panic!("Node {node_id} not found"));
-        let is_unified = node
-            .capabilities
-            .memory_topology
-            .as_ref()
-            .is_some_and(|t| t.domains.iter().any(|d| d.domain_type == MemoryDomainType::Unified));
+        let is_unified = node.capabilities.memory_topology.as_ref().is_some_and(|t| {
+            t.domains
+                .iter()
+                .any(|d| d.domain_type == MemoryDomainType::Unified)
+        });
         assert!(
             is_unified,
             "Node {node_id} should have unified memory topology"
@@ -430,23 +424,16 @@ fn then_placed_on_dram(world: &mut LatticeWorld) {
             .iter()
             .find(|n| n.id == *node_id)
             .unwrap_or_else(|| panic!("Node {node_id} not found"));
-        let has_cxl_only = node
-            .capabilities
-            .memory_topology
-            .as_ref()
-            .is_some_and(|t| {
-                let non_cxl: u64 = t
-                    .domains
-                    .iter()
-                    .filter(|d| d.domain_type != MemoryDomainType::CxlAttached)
-                    .map(|d| d.capacity_bytes)
-                    .sum();
-                non_cxl == 0 && t.total_capacity_bytes > 0
-            });
-        assert!(
-            !has_cxl_only,
-            "Node {node_id} should not be CXL-only"
-        );
+        let has_cxl_only = node.capabilities.memory_topology.as_ref().is_some_and(|t| {
+            let non_cxl: u64 = t
+                .domains
+                .iter()
+                .filter(|d| d.domain_type != MemoryDomainType::CxlAttached)
+                .map(|d| d.capacity_bytes)
+                .sum();
+            non_cxl == 0 && t.total_capacity_bytes > 0
+        });
+        assert!(!has_cxl_only, "Node {node_id} should not be CXL-only");
     }
 }
 
@@ -519,11 +506,11 @@ fn then_numactl_interleave(world: &mut LatticeWorld) {
 #[then("the node should report unified memory")]
 fn then_node_reports_unified(world: &mut LatticeWorld) {
     let node = world.nodes.last().expect("no node");
-    let is_unified = node
-        .capabilities
-        .memory_topology
-        .as_ref()
-        .is_some_and(|t| t.domains.iter().any(|d| d.domain_type == MemoryDomainType::Unified));
+    let is_unified = node.capabilities.memory_topology.as_ref().is_some_and(|t| {
+        t.domains
+            .iter()
+            .any(|d| d.domain_type == MemoryDomainType::Unified)
+    });
     assert!(is_unified, "GH200 node should report unified memory");
 }
 
@@ -562,15 +549,11 @@ fn then_dram_scores_higher(world: &mut LatticeWorld) {
             .iter()
             .find(|n| n.id == *node_id)
             .expect("node not found");
-        let has_cxl = node
-            .capabilities
-            .memory_topology
-            .as_ref()
-            .is_some_and(|t| {
-                t.domains
-                    .iter()
-                    .any(|d| d.domain_type == MemoryDomainType::CxlAttached)
-            });
+        let has_cxl = node.capabilities.memory_topology.as_ref().is_some_and(|t| {
+            t.domains
+                .iter()
+                .any(|d| d.domain_type == MemoryDomainType::CxlAttached)
+        });
         if has_cxl {
             cxl_scores.push(*score);
         } else {

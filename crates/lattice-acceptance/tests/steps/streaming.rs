@@ -24,15 +24,16 @@ fn given_event_bus(world: &mut LatticeWorld) {
 #[given(regex = r#"^a subscriber for allocation "([^"]+)"$"#)]
 fn given_subscriber(world: &mut LatticeWorld, alloc_name: String) {
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
-    let bus = world.event_bus.as_ref().expect("event bus not created").clone();
+    let bus = world
+        .event_bus
+        .as_ref()
+        .expect("event bus not created")
+        .clone();
 
     // Subscribe and immediately collect into the received_events map.
     // We use a background task to drain the receiver.
     let events_key = alloc_name.clone();
-    world
-        .received_events
-        .entry(events_key)
-        .or_default();
+    world.received_events.entry(events_key).or_default();
 
     // Subscribe synchronously via block_on (cucumber steps are sync).
     let mut rx = tokio::task::block_in_place(|| {
@@ -52,9 +53,7 @@ fn given_subscriber(world: &mut LatticeWorld, alloc_name: String) {
     // Store the Arc so we can read it later in then steps.
     // We use the world's tags mechanism via a separate map.
     // Store in received_events as a placeholder; we'll read from the Arc.
-    world
-        .received_events
-        .insert(alloc_name.clone(), Vec::new());
+    world.received_events.insert(alloc_name.clone(), Vec::new());
 
     // Store the Arc<Mutex<Vec>> as a tag on the world. We repurpose named_received_events
     // by draining the Arc in the then step. Store the Arc in a side-channel.
@@ -87,8 +86,6 @@ fn given_subscriber(world: &mut LatticeWorld, alloc_name: String) {
     // We'll subscribe, publish, then drain the receiver in the same step flow.
     // Store the Arc<Mutex<Vec<AllocationEvent>>> in a static HashMap.
 
-    
-    
     lazy_static_collector(|map| {
         map.insert(alloc_name, events);
     });
@@ -97,9 +94,7 @@ fn given_subscriber(world: &mut LatticeWorld, alloc_name: String) {
 /// Thread-safe global collector storage for subscriber events.
 fn lazy_static_collector<F>(f: F)
 where
-    F: FnOnce(
-        &mut std::collections::HashMap<String, Arc<std::sync::Mutex<Vec<AllocationEvent>>>>,
-    ),
+    F: FnOnce(&mut std::collections::HashMap<String, Arc<std::sync::Mutex<Vec<AllocationEvent>>>>),
 {
     use std::sync::Mutex;
     static COLLECTORS: std::sync::OnceLock<
@@ -137,7 +132,11 @@ fn collector_len(name: &str) -> usize {
 #[given(regex = r#"^subscriber "([^"]+)" for allocation "([^"]+)"$"#)]
 fn given_named_subscriber(world: &mut LatticeWorld, sub_name: String, alloc_name: String) {
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
-    let bus = world.event_bus.as_ref().expect("event bus not created").clone();
+    let bus = world
+        .event_bus
+        .as_ref()
+        .expect("event bus not created")
+        .clone();
 
     let mut rx = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(bus.subscribe(alloc_id))
@@ -167,7 +166,11 @@ fn given_named_subscriber(world: &mut LatticeWorld, sub_name: String, alloc_name
 #[given(regex = r#"^a slow subscriber for allocation "([^"]+)"$"#)]
 fn given_slow_subscriber(world: &mut LatticeWorld, alloc_name: String) {
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
-    let bus = world.event_bus.as_ref().expect("event bus not created").clone();
+    let bus = world
+        .event_bus
+        .as_ref()
+        .expect("event bus not created")
+        .clone();
 
     let mut rx = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(bus.subscribe(alloc_id))
@@ -203,21 +206,27 @@ fn publish_state_change(
     new_state: String,
 ) {
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
-    let bus = world.event_bus.as_ref().expect("event bus not created").clone();
+    let bus = world
+        .event_bus
+        .as_ref()
+        .expect("event bus not created")
+        .clone();
     let event = AllocationEvent::StateChange {
         allocation_id: alloc_id,
         old_state,
         new_state,
     };
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(bus.publish(event))
-    });
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(bus.publish(event)));
 }
 
 #[when(regex = r#"^(\d+) log lines are published for "([^"]+)"$"#)]
 fn publish_log_lines(world: &mut LatticeWorld, count: usize, alloc_name: String) {
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
-    let bus = world.event_bus.as_ref().expect("event bus not created").clone();
+    let bus = world
+        .event_bus
+        .as_ref()
+        .expect("event bus not created")
+        .clone();
     for i in 0..count {
         let event = AllocationEvent::LogLine {
             allocation_id: alloc_id,
@@ -225,15 +234,19 @@ fn publish_log_lines(world: &mut LatticeWorld, count: usize, alloc_name: String)
             stream: LogStream::Stdout,
         };
         tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(bus.publish(event))
-    });
+            tokio::runtime::Handle::current().block_on(bus.publish(event))
+        });
     }
 }
 
 #[when(regex = r#"^(\d+) metric samples are published for "([^"]+)"$"#)]
 fn publish_metric_samples(world: &mut LatticeWorld, count: usize, alloc_name: String) {
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
-    let bus = world.event_bus.as_ref().expect("event bus not created").clone();
+    let bus = world
+        .event_bus
+        .as_ref()
+        .expect("event bus not created")
+        .clone();
     for i in 0..count {
         let event = AllocationEvent::MetricPoint {
             allocation_id: alloc_id,
@@ -242,15 +255,19 @@ fn publish_metric_samples(world: &mut LatticeWorld, count: usize, alloc_name: St
             timestamp_epoch_ms: 1000 + i as u64,
         };
         tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(bus.publish(event))
-    });
+            tokio::runtime::Handle::current().block_on(bus.publish(event))
+        });
     }
 }
 
 #[when(regex = r#"^(\d+) events are published rapidly for "([^"]+)"$"#)]
 fn when_rapid_events(world: &mut LatticeWorld, count: usize, alloc_name: String) {
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
-    let bus = world.event_bus.as_ref().expect("event bus not created").clone();
+    let bus = world
+        .event_bus
+        .as_ref()
+        .expect("event bus not created")
+        .clone();
 
     let start = std::time::Instant::now();
     for i in 0..count {
@@ -260,8 +277,8 @@ fn when_rapid_events(world: &mut LatticeWorld, count: usize, alloc_name: String)
             stream: LogStream::Stdout,
         };
         tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(bus.publish(event))
-    });
+            tokio::runtime::Handle::current().block_on(bus.publish(event))
+        });
     }
     let elapsed = start.elapsed();
 
@@ -300,12 +317,7 @@ fn when_subscriber_disconnects(world: &mut LatticeWorld) {
 }
 
 #[when(regex = r#"^events are published in order: "(\w+)" to "(\w+)" to "(\w+)"$"#)]
-fn when_ordered_events(
-    world: &mut LatticeWorld,
-    state1: String,
-    state2: String,
-    state3: String,
-) {
+fn when_ordered_events(world: &mut LatticeWorld, state1: String, state2: String, state3: String) {
     // Publish to the last subscribed allocation (alloc-ordered).
     let alloc_name = world
         .received_events
@@ -314,7 +326,11 @@ fn when_ordered_events(
         .cloned()
         .expect("no subscriber found");
     let alloc_id = get_or_create_alloc_id(world, &alloc_name);
-    let bus = world.event_bus.as_ref().expect("event bus not created").clone();
+    let bus = world
+        .event_bus
+        .as_ref()
+        .expect("event bus not created")
+        .clone();
 
     let event1 = AllocationEvent::StateChange {
         allocation_id: alloc_id,
@@ -327,12 +343,8 @@ fn when_ordered_events(
         new_state: state3,
     };
 
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(bus.publish(event1))
-    });
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(bus.publish(event2))
-    });
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(bus.publish(event1)));
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(bus.publish(event2)));
 }
 
 // ─── Then Steps ────────────────────────────────────────────
@@ -522,12 +534,8 @@ fn then_events_in_order(world: &mut LatticeWorld) {
         // Verify the events came in the order they were published.
         // This is guaranteed by broadcast channel ordering.
         if let (
-            AllocationEvent::StateChange {
-                new_state: ns1, ..
-            },
-            AllocationEvent::StateChange {
-                old_state: os2, ..
-            },
+            AllocationEvent::StateChange { new_state: ns1, .. },
+            AllocationEvent::StateChange { old_state: os2, .. },
         ) = (&events[i], &events[i + 1])
         {
             assert_eq!(

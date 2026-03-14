@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::parse_allocation_state;
+use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 

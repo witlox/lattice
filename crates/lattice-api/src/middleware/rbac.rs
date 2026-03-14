@@ -144,9 +144,7 @@ impl RbacPolicy {
             Role::Operator => {
                 match op {
                     // Operators can drain/undrain/disable nodes.
-                    Operation::DrainNode
-                    | Operation::UndrainNode
-                    | Operation::DisableNode => true,
+                    Operation::DrainNode | Operation::UndrainNode | Operation::DisableNode => true,
                     // Cannot create tenants or manage federation.
                     Operation::CreateTenant
                     | Operation::UpdateTenant

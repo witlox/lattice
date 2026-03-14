@@ -13,9 +13,12 @@ use uuid::Uuid;
 fn given_new_node_not_registered(world: &mut LatticeWorld, node_id: String) {
     // Node exists conceptually but is not in the registry yet.
     // Store the id for later use; do NOT add to world.nodes or registry.
-    world
-        .nodes
-        .push(NodeBuilder::new().id(&node_id).state(NodeState::Unknown).build());
+    world.nodes.push(
+        NodeBuilder::new()
+            .id(&node_id)
+            .state(NodeState::Unknown)
+            .build(),
+    );
 }
 
 #[given(regex = r#"^a node "(\S+)" in "(\w+)" state$"#)]
@@ -42,15 +45,19 @@ fn given_node_undergoing_sensitive_wipe(world: &mut LatticeWorld, node_id: Strin
 
 #[given(regex = r#"^a node "(\S+)" with heartbeat sequence at (\d+)$"#)]
 fn given_node_with_heartbeat_sequence(world: &mut LatticeWorld, node_id: String, seq: u64) {
-    let node = NodeBuilder::new().id(&node_id).state(NodeState::Ready).build();
+    let node = NodeBuilder::new()
+        .id(&node_id)
+        .state(NodeState::Ready)
+        .build();
     world.nodes.push(node.clone());
-    world.registry.nodes.lock().unwrap().insert(node_id.clone(), node);
-    // Store the expected sequence number for later comparison.
     world
+        .registry
         .nodes
-        .last_mut()
+        .lock()
         .unwrap()
-        .owner_version = seq;
+        .insert(node_id.clone(), node);
+    // Store the expected sequence number for later comparison.
+    world.nodes.last_mut().unwrap().owner_version = seq;
 }
 
 #[given(regex = r#"^a heartbeat timeout of (\d+) seconds$"#)]
@@ -104,12 +111,7 @@ fn undrain_node(world: &mut LatticeWorld, idx: usize) {
 }
 
 #[when(regex = r#"^user "(\w[\w-]*)" claims node (\d+) for tenant "(\w[\w-]*)"$"#)]
-fn user_claims_node_for_tenant(
-    world: &mut LatticeWorld,
-    user: String,
-    idx: usize,
-    tenant: String,
-) {
+fn user_claims_node_for_tenant(world: &mut LatticeWorld, user: String, idx: usize, tenant: String) {
     let node_id = world.nodes[idx].id.clone();
     let ownership = NodeOwnership {
         tenant,
@@ -229,9 +231,7 @@ fn stale_heartbeat_received(world: &mut LatticeWorld, incoming_seq: u64) {
     let current_seq = node.owner_version;
     if incoming_seq < current_seq {
         // Stale heartbeat: reject it. Store rejection flag.
-        world.last_error = Some(LatticeError::Internal(
-            "stale_heartbeat_rejected".into(),
-        ));
+        world.last_error = Some(LatticeError::Internal("stale_heartbeat_rejected".into()));
     }
 }
 
@@ -369,7 +369,10 @@ fn operator_alert_raised(world: &mut LatticeWorld) {
 
 #[then("the stale heartbeat should be rejected")]
 fn stale_heartbeat_rejected(world: &mut LatticeWorld) {
-    let err = world.last_error.as_ref().expect("Expected stale heartbeat rejection");
+    let err = world
+        .last_error
+        .as_ref()
+        .expect("Expected stale heartbeat rejection");
     match err {
         LatticeError::Internal(msg) => {
             assert!(

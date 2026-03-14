@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::{parse_allocation_state, parse_scheduler_type};
+use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 
@@ -158,16 +158,13 @@ fn given_running_alloc_checkpoint_protocol(world: &mut LatticeWorld, protocol: S
 /// Used by: node_agent, data_staging features.
 #[given(regex = r#"^a node agent for node "([^"]+)" with (\d+) GPUs$"#)]
 fn given_node_agent(world: &mut LatticeWorld, node_id: String, gpu_count: u32) {
-    use std::sync::Arc;
     use lattice_node_agent::agent::NodeAgent;
-    
+    use std::sync::Arc;
+
     use lattice_node_agent::image_cache::ImageCache;
     use lattice_test_harness::mocks::*;
 
-    let node = NodeBuilder::new()
-        .id(&node_id)
-        .gpu_count(gpu_count)
-        .build();
+    let node = NodeBuilder::new().id(&node_id).gpu_count(gpu_count).build();
     let registry = Arc::new(MockNodeRegistry::new().with_nodes(vec![node.clone()]));
     let capabilities = NodeCapabilities {
         gpu_type: Some("GH200".to_string()),
@@ -255,7 +252,10 @@ fn user_attempts_claim(world: &mut LatticeWorld, user: String, idx: usize) {
 /// Used by: allocation, failure_modes features.
 #[when("the application process exits with non-zero status")]
 fn application_crashes(world: &mut LatticeWorld) {
-    let policy = world.requeue_policy.clone().unwrap_or_else(|| "never".into());
+    let policy = world
+        .requeue_policy
+        .clone()
+        .unwrap_or_else(|| "never".into());
     // Find the index of the running allocation, or fall back to the last one
     let idx = world
         .allocations
@@ -327,10 +327,7 @@ fn check_allocation_state(world: &mut LatticeWorld, expected: String) {
 #[then(regex = r#"^the allocation transitions to "([^"]+)"$"#)]
 fn then_allocation_transitions(world: &mut LatticeWorld, state_str: String) {
     let expected = parse_allocation_state(&state_str);
-    let found = world
-        .allocations
-        .iter()
-        .any(|a| a.state == expected);
+    let found = world.allocations.iter().any(|a| a.state == expected);
     assert!(
         found,
         "expected an allocation in state {state_str}, states: {:?}",
@@ -466,11 +463,11 @@ fn checkpoint_completes(world: &mut LatticeWorld) {
 /// Used by: failure_modes, federation, scheduling features.
 #[when("the scheduler runs a cycle")]
 fn when_scheduler_runs_cycle(world: &mut LatticeWorld) {
+    use chrono::Utc;
     use lattice_scheduler::cycle::{run_cycle, CycleInput};
     use lattice_scheduler::placement::PlacementDecision;
     use lattice_scheduler::resource_timeline::TimelineConfig;
     use std::collections::HashMap;
-    use chrono::Utc;
 
     // If we have a vCluster with real cost weights, use the full scheduler cycle
     if !world.vclusters.is_empty() {
@@ -520,22 +517,41 @@ fn when_scheduler_runs_cycle(world: &mut LatticeWorld) {
 
         for decision in &result.decisions {
             match decision {
-                PlacementDecision::Place { allocation_id, nodes }
-                | PlacementDecision::Backfill { allocation_id, nodes, .. } => {
-                    if let Some(alloc) = world.allocations.iter_mut().find(|a| a.id == *allocation_id) {
+                PlacementDecision::Place {
+                    allocation_id,
+                    nodes,
+                }
+                | PlacementDecision::Backfill {
+                    allocation_id,
+                    nodes,
+                    ..
+                } => {
+                    if let Some(alloc) = world
+                        .allocations
+                        .iter_mut()
+                        .find(|a| a.id == *allocation_id)
+                    {
                         alloc.state = AllocationState::Running;
                         alloc.assigned_nodes = nodes.clone();
                         alloc.started_at = Some(Utc::now());
                     }
                 }
-                PlacementDecision::Preempt { allocation_id, nodes, victims } => {
+                PlacementDecision::Preempt {
+                    allocation_id,
+                    nodes,
+                    victims,
+                } => {
                     for vid in victims {
                         if let Some(v) = world.allocations.iter_mut().find(|a| a.id == *vid) {
                             v.state = AllocationState::Suspended;
                             v.assigned_nodes.clear();
                         }
                     }
-                    if let Some(alloc) = world.allocations.iter_mut().find(|a| a.id == *allocation_id) {
+                    if let Some(alloc) = world
+                        .allocations
+                        .iter_mut()
+                        .find(|a| a.id == *allocation_id)
+                    {
                         alloc.state = AllocationState::Running;
                         alloc.assigned_nodes = nodes.clone();
                         alloc.started_at = Some(Utc::now());
@@ -547,18 +563,35 @@ fn when_scheduler_runs_cycle(world: &mut LatticeWorld) {
 
         // Store cycle metadata
         let mut meta = AllocationBuilder::new().build();
-        meta.tags.insert("__decisions_count".into(), result.decisions.len().to_string());
-        meta.tags.insert("__placed_count".into(), result.placed().len().to_string());
-        meta.tags.insert("__deferred_count".into(), result.deferred().len().to_string());
-        meta.tags.insert("__backfilled_count".into(), result.backfilled().len().to_string());
-        meta.tags.insert("__preemption_count".into(), result.preemptions().len().to_string());
+        meta.tags.insert(
+            "__decisions_count".into(),
+            result.decisions.len().to_string(),
+        );
+        meta.tags
+            .insert("__placed_count".into(), result.placed().len().to_string());
+        meta.tags.insert(
+            "__deferred_count".into(),
+            result.deferred().len().to_string(),
+        );
+        meta.tags.insert(
+            "__backfilled_count".into(),
+            result.backfilled().len().to_string(),
+        );
+        meta.tags.insert(
+            "__preemption_count".into(),
+            result.preemptions().len().to_string(),
+        );
         for (i, d) in result.placed().iter().enumerate() {
-            meta.tags.insert(format!("__placed_id_{i}"), d.allocation_id().to_string());
+            meta.tags
+                .insert(format!("__placed_id_{i}"), d.allocation_id().to_string());
         }
         for (i, d) in result.backfilled().iter().enumerate() {
-            meta.tags.insert(format!("__backfill_id_{i}"), d.allocation_id().to_string());
+            meta.tags
+                .insert(format!("__backfill_id_{i}"), d.allocation_id().to_string());
         }
-        world.named_allocations.insert("__cycle_result".into(), meta);
+        world
+            .named_allocations
+            .insert("__cycle_result".into(), meta);
     } else {
         // Simple simulation for scenarios without vClusters (failure_modes, federation)
         for alloc in &mut world.allocations {
@@ -593,8 +626,7 @@ fn then_warning_attached(world: &mut LatticeWorld) {
         .allocations
         .iter()
         .any(|a| a.tags.contains_key("staging_warning"));
-    if has_warning {
-    }
+    if has_warning {}
     // Cross_context: warning is informational, always passes
 }
 
@@ -686,8 +718,13 @@ fn when_allocation_requiring_n_nodes(world: &mut LatticeWorld, count: u32) {
         // Fallback: topology-aware group packing
         // If conformance fingerprints exist but no single group was large enough,
         // this is a "topology_fallback". Otherwise it's "group_packed".
-        let fallback_mode = if has_explicit_conformance { "topology_fallback" } else { "group_packed" };
-        let mut by_group: std::collections::HashMap<u32, Vec<&Node>> = std::collections::HashMap::new();
+        let fallback_mode = if has_explicit_conformance {
+            "topology_fallback"
+        } else {
+            "group_packed"
+        };
+        let mut by_group: std::collections::HashMap<u32, Vec<&Node>> =
+            std::collections::HashMap::new();
         for n in &filtered {
             by_group.entry(n.group).or_default().push(n);
         }
@@ -699,7 +736,9 @@ fn when_allocation_requiring_n_nodes(world: &mut LatticeWorld, count: u32) {
                     .take(count as usize)
                     .map(|n| n.id.clone())
                     .collect();
-                alloc.tags.insert("placement_mode".into(), fallback_mode.into());
+                alloc
+                    .tags
+                    .insert("placement_mode".into(), fallback_mode.into());
                 alloc.state = AllocationState::Running;
                 placed = true;
                 break;
@@ -713,7 +752,9 @@ fn when_allocation_requiring_n_nodes(world: &mut LatticeWorld, count: u32) {
                 .collect();
             if alloc.assigned_nodes.len() == count as usize {
                 alloc.state = AllocationState::Running;
-                alloc.tags.insert("placement_mode".into(), "topology_fallback".into());
+                alloc
+                    .tags
+                    .insert("placement_mode".into(), "topology_fallback".into());
             }
         }
     }

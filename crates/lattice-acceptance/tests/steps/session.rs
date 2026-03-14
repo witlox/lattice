@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::parse_allocation_state;
+use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 
@@ -68,9 +68,7 @@ fn delete_session(world: &mut LatticeWorld) {
 
 #[when(regex = r#"^user "(\w[\w-]*)" attempts to create another session$"#)]
 fn user_attempts_session(world: &mut LatticeWorld, user: String) {
-    let max = world
-        .session_max_per_user
-        .expect("max_per_user not set");
+    let max = world.session_max_per_user.expect("max_per_user not set");
     let active = world
         .active_sessions_per_user
         .get(&user)
@@ -92,10 +90,7 @@ fn user_attempts_session(world: &mut LatticeWorld, user: String) {
         world.allocations.push(alloc);
         world.session_alloc_idx = Some(idx);
         world.session_indices.push(idx);
-        let count = world
-            .active_sessions_per_user
-            .entry(user)
-            .or_insert(0);
+        let count = world.active_sessions_per_user.entry(user).or_insert(0);
         *count += 1;
     }
 }
@@ -201,10 +196,7 @@ fn listing_sessions_for_tenant(world: &mut LatticeWorld, tenant: String, expecte
     let count = world
         .allocations
         .iter()
-        .filter(|a| {
-            a.tenant == tenant
-                && a.tags.get("session").map(|v| v.as_str()) == Some("true")
-        })
+        .filter(|a| a.tenant == tenant && a.tags.get("session").map(|v| v.as_str()) == Some("true"))
         .count();
     assert_eq!(
         count, expected,
@@ -253,10 +245,7 @@ fn both_sessions_separate(world: &mut LatticeWorld) {
     );
     let id0 = world.allocations[world.session_indices[0]].id;
     let id1 = world.allocations[world.session_indices[1]].id;
-    assert_ne!(
-        id0, id1,
-        "Sessions should have different allocation IDs"
-    );
+    assert_ne!(id0, id1, "Sessions should have different allocation IDs");
 }
 
 #[then("each session should be on a different node")]

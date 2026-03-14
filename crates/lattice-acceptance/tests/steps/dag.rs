@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use cucumber::{given, then, when};
 use uuid::Uuid;
 
-use crate::LatticeWorld;
 use super::helpers::parse_allocation_state;
+use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_scheduler::cycle::{run_cycle, CycleInput};
-use lattice_scheduler::dag::{validate_dag, resolve_dependencies, DEFAULT_MAX_DAG_SIZE, DagError};
+use lattice_scheduler::dag::{resolve_dependencies, validate_dag, DagError, DEFAULT_MAX_DAG_SIZE};
 use lattice_scheduler::placement::PlacementDecision;
 use lattice_scheduler::resource_timeline::TimelineConfig;
 use lattice_test_harness::fixtures::*;
@@ -217,7 +217,11 @@ fn scheduler_runs_dag_cycle(world: &mut LatticeWorld) {
                 ..
             } => {
                 // Update the allocation in world.allocations
-                if let Some(alloc) = world.allocations.iter_mut().find(|a| a.id == *allocation_id) {
+                if let Some(alloc) = world
+                    .allocations
+                    .iter_mut()
+                    .find(|a| a.id == *allocation_id)
+                {
                     alloc.state = AllocationState::Running;
                     alloc.assigned_nodes = nodes.clone();
                     alloc.started_at = Some(chrono::Utc::now());
@@ -332,7 +336,8 @@ fn has_dependency(world: &mut LatticeWorld, name: String, dep_name: String, cond
     let expected_condition = parse_dep_condition(&condition);
 
     let found = alloc.depends_on.iter().any(|d| {
-        d.ref_id == dep_id && std::mem::discriminant(&d.condition) == std::mem::discriminant(&expected_condition)
+        d.ref_id == dep_id
+            && std::mem::discriminant(&d.condition) == std::mem::discriminant(&expected_condition)
     });
 
     assert!(
@@ -352,10 +357,7 @@ fn shared_dag_id(world: &mut LatticeWorld) {
         .filter(|a| a.dag_id.is_some())
         .collect();
 
-    assert!(
-        !dag_allocs.is_empty(),
-        "No allocations with dag_id found"
-    );
+    assert!(!dag_allocs.is_empty(), "No allocations with dag_id found");
 
     for alloc in &dag_allocs {
         assert_eq!(
@@ -369,11 +371,7 @@ fn shared_dag_id(world: &mut LatticeWorld) {
 #[then("the DAG should fail validation with a cycle error")]
 fn dag_cycle_error(world: &mut LatticeWorld) {
     // Rebuild the allocations with UUID-based ref_ids and validate
-    let dag_allocs: Vec<Allocation> = world
-        .named_allocations
-        .values()
-        .cloned()
-        .collect();
+    let dag_allocs: Vec<Allocation> = world.named_allocations.values().cloned().collect();
 
     let result = validate_dag(&dag_allocs, DEFAULT_MAX_DAG_SIZE);
     assert_eq!(
@@ -452,7 +450,11 @@ fn should_become_eligible(world: &mut LatticeWorld, name: String) {
 }
 
 #[then(regex = r#"^"(\w[\w-]*)" should remain "(\w+)" with unsatisfied dependencies$"#)]
-fn should_remain_with_unsatisfied_deps(world: &mut LatticeWorld, name: String, expected_str: String) {
+fn should_remain_with_unsatisfied_deps(
+    world: &mut LatticeWorld,
+    name: String,
+    expected_str: String,
+) {
     let expected = parse_allocation_state(&expected_str);
     let alloc = world
         .named_allocations
@@ -511,12 +513,7 @@ fn all_depend_on(
 }
 
 #[then(regex = r#"^"([\w-]+)", "([\w-]+)", "([\w-]+)" can run in parallel$"#)]
-fn can_run_in_parallel(
-    world: &mut LatticeWorld,
-    name_a: String,
-    name_b: String,
-    name_c: String,
-) {
+fn can_run_in_parallel(world: &mut LatticeWorld, name_a: String, name_b: String, name_c: String) {
     // Verify none of the three depend on each other
     let names = [&name_a, &name_b, &name_c];
     let ids: Vec<String> = names
@@ -548,12 +545,7 @@ fn can_run_in_parallel(
 }
 
 #[then(regex = r#"^"(\w[\w-]*)" should depend on both "(\w[\w-]*)" and "(\w[\w-]*)"$"#)]
-fn depends_on_both(
-    world: &mut LatticeWorld,
-    name: String,
-    dep_a: String,
-    dep_b: String,
-) {
+fn depends_on_both(world: &mut LatticeWorld, name: String, dep_a: String, dep_b: String) {
     let alloc = world
         .named_allocations
         .get(&name)

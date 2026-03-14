@@ -8,12 +8,7 @@ use lattice_test_harness::fixtures::*;
 // ─── Given Steps ───────────────────────────────────────────
 
 #[given(regex = r#"^(\d+) nodes with GPU type "([^"]+)" in group (\d+)$"#)]
-fn given_gpu_type_nodes(
-    world: &mut LatticeWorld,
-    count: usize,
-    gpu_type: String,
-    group: u32,
-) {
+fn given_gpu_type_nodes(world: &mut LatticeWorld, count: usize, gpu_type: String, group: u32) {
     for i in 0..count {
         let node = NodeBuilder::new()
             .id(&format!("gpu-{gpu_type}-g{group}-{i}"))
@@ -25,12 +20,7 @@ fn given_gpu_type_nodes(
 }
 
 #[given(regex = r#"^(\d+) nodes with (\d+) GPUs each in group (\d+)$"#)]
-fn given_gpu_count_nodes(
-    world: &mut LatticeWorld,
-    count: usize,
-    gpus: u32,
-    group: u32,
-) {
+fn given_gpu_count_nodes(world: &mut LatticeWorld, count: usize, gpus: u32, group: u32) {
     for i in 0..count {
         let node = NodeBuilder::new()
             .id(&format!("gpu{gpus}-g{group}-{i}"))
@@ -66,12 +56,7 @@ fn given_pcie_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
 }
 
 #[given(regex = r#"^(\d+) nodes with (\d+)GB GPU memory in group (\d+)$"#)]
-fn given_gpu_memory_nodes(
-    world: &mut LatticeWorld,
-    count: usize,
-    gpu_mem_gb: u64,
-    group: u32,
-) {
+fn given_gpu_memory_nodes(world: &mut LatticeWorld, count: usize, gpu_mem_gb: u64, group: u32) {
     for i in 0..count {
         let node = NodeBuilder::new()
             .id(&format!("gpumem{gpu_mem_gb}-g{group}-{i}"))
@@ -176,7 +161,9 @@ fn when_requiring_multi_gpu(world: &mut LatticeWorld) {
 
     if !filtered.is_empty() {
         alloc.assigned_nodes = filtered.iter().map(|n| n.id.clone()).collect();
-        alloc.tags.insert("gpu_interconnect".into(), "nvlink".into());
+        alloc
+            .tags
+            .insert("gpu_interconnect".into(), "nvlink".into());
     } else {
         // Fallback to PCIe nodes.
         alloc.assigned_nodes = node_refs.iter().map(|n| n.id.clone()).collect();
@@ -207,7 +194,9 @@ fn when_requesting_gpus(world: &mut LatticeWorld) {
         .any(|n| n.capabilities.features.contains(&"nvlink".into()));
 
     if has_nvlink {
-        alloc.tags.insert("gpu_interconnect".into(), "nvlink".into());
+        alloc
+            .tags
+            .insert("gpu_interconnect".into(), "nvlink".into());
     } else {
         alloc.tags.insert("gpu_interconnect".into(), "pcie".into());
     }
@@ -379,7 +368,9 @@ fn then_placed_on_80gb_gpu(world: &mut LatticeWorld) {
             .find(|n| n.id == *node_id)
             .unwrap_or_else(|| panic!("Node {node_id} not found"));
         assert!(
-            node.capabilities.features.contains(&"gpu_memory_80gb".into()),
+            node.capabilities
+                .features
+                .contains(&"gpu_memory_80gb".into()),
             "Node {node_id} should have gpu_memory_80gb feature"
         );
     }

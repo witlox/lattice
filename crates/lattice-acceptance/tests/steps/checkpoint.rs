@@ -69,10 +69,7 @@ fn given_checkpoint_cost_exceeds_savings(world: &mut LatticeWorld) {
 #[given(regex = r#"^a running allocation in "(.+)" state$"#)]
 fn given_running_allocation_in_state(world: &mut LatticeWorld, state: String) {
     let alloc_state = crate::steps::helpers::parse_allocation_state(&state);
-    let mut alloc = AllocationBuilder::new()
-        .state(alloc_state)
-        .nodes(4)
-        .build();
+    let mut alloc = AllocationBuilder::new().state(alloc_state).nodes(4).build();
     alloc.assigned_nodes = (0..4).map(|i| format!("node-{i}")).collect();
     alloc.started_at = Some(Utc::now() - Duration::hours(1));
     world.allocations.push(alloc);
@@ -88,11 +85,7 @@ fn given_checkpoint_timeout(world: &mut LatticeWorld, minutes: u64) {
 }
 
 #[given(regex = r#"^a running allocation with (\d+) nodes in "(.+)" state$"#)]
-fn given_running_allocation_nodes_in_state(
-    world: &mut LatticeWorld,
-    nodes: usize,
-    state: String,
-) {
+fn given_running_allocation_nodes_in_state(world: &mut LatticeWorld, nodes: usize, state: String) {
     let alloc_state = crate::steps::helpers::parse_allocation_state(&state);
     let mut alloc = AllocationBuilder::new()
         .state(alloc_state)
@@ -114,12 +107,14 @@ fn given_non_preemptible_allocation(world: &mut LatticeWorld) {
 
 #[given("3 running allocations with different elapsed times")]
 fn given_three_running_allocations(world: &mut LatticeWorld) {
-    let durations = [Duration::minutes(15), Duration::hours(2), Duration::hours(6)];
+    let durations = [
+        Duration::minutes(15),
+        Duration::hours(2),
+        Duration::hours(6),
+    ];
     for (i, dur) in durations.iter().enumerate() {
         let mut alloc = make_running_alloc(4, *dur);
-        alloc
-            .tags
-            .insert("alloc_index".into(), i.to_string());
+        alloc.tags.insert("alloc_index".into(), i.to_string());
         world.allocations.push(alloc);
     }
 }
@@ -190,27 +185,21 @@ fn checkpoint_does_not_complete(_world: &mut LatticeWorld) {
 #[when("the application is still responsive")]
 fn application_is_responsive(world: &mut LatticeWorld) {
     if let Some(alloc) = world.allocations.last_mut() {
-        alloc
-            .tags
-            .insert("app_responsive".into(), "true".into());
+        alloc.tags.insert("app_responsive".into(), "true".into());
     }
 }
 
 #[when("the application is unresponsive")]
 fn application_is_unresponsive(world: &mut LatticeWorld) {
     if let Some(alloc) = world.allocations.last_mut() {
-        alloc
-            .tags
-            .insert("app_responsive".into(), "false".into());
+        alloc.tags.insert("app_responsive".into(), "false".into());
     }
 }
 
 #[when("3 nodes complete checkpoint successfully")]
 fn three_nodes_complete_checkpoint(world: &mut LatticeWorld) {
     if let Some(alloc) = world.allocations.last_mut() {
-        alloc
-            .tags
-            .insert("nodes_checkpointed".into(), "3".into());
+        alloc.tags.insert("nodes_checkpointed".into(), "3".into());
     }
 }
 
@@ -251,9 +240,7 @@ fn checkpoint_broker_runs_cycle(world: &mut LatticeWorld) {
     // Store the per-allocation results in tags.
     for (i, result) in results.iter().enumerate() {
         if let Some(alloc) = world.allocations.get_mut(i) {
-            alloc
-                .tags
-                .insert("cycle_evaluated".into(), "true".into());
+            alloc.tags.insert("cycle_evaluated".into(), "true".into());
             alloc
                 .tags
                 .insert("cycle_should_checkpoint".into(), result.to_string());
@@ -428,7 +415,12 @@ fn all_three_evaluated(world: &mut LatticeWorld) {
     let evaluated_count = world
         .allocations
         .iter()
-        .filter(|a| a.tags.get("cycle_evaluated").map(|v| v == "true").unwrap_or(false))
+        .filter(|a| {
+            a.tags
+                .get("cycle_evaluated")
+                .map(|v| v == "true")
+                .unwrap_or(false)
+        })
         .count();
     assert_eq!(
         evaluated_count, 3,

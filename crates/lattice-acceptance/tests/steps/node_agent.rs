@@ -6,7 +6,9 @@ use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_node_agent::agent::{AgentCommand, NodeAgent};
 use lattice_node_agent::data_stage::{MockDataStageExecutor, NoopDataStageExecutor};
-use lattice_node_agent::epilogue::{EpilogueConfig, EpiloguePipeline, NoopEpilogueReporter, NoopSensitiveWiper};
+use lattice_node_agent::epilogue::{
+    EpilogueConfig, EpiloguePipeline, NoopEpilogueReporter, NoopSensitiveWiper,
+};
 use lattice_node_agent::health::ObservedHealth;
 use lattice_node_agent::prologue::{NoopReporter, ProloguePipeline};
 use lattice_node_agent::runtime::{ExitStatus, MockRuntime, PrepareConfig, Runtime};
@@ -43,7 +45,10 @@ fn healthy_observed(gpu_count: u32) -> ObservedHealth {
 
 #[given(regex = r#"^a pre-cached image "([^"]+)"$"#)]
 fn given_pre_cached_image(world: &mut LatticeWorld, image_ref: String) {
-    let cache = world.image_cache.as_mut().expect("image cache not initialized");
+    let cache = world
+        .image_cache
+        .as_mut()
+        .expect("image cache not initialized");
     cache.insert(image_ref, 2 * 1024 * 1024 * 1024);
 }
 
@@ -121,7 +126,10 @@ async fn agent_completes_allocation(world: &mut LatticeWorld) {
 async fn run_prologue(world: &mut LatticeWorld) {
     let pipeline = ProloguePipeline::default();
     let runtime = MockRuntime::new();
-    let cache = world.image_cache.as_mut().expect("image cache not initialized");
+    let cache = world
+        .image_cache
+        .as_mut()
+        .expect("image cache not initialized");
     let alloc_id = Uuid::new_v4();
     let config = PrepareConfig {
         alloc_id,
@@ -136,7 +144,14 @@ async fn run_prologue(world: &mut LatticeWorld) {
         scratch_per_node: None,
     };
     let result = pipeline
-        .execute(alloc_id, &config, &runtime, cache, &NoopDataStageExecutor, &NoopReporter)
+        .execute(
+            alloc_id,
+            &config,
+            &runtime,
+            cache,
+            &NoopDataStageExecutor,
+            &NoopReporter,
+        )
         .await
         .unwrap();
     world.prologue_result = Some(result);
@@ -146,7 +161,10 @@ async fn run_prologue(world: &mut LatticeWorld) {
 async fn run_prologue_with_uenv(world: &mut LatticeWorld, uenv_ref: String) {
     let pipeline = ProloguePipeline::default();
     let runtime = MockRuntime::new();
-    let cache = world.image_cache.as_mut().expect("image cache not initialized");
+    let cache = world
+        .image_cache
+        .as_mut()
+        .expect("image cache not initialized");
     let alloc_id = Uuid::new_v4();
     let config = PrepareConfig {
         alloc_id,
@@ -161,7 +179,14 @@ async fn run_prologue_with_uenv(world: &mut LatticeWorld, uenv_ref: String) {
         scratch_per_node: None,
     };
     let result = pipeline
-        .execute(alloc_id, &config, &runtime, cache, &NoopDataStageExecutor, &NoopReporter)
+        .execute(
+            alloc_id,
+            &config,
+            &runtime,
+            cache,
+            &NoopDataStageExecutor,
+            &NoopReporter,
+        )
         .await
         .unwrap();
     world.prologue_result = Some(result);
@@ -171,7 +196,10 @@ async fn run_prologue_with_uenv(world: &mut LatticeWorld, uenv_ref: String) {
 async fn run_prologue_with_container(world: &mut LatticeWorld, image_ref: String) {
     let pipeline = ProloguePipeline::default();
     let runtime = MockRuntime::new();
-    let cache = world.image_cache.as_mut().expect("image cache not initialized");
+    let cache = world
+        .image_cache
+        .as_mut()
+        .expect("image cache not initialized");
     let alloc_id = Uuid::new_v4();
     let config = PrepareConfig {
         alloc_id,
@@ -186,7 +214,14 @@ async fn run_prologue_with_container(world: &mut LatticeWorld, image_ref: String
         scratch_per_node: None,
     };
     let result = pipeline
-        .execute(alloc_id, &config, &runtime, cache, &NoopDataStageExecutor, &NoopReporter)
+        .execute(
+            alloc_id,
+            &config,
+            &runtime,
+            cache,
+            &NoopDataStageExecutor,
+            &NoopReporter,
+        )
         .await
         .unwrap();
     world.prologue_result = Some(result);
@@ -201,7 +236,10 @@ async fn run_prologue_fails(world: &mut LatticeWorld) {
         prepare_error: Some("node unavailable".to_string()),
         ..Default::default()
     });
-    let cache = world.image_cache.as_mut().expect("image cache not initialized");
+    let cache = world
+        .image_cache
+        .as_mut()
+        .expect("image cache not initialized");
     let alloc_id = Uuid::new_v4();
     let config = PrepareConfig {
         alloc_id,
@@ -216,7 +254,14 @@ async fn run_prologue_fails(world: &mut LatticeWorld) {
         scratch_per_node: None,
     };
     let result = pipeline
-        .execute(alloc_id, &config, &runtime, cache, &NoopDataStageExecutor, &NoopReporter)
+        .execute(
+            alloc_id,
+            &config,
+            &runtime,
+            cache,
+            &NoopDataStageExecutor,
+            &NoopReporter,
+        )
         .await;
     // Store failure: prologue_result stays None, increment retry count
     assert!(result.is_err());
@@ -228,7 +273,10 @@ async fn run_prologue_fails(world: &mut LatticeWorld) {
 async fn run_prologue_for_allocation(world: &mut LatticeWorld) {
     let pipeline = ProloguePipeline::default();
     let runtime = MockRuntime::new();
-    let cache = world.image_cache.as_mut().expect("image cache not initialized");
+    let cache = world
+        .image_cache
+        .as_mut()
+        .expect("image cache not initialized");
     let alloc = world.allocations.last().expect("no allocation");
     let alloc_id = alloc.id;
     let data_mounts = alloc.data.mounts.clone();
@@ -399,19 +447,28 @@ fn agent_restarts_after_crash(world: &mut LatticeWorld) {
 
 #[then("the heartbeat should report healthy")]
 fn then_heartbeat_healthy(world: &mut LatticeWorld) {
-    let hb = world.last_heartbeat.as_ref().expect("no heartbeat generated");
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
     assert!(hb.healthy, "expected heartbeat to report healthy");
 }
 
 #[then("the heartbeat should report unhealthy")]
 fn then_heartbeat_unhealthy(world: &mut LatticeWorld) {
-    let hb = world.last_heartbeat.as_ref().expect("no heartbeat generated");
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
     assert!(!hb.healthy, "expected heartbeat to report unhealthy");
 }
 
 #[then(regex = r#"^the heartbeat sequence should be (\d+)$"#)]
 fn then_heartbeat_sequence(world: &mut LatticeWorld, expected: u64) {
-    let hb = world.last_heartbeat.as_ref().expect("no heartbeat generated");
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
     assert_eq!(
         hb.sequence, expected,
         "expected heartbeat sequence {expected}, got {}",
@@ -421,7 +478,10 @@ fn then_heartbeat_sequence(world: &mut LatticeWorld, expected: u64) {
 
 #[then(regex = r#"^the heartbeat issues should mention "([^"]+)"$"#)]
 fn then_heartbeat_issues_mention(world: &mut LatticeWorld, keyword: String) {
-    let hb = world.last_heartbeat.as_ref().expect("no heartbeat generated");
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
     let has_keyword = hb.issues.iter().any(|issue| issue.contains(&keyword));
     assert!(
         has_keyword,
@@ -487,7 +547,10 @@ fn then_eligible_for_retry(world: &mut LatticeWorld) {
 #[then("scratch directories should be cleaned up")]
 fn then_scratch_cleaned(world: &mut LatticeWorld) {
     let result = world.epilogue_result.as_ref().expect("no epilogue result");
-    assert!(result.cleaned_up, "expected scratch directories to be cleaned up");
+    assert!(
+        result.cleaned_up,
+        "expected scratch directories to be cleaned up"
+    );
 }
 
 #[then("an accounting event should be emitted")]
@@ -504,7 +567,10 @@ fn then_accounting_event_emitted(world: &mut LatticeWorld) {
 #[then("the sensitive wipe should have been performed")]
 fn then_sensitive_wipe_performed(world: &mut LatticeWorld) {
     let result = world.epilogue_result.as_ref().expect("no epilogue result");
-    assert!(result.sensitive_wiped, "expected sensitive wipe to be performed");
+    assert!(
+        result.sensitive_wiped,
+        "expected sensitive wipe to be performed"
+    );
 }
 
 #[then("the sensitive wipe should not have been performed")]
@@ -548,18 +614,17 @@ fn then_runtime_uses_sarus(world: &mut LatticeWorld) {
 #[then("data staging should execute before the entrypoint")]
 fn then_data_staging_executed(world: &mut LatticeWorld) {
     let result = world.prologue_result.as_ref().expect("no prologue result");
-    assert!(result.data_staged, "expected data staging to execute during prologue");
+    assert!(
+        result.data_staged,
+        "expected data staging to execute during prologue"
+    );
 }
 
 #[then(regex = r#"^the data mount should be available at "([^"]+)"$"#)]
 fn then_data_mount_available(world: &mut LatticeWorld, target: String) {
     // Verify the allocation has a data mount with the expected target
     let alloc = world.allocations.last().expect("no allocation");
-    let has_mount = alloc
-        .data
-        .mounts
-        .iter()
-        .any(|m| m.target == target);
+    let has_mount = alloc.data.mounts.iter().any(|m| m.target == target);
     assert!(
         has_mount,
         "expected data mount at '{target}', mounts: {:?}",
@@ -582,7 +647,10 @@ fn then_agent_forwards_checkpoint(world: &mut LatticeWorld) {
 fn then_heartbeat_includes_memory(world: &mut LatticeWorld) {
     // A healthy heartbeat was generated, which includes memory checks
     // The health checker verifies GPU, temperature, ECC, and network
-    let hb = world.last_heartbeat.as_ref().expect("no heartbeat generated");
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
     assert!(
         hb.healthy,
         "expected a healthy heartbeat that implicitly includes memory checks"
@@ -592,7 +660,10 @@ fn then_heartbeat_includes_memory(world: &mut LatticeWorld) {
 #[then("the heartbeat should include disk health")]
 fn then_heartbeat_includes_disk(world: &mut LatticeWorld) {
     // Disk health is part of the overall health status reported in the heartbeat
-    let hb = world.last_heartbeat.as_ref().expect("no heartbeat generated");
+    let hb = world
+        .last_heartbeat
+        .as_ref()
+        .expect("no heartbeat generated");
     // A healthy heartbeat with no issues indicates all subsystems passed
     assert!(
         hb.issues.is_empty(),

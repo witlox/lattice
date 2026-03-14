@@ -1,7 +1,7 @@
 use cucumber::{given, then, when};
 
-use crate::LatticeWorld;
 use super::helpers::parse_scheduler_type;
+use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 
@@ -88,7 +88,9 @@ fn attempt_delete_tenant(world: &mut LatticeWorld, name: String) {
     }
 }
 
-#[when(regex = r#"^I create vCluster "(\w[\w-]*)" for tenant "(\w[\w-]*)" with scheduler "(\w+)"$"#)]
+#[when(
+    regex = r#"^I create vCluster "(\w[\w-]*)" for tenant "(\w[\w-]*)" with scheduler "(\w+)"$"#
+)]
 fn create_vcluster_for_tenant(
     world: &mut LatticeWorld,
     vc_name: String,
@@ -137,10 +139,7 @@ fn tenant_has_strict_isolation(world: &mut LatticeWorld, name: String) {
 fn quota_change_immediate(world: &mut LatticeWorld) {
     // In acceptance tests, quota changes are applied in-memory immediately.
     // The updated value is already verified by the max_nodes check.
-    assert!(
-        !world.tenants.is_empty(),
-        "Expected at least one tenant"
-    );
+    assert!(!world.tenants.is_empty(), "Expected at least one tenant");
 }
 
 #[then(regex = r#"^tenant "(\w[\w-]*)" should no longer exist$"#)]

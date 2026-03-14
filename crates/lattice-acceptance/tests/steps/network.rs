@@ -26,7 +26,8 @@ fn create_network_domain(name: &str, tenant: &str, vni: u32) -> NetworkDomain {
 fn given_slingshot_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
     let nodes = create_node_batch(count, group);
     for node in &nodes {
-        world.node_tags
+        world
+            .node_tags
             .entry(node.id.clone())
             .or_default()
             .insert("interconnect".into(), "slingshot".into());
@@ -37,11 +38,8 @@ fn given_slingshot_nodes(world: &mut LatticeWorld, count: usize, group: u32) {
 #[given(regex = r#"^(\d+) active network domains$"#)]
 fn given_active_domains(world: &mut LatticeWorld, count: usize) {
     for i in 0..count {
-        let domain = create_network_domain(
-            &format!("domain-{i}"),
-            "default-tenant",
-            1000 + i as u32,
-        );
+        let domain =
+            create_network_domain(&format!("domain-{i}"), "default-tenant", 1000 + i as u32);
         world.network_domains.push(domain);
     }
 }
@@ -56,11 +54,7 @@ fn given_domain_with_vni(world: &mut LatticeWorld, vni: u32) {
 fn given_vni_pool_exhausted(world: &mut LatticeWorld, in_use: u32, total: u32) {
     assert_eq!(in_use, total, "Pool should be fully exhausted");
     for i in 0..total {
-        let domain = create_network_domain(
-            &format!("domain-{i}"),
-            "default-tenant",
-            1000 + i,
-        );
+        let domain = create_network_domain(&format!("domain-{i}"), "default-tenant", 1000 + i);
         world.network_domains.push(domain);
     }
 }
@@ -197,7 +191,9 @@ fn when_new_domain_created(world: &mut LatticeWorld) {
     world.network_domains.push(new_domain);
 }
 
-#[when(regex = r#"^an allocation from tenant "(\w[\w-]*)" requests to join a domain owned by tenant "(\w[\w-]*)"$"#)]
+#[when(
+    regex = r#"^an allocation from tenant "(\w[\w-]*)" requests to join a domain owned by tenant "(\w[\w-]*)"$"#
+)]
 fn when_cross_tenant_domain(
     world: &mut LatticeWorld,
     requesting_tenant: String,
@@ -242,23 +238,19 @@ fn when_alloc_with_domain_submitted(world: &mut LatticeWorld) {
         .map(|t| t.id.clone())
         .unwrap_or_else(|| "default-tenant".into());
 
-    let has_slingshot = world
-        .nodes
-        .iter()
-        .any(|n| {
-            world.node_tags
-                .get(&n.id)
-                .and_then(|tags| tags.get("interconnect"))
-                .map(|v| v == "slingshot")
-                .unwrap_or(false)
-        });
+    let has_slingshot = world.nodes.iter().any(|n| {
+        world
+            .node_tags
+            .get(&n.id)
+            .and_then(|tags| tags.get("interconnect"))
+            .map(|v| v == "slingshot")
+            .unwrap_or(false)
+    });
 
     let mut domain = create_network_domain("cxi-domain", &tenant, 5001);
     if has_slingshot {
         // Assign CXI credentials to the domain.
-        domain
-            .member_allocations
-            .push(Uuid::new_v4()); // placeholder
+        domain.member_allocations.push(Uuid::new_v4()); // placeholder
     }
 
     let mut alloc = AllocationBuilder::new()
@@ -270,9 +262,7 @@ fn when_alloc_with_domain_submitted(world: &mut LatticeWorld) {
         .tags
         .insert("network_domain".into(), domain.name.clone());
     if has_slingshot {
-        alloc
-            .tags
-            .insert("cxi_credentials".into(), "true".into());
+        alloc.tags.insert("cxi_credentials".into(), "true".into());
         alloc.tags.insert("cxi_vni".into(), domain.vni.to_string());
         alloc
             .tags
@@ -287,10 +277,7 @@ fn when_alloc_with_domain_submitted(world: &mut LatticeWorld) {
 
 #[then("both allocations should be assigned the same network domain")]
 fn then_same_network_domain(world: &mut LatticeWorld) {
-    assert!(
-        world.allocations.len() >= 2,
-        "Need at least 2 allocations"
-    );
+    assert!(world.allocations.len() >= 2, "Need at least 2 allocations");
     let d1 = world.allocations[world.allocations.len() - 2]
         .tags
         .get("network_domain");
@@ -309,10 +296,7 @@ fn then_same_network_domain(world: &mut LatticeWorld) {
 
 #[then("each allocation should have its own network domain")]
 fn then_separate_network_domains(world: &mut LatticeWorld) {
-    assert!(
-        world.allocations.len() >= 2,
-        "Need at least 2 allocations"
-    );
+    assert!(world.allocations.len() >= 2, "Need at least 2 allocations");
     let d1 = world.allocations[world.allocations.len() - 2]
         .tags
         .get("network_domain");

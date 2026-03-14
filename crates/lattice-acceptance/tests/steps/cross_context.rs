@@ -1,10 +1,9 @@
-
 use cucumber::{given, then, when};
 use uuid::Uuid;
 
-use crate::LatticeWorld;
 use super::helpers::parse_allocation_state;
-use lattice_common::traits::{AuditAction, AuditEntry, AuditLog, AllocationStore, NodeRegistry};
+use crate::LatticeWorld;
+use lattice_common::traits::{AllocationStore, AuditAction, AuditEntry, AuditLog, NodeRegistry};
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 
@@ -17,7 +16,12 @@ use lattice_test_harness::fixtures::*;
 #[given(regex = r#"^node "([^"]+)" is unowned$"#)]
 fn given_node_unowned(world: &mut LatticeWorld, node_id: String) {
     let node = NodeBuilder::new().id(&node_id).build();
-    world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
+    world
+        .registry
+        .nodes
+        .lock()
+        .unwrap()
+        .insert(node.id.clone(), node.clone());
     world.nodes.push(node);
 }
 
@@ -29,18 +33,24 @@ fn given_hpc_proposes(world: &mut LatticeWorld, alloc_name: String, node_id: Str
     world.named_allocations.insert(alloc_name, alloc);
 }
 
-#[given(regex = r#"^the Service vCluster scheduler simultaneously proposes allocation "([^"]+)" on node "([^"]+)"$"#)]
+#[given(
+    regex = r#"^the Service vCluster scheduler simultaneously proposes allocation "([^"]+)" on node "([^"]+)"$"#
+)]
 fn given_service_proposes(world: &mut LatticeWorld, alloc_name: String, node_id: String) {
     let mut alloc = AllocationBuilder::new().nodes(1).build();
     alloc.assigned_nodes = vec![node_id];
-    alloc.tags.insert("proposal_source".into(), "service".into());
+    alloc
+        .tags
+        .insert("proposal_source".into(), "service".into());
     world.named_allocations.insert(alloc_name, alloc);
 }
 
 #[when("the quorum processes both proposals")]
 fn when_quorum_processes_both(world: &mut LatticeWorld) {
     // Simulate linearized proposal processing: first wins, second conflicts
-    let allocs: Vec<(String, Allocation)> = world.named_allocations.iter()
+    let allocs: Vec<(String, Allocation)> = world
+        .named_allocations
+        .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     if allocs.len() >= 2 {
@@ -55,21 +65,28 @@ fn when_quorum_processes_both(world: &mut LatticeWorld) {
             is_borrowed: false,
         };
         // Claim succeeds for first
-        let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.registry.claim_node(node_id, ownership)));
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(world.registry.claim_node(node_id, ownership))
+        });
         world.named_allocations.get_mut(name1).unwrap().state = AllocationState::Running;
 
         // Second proposal conflicts
         let (name2, _alloc2) = &allocs[1];
-        world.named_allocations.get_mut(name2).unwrap().tags.insert(
-            "rejection_reason".into(),
-            "ownership_conflict".into(),
-        );
+        world
+            .named_allocations
+            .get_mut(name2)
+            .unwrap()
+            .tags
+            .insert("rejection_reason".into(), "ownership_conflict".into());
     }
 }
 
 #[then("exactly one proposal is committed")]
 fn then_one_committed(world: &mut LatticeWorld) {
-    let running = world.named_allocations.values()
+    let running = world
+        .named_allocations
+        .values()
         .filter(|a| a.state == AllocationState::Running)
         .count();
     assert_eq!(running, 1, "exactly one proposal should be committed");
@@ -77,10 +94,15 @@ fn then_one_committed(world: &mut LatticeWorld) {
 
 #[then(regex = r#"^the other proposal is rejected with reason "([^"]+)"$"#)]
 fn then_other_rejected(world: &mut LatticeWorld, reason: String) {
-    let rejected = world.named_allocations.values()
+    let rejected = world
+        .named_allocations
+        .values()
         .find(|a| a.state != AllocationState::Running)
         .expect("should have a rejected proposal");
-    let actual = rejected.tags.get("rejection_reason").expect("no rejection_reason tag");
+    let actual = rejected
+        .tags
+        .get("rejection_reason")
+        .expect("no rejection_reason tag");
     assert!(
         actual.contains(&reason),
         "expected rejection reason '{reason}', got '{actual}'"
@@ -90,10 +112,15 @@ fn then_other_rejected(world: &mut LatticeWorld, reason: String) {
 #[then("the rejected scheduler retries on the next scheduling cycle")]
 fn then_rejected_retries(world: &mut LatticeWorld) {
     // The rejected allocation should still be Pending (eligible for retry)
-    let pending = world.named_allocations.values()
+    let pending = world
+        .named_allocations
+        .values()
         .filter(|a| a.state == AllocationState::Pending)
         .count();
-    assert!(pending >= 1, "rejected proposal should remain Pending for retry");
+    assert!(
+        pending >= 1,
+        "rejected proposal should remain Pending for retry"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -114,8 +141,15 @@ fn given_node_assigned_committed(world: &mut LatticeWorld, node_id: String, allo
         claimed_by: None,
         is_borrowed: false,
     };
-    world.registry.nodes.lock().unwrap().insert(node.id.clone(), node.clone());
-    let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.registry.claim_node(&node_id, ownership)));
+    world
+        .registry
+        .nodes
+        .lock()
+        .unwrap()
+        .insert(node.id.clone(), node.clone());
+    let _ = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(world.registry.claim_node(&node_id, ownership))
+    });
     world.nodes.push(node);
     world.named_allocations.insert(alloc_name, alloc);
 }
@@ -134,7 +168,11 @@ fn when_service_scheduler_runs(_world: &mut LatticeWorld) {
 
 #[then(regex = r#"^it observes node "([^"]+)" as owned by "([^"]+)"$"#)]
 fn then_observes_owned(world: &mut LatticeWorld, node_id: String, alloc_name: String) {
-    let node = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.registry.get_node(&node_id)).unwrap());
+    let node = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current()
+            .block_on(world.registry.get_node(&node_id))
+            .unwrap()
+    });
     assert!(node.owner.is_some(), "node should be owned");
     let expected_id = world.named_allocations.get(&alloc_name).unwrap().id;
     assert_eq!(node.owner.unwrap().allocation, expected_id);
@@ -164,7 +202,10 @@ fn given_alloc_running_on_nodes(world: &mut LatticeWorld, name: String, nodes_st
 
 #[given(regex = r#"^allocation "([^"]+)" has checkpoint strategy "([^"]+)"$"#)]
 fn given_alloc_checkpoint_strategy(world: &mut LatticeWorld, name: String, strategy: String) {
-    let alloc = world.named_allocations.get_mut(&name).expect("allocation not found");
+    let alloc = world
+        .named_allocations
+        .get_mut(&name)
+        .expect("allocation not found");
     alloc.checkpoint = match strategy.as_str() {
         "auto" => CheckpointStrategy::Auto,
         "manual" => CheckpointStrategy::Manual,
@@ -175,15 +216,25 @@ fn given_alloc_checkpoint_strategy(world: &mut LatticeWorld, name: String, strat
 
 #[given(regex = r#"^the checkpoint broker sends a CHECKPOINT_HINT for "([^"]+)"$"#)]
 fn given_checkpoint_hint_sent(world: &mut LatticeWorld, name: String) {
-    let alloc = world.named_allocations.get_mut(&name).expect("allocation not found");
-    alloc.tags.insert("checkpoint_hint_sent".into(), "true".into());
+    let alloc = world
+        .named_allocations
+        .get_mut(&name)
+        .expect("allocation not found");
+    alloc
+        .tags
+        .insert("checkpoint_hint_sent".into(), "true".into());
 }
 
 #[when(regex = r#"^allocation "([^"]+)" completes successfully before the checkpoint begins$"#)]
 fn when_alloc_completes_before_checkpoint(world: &mut LatticeWorld, name: String) {
-    let alloc = world.named_allocations.get_mut(&name).expect("allocation not found");
+    let alloc = world
+        .named_allocations
+        .get_mut(&name)
+        .expect("allocation not found");
     alloc.state = AllocationState::Completed;
-    alloc.tags.insert("checkpoint_hint_sent".into(), "discarded".into());
+    alloc
+        .tags
+        .insert("checkpoint_hint_sent".into(), "discarded".into());
 }
 
 #[then("nodes are released normally")]
@@ -192,14 +243,19 @@ fn then_nodes_released(world: &mut LatticeWorld) {
     for alloc in world.named_allocations.values() {
         if alloc.state == AllocationState::Completed {
             // Nodes should be eligible for release
-            assert!(!alloc.assigned_nodes.is_empty() || true, "completed allocation releases nodes");
+            assert!(
+                !alloc.assigned_nodes.is_empty() || true,
+                "completed allocation releases nodes"
+            );
         }
     }
 }
 
 #[then("the checkpoint hint is discarded as a no-op")]
 fn then_checkpoint_hint_discarded(world: &mut LatticeWorld) {
-    let has_discarded = world.named_allocations.values()
+    let has_discarded = world
+        .named_allocations
+        .values()
         .any(|a| a.tags.get("checkpoint_hint_sent").map(|v| v.as_str()) == Some("discarded"));
     assert!(has_discarded, "checkpoint hint should be discarded");
 }
@@ -234,15 +290,23 @@ fn given_pending_needs_nodes(world: &mut LatticeWorld, class: u8, name: String, 
 
 #[given(regex = r#"^"([^"]+)" has preemption class (\d+)$"#)]
 fn given_preemption_class(world: &mut LatticeWorld, name: String, class: u8) {
-    let alloc = world.named_allocations.get_mut(&name).expect("allocation not found");
+    let alloc = world
+        .named_allocations
+        .get_mut(&name)
+        .expect("allocation not found");
     alloc.lifecycle.preemption_class = class;
 }
 
 #[when(regex = r#"^the scheduler initiates preemption of "([^"]+)"$"#)]
 fn when_preemption_initiated(world: &mut LatticeWorld, name: String) {
-    let alloc = world.named_allocations.get_mut(&name).expect("allocation not found");
+    let alloc = world
+        .named_allocations
+        .get_mut(&name)
+        .expect("allocation not found");
     alloc.state = AllocationState::Checkpointing;
-    alloc.tags.insert("preemption_initiated".into(), "true".into());
+    alloc
+        .tags
+        .insert("preemption_initiated".into(), "true".into());
 }
 
 #[then(regex = r#"^a CHECKPOINT_HINT is sent to "([^"]+)"'s node agents$"#)]
@@ -257,7 +321,10 @@ fn then_checkpoint_hint_sent(world: &mut LatticeWorld, name: String) {
 #[then(regex = r#"^"([^"]+)" transitions to "(\w+)"$"#)]
 fn then_named_transitions(world: &mut LatticeWorld, name: String, target: String) {
     let expected = parse_allocation_state(&target);
-    let alloc = world.named_allocations.get_mut(&name).expect("allocation not found");
+    let alloc = world
+        .named_allocations
+        .get_mut(&name)
+        .expect("allocation not found");
     alloc.state = expected.clone();
     assert_eq!(alloc.state, expected);
 }
@@ -267,7 +334,9 @@ fn when_checkpoint_completes_in_timeout(world: &mut LatticeWorld) {
     // Mark checkpoint as complete for all checkpointing allocations
     for alloc in world.named_allocations.values_mut() {
         if alloc.state == AllocationState::Checkpointing {
-            alloc.tags.insert("checkpoint_completed".into(), "true".into());
+            alloc
+                .tags
+                .insert("checkpoint_completed".into(), "true".into());
         }
     }
 }
@@ -285,7 +354,11 @@ fn then_alloc_nodes_released(world: &mut LatticeWorld, name: String) {
 #[then(regex = r#"^"([^"]+)" is proposed for the freed nodes$"#)]
 fn then_proposed_for_freed(world: &mut LatticeWorld, name: String) {
     let alloc = world.named_allocations.get(&name).unwrap();
-    assert_eq!(alloc.state, AllocationState::Pending, "{name} should be Pending, ready for proposal");
+    assert_eq!(
+        alloc.state,
+        AllocationState::Pending,
+        "{name} should be Pending, ready for proposal"
+    );
 }
 
 #[then(regex = r#"^"([^"]+)" re-enters the queue with its original submission time preserved$"#)]
@@ -319,12 +392,16 @@ fn given_tenant_uses_nodes(world: &mut LatticeWorld, tenant: String, used: u32) 
             .state(AllocationState::Running)
             .nodes(1)
             .build();
-        let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.store.insert(alloc.clone())));
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(world.store.insert(alloc.clone()))
+        });
         world.allocations.push(alloc);
     }
 }
 
-#[given(regex = r#"^the scheduler proposes allocation "([^"]+)" requiring (\d+) nodes for tenant "([^"]+)"$"#)]
+#[given(
+    regex = r#"^the scheduler proposes allocation "([^"]+)" requiring (\d+) nodes for tenant "([^"]+)"$"#
+)]
 fn given_scheduler_proposes(world: &mut LatticeWorld, name: String, nodes: u32, tenant: String) {
     let alloc = AllocationBuilder::new()
         .tenant(&tenant)
@@ -364,7 +441,9 @@ fn then_proposal_rejected(world: &mut LatticeWorld, name: String, reason: String
     let tenant_id = &alloc.tenant;
     let tenant = world.tenants.iter().find(|t| t.id == *tenant_id);
     if let Some(t) = tenant {
-        let running: u32 = world.allocations.iter()
+        let running: u32 = world
+            .allocations
+            .iter()
             .filter(|a| a.tenant == *tenant_id && a.state == AllocationState::Running)
             .count() as u32;
         let requested = match alloc.resources.nodes {
@@ -418,10 +497,15 @@ fn then_continues_running(world: &mut LatticeWorld, name: String) {
     assert_eq!(alloc.state, AllocationState::Running);
 }
 
-#[then(regex = r#"^new proposals for tenant "([^"]+)" are rejected until usage drops below (\d+)$"#)]
+#[then(
+    regex = r#"^new proposals for tenant "([^"]+)" are rejected until usage drops below (\d+)$"#
+)]
 fn then_new_proposals_rejected(world: &mut LatticeWorld, tenant: String, limit: u32) {
     let t = world.tenants.iter().find(|t| t.id == tenant).unwrap();
-    assert!(t.quota.max_nodes <= limit, "quota should be at or below {limit}");
+    assert!(
+        t.quota.max_nodes <= limit,
+        "quota should be at or below {limit}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -442,7 +526,9 @@ fn given_alloc_walltime_remaining(world: &mut LatticeWorld, name: String, _secs:
 fn given_checkpoint_in_progress(world: &mut LatticeWorld, name: String) {
     let alloc = world.named_allocations.get_mut(&name).unwrap();
     alloc.state = AllocationState::Checkpointing;
-    alloc.tags.insert("checkpoint_in_progress".into(), "true".into());
+    alloc
+        .tags
+        .insert("checkpoint_in_progress".into(), "true".into());
 }
 
 #[when("the walltime expires")]
@@ -469,16 +555,23 @@ fn then_checkpoint_grace_period(_world: &mut LatticeWorld, _secs: u32) {
 fn when_checkpoint_completes_in_grace(world: &mut LatticeWorld) {
     for alloc in world.named_allocations.values_mut() {
         if alloc.tags.get("checkpoint_in_progress").is_some() {
-            alloc.tags.insert("checkpoint_completed".into(), "true".into());
+            alloc
+                .tags
+                .insert("checkpoint_completed".into(), "true".into());
         }
     }
 }
 
 #[then("the checkpoint file is usable for restart")]
 fn then_checkpoint_file_usable(world: &mut LatticeWorld) {
-    let has_completed = world.named_allocations.values()
+    let has_completed = world
+        .named_allocations
+        .values()
         .any(|a| a.tags.get("checkpoint_completed").map(|v| v.as_str()) == Some("true"));
-    assert!(has_completed, "checkpoint should have completed successfully");
+    assert!(
+        has_completed,
+        "checkpoint should have completed successfully"
+    );
 }
 
 #[then(regex = r#"^"([^"]+)" transitions to "Suspended" \(not Failed\)$"#)]
@@ -492,14 +585,18 @@ fn then_suspended_not_failed(world: &mut LatticeWorld, name: String) {
 fn when_checkpoint_doesnt_complete(world: &mut LatticeWorld, _secs: u32) {
     for alloc in world.named_allocations.values_mut() {
         if alloc.tags.get("checkpoint_in_progress").is_some() {
-            alloc.tags.insert("checkpoint_timeout".into(), "true".into());
+            alloc
+                .tags
+                .insert("checkpoint_timeout".into(), "true".into());
         }
     }
 }
 
 #[then("SIGKILL is sent")]
 fn then_sigkill_sent(world: &mut LatticeWorld) {
-    let has_timeout = world.named_allocations.values()
+    let has_timeout = world
+        .named_allocations
+        .values()
         .any(|a| a.tags.get("checkpoint_timeout").is_some());
     assert!(has_timeout, "should have timed out, triggering SIGKILL");
 }
@@ -533,24 +630,53 @@ fn then_metric_incremented(_world: &mut LatticeWorld, _metric: String) {
 fn given_dag_3_stages(world: &mut LatticeWorld, s1: String, s2: String, s3: String) {
     let dag_id = Uuid::new_v4().to_string();
     world.dag_id = Some(dag_id.clone());
-    let a1 = AllocationBuilder::new().dag_id(&dag_id).tag("dag_stage", &s1).build();
-    let mut a2 = AllocationBuilder::new().dag_id(&dag_id).tag("dag_stage", &s2).build();
-    a2.depends_on.push(Dependency { ref_id: a1.id.to_string(), condition: DependencyCondition::Success });
-    let mut a3 = AllocationBuilder::new().dag_id(&dag_id).tag("dag_stage", &s3).build();
-    a3.depends_on.push(Dependency { ref_id: a2.id.to_string(), condition: DependencyCondition::Success });
+    let a1 = AllocationBuilder::new()
+        .dag_id(&dag_id)
+        .tag("dag_stage", &s1)
+        .build();
+    let mut a2 = AllocationBuilder::new()
+        .dag_id(&dag_id)
+        .tag("dag_stage", &s2)
+        .build();
+    a2.depends_on.push(Dependency {
+        ref_id: a1.id.to_string(),
+        condition: DependencyCondition::Success,
+    });
+    let mut a3 = AllocationBuilder::new()
+        .dag_id(&dag_id)
+        .tag("dag_stage", &s3)
+        .build();
+    a3.depends_on.push(Dependency {
+        ref_id: a2.id.to_string(),
+        condition: DependencyCondition::Success,
+    });
     world.named_allocations.insert(s1, a1);
     world.named_allocations.insert(s2, a2);
     world.named_allocations.insert(s3, a3);
 }
 
 #[given(regex = r#"^a DAG with stages "([^"]+)" -> "([^"]+)" sharing network domain "([^"]+)"$"#)]
-fn given_dag_2_stages_shared_domain(world: &mut LatticeWorld, s1: String, s2: String, domain: String) {
+fn given_dag_2_stages_shared_domain(
+    world: &mut LatticeWorld,
+    s1: String,
+    s2: String,
+    domain: String,
+) {
     let dag_id = Uuid::new_v4().to_string();
     world.dag_id = Some(dag_id.clone());
-    let mut a1 = AllocationBuilder::new().dag_id(&dag_id).tag("dag_stage", &s1).build();
+    let mut a1 = AllocationBuilder::new()
+        .dag_id(&dag_id)
+        .tag("dag_stage", &s1)
+        .build();
     a1.connectivity.network_domain = Some(domain.clone());
-    let mut a2 = AllocationBuilder::new().dag_id(&dag_id).tag("dag_stage", &s2).build();
-    a2.depends_on.push(Dependency { ref_id: a1.id.to_string(), condition: DependencyCondition::Success });
+    let mut a2 = AllocationBuilder::new()
+        .dag_id(&dag_id)
+        .tag("dag_stage", &s2)
+        .build();
+    a2.depends_on.push(Dependency {
+        ref_id: a1.id.to_string(),
+        condition: DependencyCondition::Success,
+    });
     a2.connectivity.network_domain = Some(domain.clone());
     world.named_allocations.insert(s1, a1);
     world.named_allocations.insert(s2, a2);
@@ -630,7 +756,11 @@ fn then_domain_grace_period(world: &mut LatticeWorld, _name: String, domain: Str
 #[when("another allocation's domain releases a VNI")]
 fn when_vni_released(world: &mut LatticeWorld) {
     // Release one VNI
-    if let Some(d) = world.network_domains.iter_mut().find(|d| d.name.starts_with("vni-")) {
+    if let Some(d) = world
+        .network_domains
+        .iter_mut()
+        .find(|d| d.name.starts_with("vni-"))
+    {
         d.state = NetworkDomainState::Released;
     }
 }
@@ -662,10 +792,15 @@ fn then_proceeds_to_scheduling(world: &mut LatticeWorld, name: String) {
     // Ready for scheduling
 }
 
-#[then(regex = r#"^"([^"]+)" joins the existing domain "([^"]+)" \(same VNI, no new allocation needed\)$"#)]
+#[then(
+    regex = r#"^"([^"]+)" joins the existing domain "([^"]+)" \(same VNI, no new allocation needed\)$"#
+)]
 fn then_joins_existing_domain(world: &mut LatticeWorld, name: String, domain: String) {
     let alloc = world.named_allocations.get(&name).unwrap();
-    assert_eq!(alloc.connectivity.network_domain.as_deref(), Some(domain.as_str()));
+    assert_eq!(
+        alloc.connectivity.network_domain.as_deref(),
+        Some(domain.as_str())
+    );
 }
 
 #[then(regex = r#"^"([^"]+)" proceeds to scheduling normally$"#)]
@@ -698,7 +833,10 @@ fn when_quorum_processes_claim(world: &mut LatticeWorld) {
             claimed_by: Some(user.clone()),
             is_borrowed: false,
         };
-        let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.registry.claim_node(&node.id, ownership)));
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(world.registry.claim_node(&node.id, ownership))
+        });
     }
     // Record audit
     let entry = AuditEntry {
@@ -710,7 +848,9 @@ fn when_quorum_processes_claim(world: &mut LatticeWorld) {
         previous_hash: String::new(),
         signature: String::new(),
     };
-    let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.audit.record(entry)));
+    let _ = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(world.audit.record(entry))
+    });
 }
 
 #[then(regex = r#"^an audit entry recording "([^"]+)" is Raft-committed$"#)]
@@ -803,7 +943,9 @@ fn when_user_attempts_attach_named(world: &mut LatticeWorld, user: String, _allo
             previous_hash: String::new(),
             signature: String::new(),
         };
-        let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.audit.record(entry)));
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(world.audit.record(entry))
+        });
     }
 }
 
@@ -835,19 +977,26 @@ fn given_alloc_being_preempted(world: &mut LatticeWorld, name: String) {
 fn given_checkpoint_hint_to_agent(world: &mut LatticeWorld, name: String, node_id: String) {
     let alloc = world.named_allocations.get_mut(&name).unwrap();
     alloc.assigned_nodes = vec![node_id];
-    alloc.tags.insert("checkpoint_hint_sent".into(), "true".into());
+    alloc
+        .tags
+        .insert("checkpoint_hint_sent".into(), "true".into());
 }
 
 #[when(regex = r#"^the node agent on "([^"]+)" crashes$"#)]
 fn when_node_agent_crashes(world: &mut LatticeWorld, node_id: String) {
     if let Some(node) = world.nodes.iter_mut().find(|n| n.id == node_id) {
-        node.state = NodeState::Down { reason: "agent_crash".into() };
+        node.state = NodeState::Down {
+            reason: "agent_crash".into(),
+        };
     }
     // Fail allocations on this node
     for alloc in world.named_allocations.values_mut() {
         if alloc.assigned_nodes.contains(&node_id) {
             alloc.state = AllocationState::Failed;
-            alloc.tags.insert("failure_reason".into(), "node_crash_during_checkpoint".into());
+            alloc.tags.insert(
+                "failure_reason".into(),
+                "node_crash_during_checkpoint".into(),
+            );
         }
     }
 }
@@ -898,7 +1047,8 @@ fn given_sensitive_completed_on_node(world: &mut LatticeWorld, name: String, nod
 
 #[given(regex = r#"^node "([^"]+)" is undergoing secure wipe via OpenCHAMI$"#)]
 fn given_node_undergoing_wipe(world: &mut LatticeWorld, node_id: String) {
-    world.node_tags
+    world
+        .node_tags
         .entry(node_id)
         .or_default()
         .insert("secure_wipe".into(), "in_progress".into());
@@ -907,9 +1057,12 @@ fn given_node_undergoing_wipe(world: &mut LatticeWorld, node_id: String) {
 #[when(regex = r#"^the node agent on "([^"]+)" crashes during wipe$"#)]
 fn when_agent_crashes_during_wipe(world: &mut LatticeWorld, node_id: String) {
     if let Some(node) = world.nodes.iter_mut().find(|n| n.id == node_id) {
-        node.state = NodeState::Down { reason: "wipe_failure".into() };
+        node.state = NodeState::Down {
+            reason: "wipe_failure".into(),
+        };
     }
-    world.node_tags
+    world
+        .node_tags
         .entry(node_id)
         .or_default()
         .insert("quarantined".into(), "true".into());
@@ -919,7 +1072,8 @@ fn when_agent_crashes_during_wipe(world: &mut LatticeWorld, node_id: String) {
 fn then_enters_quarantine(world: &mut LatticeWorld, node_id: String) {
     let node = world.nodes.iter().find(|n| n.id == node_id).unwrap();
     assert!(matches!(node.state, NodeState::Down { .. }));
-    let quarantined = world.node_tags
+    let quarantined = world
+        .node_tags
         .get(&node_id)
         .and_then(|tags| tags.get("quarantined"))
         .map(|v| v.as_str());
@@ -943,7 +1097,9 @@ fn then_critical_audit_committed(world: &mut LatticeWorld) {
         previous_hash: String::new(),
         signature: String::new(),
     };
-    let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.audit.record(entry)));
+    let _ = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(world.audit.record(entry))
+    });
 }
 
 #[then("an alert is raised for operator intervention")]
@@ -990,7 +1146,10 @@ fn then_scheduled_normally(world: &mut LatticeWorld, name: String) {
 
 #[then("accounting events are buffered in memory")]
 fn then_accounting_buffered(world: &mut LatticeWorld) {
-    assert!(!world.storage_available, "Waldur should be unreachable; events buffered");
+    assert!(
+        !world.storage_available,
+        "Waldur should be unreachable; events buffered"
+    );
 }
 
 #[then(regex = r#"^the metric "([^"]+)" increases$"#)]
@@ -1029,7 +1188,10 @@ fn when_new_alloc_completes(world: &mut LatticeWorld) {
 
 #[then("the accounting event is dropped")]
 fn then_accounting_dropped(world: &mut LatticeWorld) {
-    assert!(!world.storage_available, "Waldur unreachable → event dropped");
+    assert!(
+        !world.storage_available,
+        "Waldur unreachable → event dropped"
+    );
 }
 
 #[then("scheduling continues normally")]
@@ -1039,7 +1201,10 @@ fn then_scheduling_continues(_world: &mut LatticeWorld) {
 
 #[then(regex = r#"^the allocation completion is recorded in the quorum \(recoverable\)$"#)]
 fn then_completion_in_quorum(world: &mut LatticeWorld) {
-    let completed = world.allocations.iter().any(|a| a.state == AllocationState::Completed);
+    let completed = world
+        .allocations
+        .iter()
+        .any(|a| a.state == AllocationState::Completed);
     assert!(completed, "completion should be recorded");
 }
 
@@ -1100,7 +1265,9 @@ fn given_cross_site_allocation(world: &mut LatticeWorld) {
 #[given("the allocation references data in Site A's sensitive storage pool")]
 fn given_sensitive_data_ref(world: &mut LatticeWorld) {
     let alloc = world.last_allocation_mut();
-    alloc.tags.insert("data_sovereignty".into(), "site-a-sensitive".into());
+    alloc
+        .tags
+        .insert("data_sovereignty".into(), "site-a-sensitive".into());
 }
 
 #[when("the federation broker at Site A evaluates the request")]
@@ -1114,13 +1281,21 @@ fn when_federation_evaluates(world: &mut LatticeWorld) {
 #[then(regex = r#"^the request is rejected with reason "([^"]+)"$"#)]
 fn then_request_rejected_reason(world: &mut LatticeWorld, reason: String) {
     // Check federation decision first, then fall back to last_error
-    if let Some(lattice_scheduler::federation::OfferDecision::Reject { reason: r }) = &world.federation_decision {
-        assert!(r.contains(&reason), "expected reason containing '{reason}', got '{r}'");
+    if let Some(lattice_scheduler::federation::OfferDecision::Reject { reason: r }) =
+        &world.federation_decision
+    {
+        assert!(
+            r.contains(&reason),
+            "expected reason containing '{reason}', got '{r}'"
+        );
         return;
     }
     if let Some(err) = &world.last_error {
         let msg = format!("{err:?}");
-        assert!(msg.contains(&reason), "expected error containing '{reason}', got '{msg}'");
+        assert!(
+            msg.contains(&reason),
+            "expected error containing '{reason}', got '{msg}'"
+        );
         return;
     }
     panic!("expected Reject with reason '{reason}', but no rejection or error found");
@@ -1176,7 +1351,12 @@ fn then_no_metrics(world: &mut LatticeWorld) {
 
 // Same-tenant comparison
 #[given(regex = r#"^user "([^"]+)" of tenant "([^"]+)" has sensitive allocation "([^"]+)"$"#)]
-fn given_user_tenant_sensitive(world: &mut LatticeWorld, user: String, tenant: String, name: String) {
+fn given_user_tenant_sensitive(
+    world: &mut LatticeWorld,
+    user: String,
+    tenant: String,
+    name: String,
+) {
     let alloc = AllocationBuilder::new()
         .user(&user)
         .tenant(&tenant)
@@ -1203,7 +1383,9 @@ fn when_user_compare_metrics(world: &mut LatticeWorld, _user: String, a1: String
             previous_hash: String::new(),
             signature: String::new(),
         };
-        let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(world.audit.record(entry)));
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(world.audit.record(entry))
+        });
     }
 }
 
@@ -1253,7 +1435,9 @@ fn given_alloc_pending_with_mounts(world: &mut LatticeWorld, name: String) {
 
 #[given("the data mover begins staging during queue wait")]
 fn given_data_mover_staging(world: &mut LatticeWorld) {
-    world.data_readiness.insert("s3://training-data/input".into(), 0.5);
+    world
+        .data_readiness
+        .insert("s3://training-data/input".into(), 0.5);
 }
 
 #[given(regex = r#"^data staging fails \(VAST API error\)$"#)]
@@ -1308,7 +1492,12 @@ fn then_entrypoint_starts(_world: &mut LatticeWorld) {
 // ═══════════════════════════════════════════════════════════
 
 #[given(regex = r#"^vCluster "([^"]+)" has lent (\d+) idle nodes to vCluster "([^"]+)"$"#)]
-fn given_vcluster_lent_nodes(world: &mut LatticeWorld, _home: String, count: usize, _borrower: String) {
+fn given_vcluster_lent_nodes(
+    world: &mut LatticeWorld,
+    _home: String,
+    count: usize,
+    _borrower: String,
+) {
     for i in 0..count {
         let mut node = NodeBuilder::new().id(&format!("borrowed-n{i}")).build();
         node.owner = Some(NodeOwnership {
@@ -1328,7 +1517,9 @@ fn given_alloc_on_borrowed(world: &mut LatticeWorld, _vc: String, name: String) 
         .state(AllocationState::Running)
         .lifecycle_unbounded()
         .build();
-    alloc.assigned_nodes = world.nodes.iter()
+    alloc.assigned_nodes = world
+        .nodes
+        .iter()
         .filter(|n| n.owner.as_ref().map(|o| o.is_borrowed) == Some(true))
         .map(|n| n.id.clone())
         .collect();
@@ -1371,12 +1562,17 @@ fn then_scales_down_or_suspended(world: &mut LatticeWorld, name: String) {
 
 #[then("the pending HPC allocation is proposed for the reclaimed nodes")]
 fn then_hpc_proposed(world: &mut LatticeWorld) {
-    let has_pending = world.allocations.iter().any(|a| a.state == AllocationState::Pending);
+    let has_pending = world
+        .allocations
+        .iter()
+        .any(|a| a.state == AllocationState::Pending);
     assert!(has_pending || true, "HPC allocation can be proposed");
 }
 
 // Reactive below min_nodes
-#[given(regex = r#"^reactive allocation "([^"]+)" has min_nodes=(\d+) and is running on (\d+) nodes$"#)]
+#[given(
+    regex = r#"^reactive allocation "([^"]+)" has min_nodes=(\d+) and is running on (\d+) nodes$"#
+)]
 fn given_reactive_min_nodes(world: &mut LatticeWorld, name: String, min: u32, running: u32) {
     let mut alloc = AllocationBuilder::new()
         .lifecycle_unbounded()
@@ -1393,7 +1589,11 @@ fn given_reactive_min_nodes(world: &mut LatticeWorld, name: String, min: u32, ru
 fn given_n_borrowed(world: &mut LatticeWorld, count: u32) {
     // Mark last N nodes as borrowed
     let total = world.nodes.len();
-    for node in world.nodes.iter_mut().skip(total.saturating_sub(count as usize)) {
+    for node in world
+        .nodes
+        .iter_mut()
+        .skip(total.saturating_sub(count as usize))
+    {
         node.owner = Some(NodeOwnership {
             tenant: "other".into(),
             vcluster: "other".into(),

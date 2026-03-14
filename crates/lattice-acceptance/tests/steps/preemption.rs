@@ -5,7 +5,6 @@ use lattice_common::types::*;
 use lattice_scheduler::preemption::{evaluate_preemption, PreemptionConfig, PreemptionResult};
 use lattice_test_harness::fixtures::*;
 
-
 // Note: tenant, vCluster, and checkpoint protocol steps are in common.rs
 
 // ─── Given: Node Setup Steps ────────────────────────────────
@@ -190,10 +189,7 @@ fn given_nodes_running_n_allocs_at_class(
             .lifecycle_bounded(4)
             .build();
         let end = node_idx + nodes_per_alloc as usize;
-        alloc.assigned_nodes = nodes[node_idx..end]
-            .iter()
-            .map(|n| n.id.clone())
-            .collect();
+        alloc.assigned_nodes = nodes[node_idx..end].iter().map(|n| n.id.clone()).collect();
         alloc.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(30));
         node_idx = end;
         world.allocations.push(alloc);
@@ -240,8 +236,11 @@ fn when_high_priority_requiring_nodes(world: &mut LatticeWorld, count: u32) {
         .cloned()
         .collect();
     let requester = world.allocations.last().unwrap();
-    world.preemption_result =
-        Some(evaluate_preemption(requester, &running, &PreemptionConfig::default()));
+    world.preemption_result = Some(evaluate_preemption(
+        requester,
+        &running,
+        &PreemptionConfig::default(),
+    ));
 }
 
 #[when("a high-priority non-sensitive allocation needs nodes")]
@@ -259,8 +258,11 @@ fn when_high_priority_non_sensitive(world: &mut LatticeWorld) {
         .cloned()
         .collect();
     let requester = world.allocations.last().unwrap();
-    world.preemption_result =
-        Some(evaluate_preemption(requester, &running, &PreemptionConfig::default()));
+    world.preemption_result = Some(evaluate_preemption(
+        requester,
+        &running,
+        &PreemptionConfig::default(),
+    ));
 }
 
 #[when("preemption is evaluated")]
@@ -285,8 +287,11 @@ fn when_preemption_evaluated(world: &mut LatticeWorld) {
         .filter(|a| a.state == AllocationState::Running)
         .cloned()
         .collect();
-    world.preemption_result =
-        Some(evaluate_preemption(&requester, &running, &PreemptionConfig::default()));
+    world.preemption_result = Some(evaluate_preemption(
+        &requester,
+        &running,
+        &PreemptionConfig::default(),
+    ));
 }
 
 #[when(regex = r"^a class-(\d+) allocation needs those nodes$")]
@@ -348,7 +353,12 @@ fn when_preemption_frees_partial(world: &mut LatticeWorld, freed_count: u32) {
         .iter()
         .find(|a| a.state == AllocationState::Pending)
         .cloned()
-        .unwrap_or_else(|| AllocationBuilder::new().preemption_class(8).nodes(6).build());
+        .unwrap_or_else(|| {
+            AllocationBuilder::new()
+                .preemption_class(8)
+                .nodes(6)
+                .build()
+        });
 
     let running: Vec<Allocation> = world
         .allocations
@@ -363,7 +373,10 @@ fn when_preemption_frees_partial(world: &mut LatticeWorld, freed_count: u32) {
     world.preemption_result = Some(evaluate_preemption(&requester, &running, &config));
 
     // Verify the partial free count matches expectations
-    if let Some(PreemptionResult::Possible { ref freed_nodes, .. }) = world.preemption_result {
+    if let Some(PreemptionResult::Possible {
+        ref freed_nodes, ..
+    }) = world.preemption_result
+    {
         assert!(
             freed_nodes.len() >= freed_count as usize,
             "Expected at least {} freed nodes, got {}",
@@ -379,7 +392,9 @@ fn when_preemption_initiated_checkpoint_completes(world: &mut LatticeWorld) {
     let alloc = world
         .allocations
         .iter_mut()
-        .find(|a| a.state == AllocationState::Running && !matches!(a.checkpoint, CheckpointStrategy::None))
+        .find(|a| {
+            a.state == AllocationState::Running && !matches!(a.checkpoint, CheckpointStrategy::None)
+        })
         .expect("no running allocation with checkpoint enabled");
     alloc.state = AllocationState::Checkpointing;
     // Checkpoint completes successfully
@@ -505,7 +520,8 @@ fn then_no_sensitive_victims(world: &mut LatticeWorld) {
                 if let Some(a) = alloc {
                     assert!(
                         !a.sensitive
-                            && a.tags.get("workload_class").map(|v| v.as_str()) != Some("sensitive"),
+                            && a.tags.get("workload_class").map(|v| v.as_str())
+                                != Some("sensitive"),
                         "sensitive allocation {} was selected as victim",
                         a.id
                     );
@@ -791,7 +807,10 @@ fn then_n_victims_selected(world: &mut LatticeWorld, expected: u32) {
             );
         }
         Some(PreemptionResult::NotPossible { reason }) => {
-            panic!("expected {} victims but got NotPossible: {reason}", expected);
+            panic!(
+                "expected {} victims but got NotPossible: {reason}",
+                expected
+            );
         }
         None => panic!("preemption was not evaluated"),
     }
@@ -810,7 +829,10 @@ fn then_exactly_n_nodes_freed(world: &mut LatticeWorld, expected: u32) {
             );
         }
         Some(PreemptionResult::NotPossible { reason }) => {
-            panic!("expected {} freed nodes but got NotPossible: {reason}", expected);
+            panic!(
+                "expected {} freed nodes but got NotPossible: {reason}",
+                expected
+            );
         }
         None => panic!("preemption was not evaluated"),
     }

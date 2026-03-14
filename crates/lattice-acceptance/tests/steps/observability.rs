@@ -41,9 +41,7 @@ fn given_running_alloc_telemetry(world: &mut LatticeWorld) {
         .build();
     alloc.assigned_nodes = vec!["node-0".into()];
     alloc.started_at = Some(chrono::Utc::now());
-    alloc
-        .tags
-        .insert("telemetry_enabled".into(), "true".into());
+    alloc.tags.insert("telemetry_enabled".into(), "true".into());
     world.allocations.push(alloc);
 }
 
@@ -439,10 +437,7 @@ fn then_debug_resolution(world: &mut LatticeWorld) {
     );
     let alloc = world.allocations.last().expect("no allocation");
     assert_eq!(
-        alloc
-            .tags
-            .get("telemetry_resolution_s")
-            .map(|v| v.as_str()),
+        alloc.tags.get("telemetry_resolution_s").map(|v| v.as_str()),
         Some("1"),
         "Telemetry resolution should be 1 second in debug mode"
     );
@@ -457,10 +452,7 @@ fn then_production_resolution(world: &mut LatticeWorld) {
     );
     let alloc = world.allocations.last().expect("no allocation");
     assert_eq!(
-        alloc
-            .tags
-            .get("telemetry_resolution_s")
-            .map(|v| v.as_str()),
+        alloc.tags.get("telemetry_resolution_s").map(|v| v.as_str()),
         Some("30"),
         "Telemetry resolution should be 30 seconds in production mode"
     );

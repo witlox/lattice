@@ -26,7 +26,9 @@ fn given_reactive_allocation(world: &mut LatticeWorld, node_count: u32) {
         .map(|i| format!("reactive-node-{i}"))
         .collect();
     alloc.started_at = Some(chrono::Utc::now());
-    world.alloc_current_nodes.insert("default".into(), node_count);
+    world
+        .alloc_current_nodes
+        .insert("default".into(), node_count);
     world.allocations.push(alloc);
 }
 
@@ -55,7 +57,9 @@ fn given_reactive_allocation_with_min_nodes(
         .map(|i| format!("reactive-node-{i}"))
         .collect();
     alloc.started_at = Some(chrono::Utc::now());
-    world.alloc_current_nodes.insert("default".into(), node_count);
+    world
+        .alloc_current_nodes
+        .insert("default".into(), node_count);
     world.alloc_min_nodes.insert("default".into(), min_nodes);
     world.allocations.push(alloc);
 }
@@ -101,12 +105,8 @@ fn when_queue_pressure_high(world: &mut LatticeWorld) {
         ..Default::default()
     });
     // High utilization + queue pressure
-    world.scale_decision = Some(autoscaler.evaluate_with_tenant_quota(
-        current,
-        0.95,
-        5,
-        Some(remaining),
-    ));
+    world.scale_decision =
+        Some(autoscaler.evaluate_with_tenant_quota(current, 0.95, 5, Some(remaining)));
 }
 
 #[when("utilization drops below the scale-down threshold")]
@@ -243,10 +243,7 @@ fn then_scale_up_at_most(world: &mut LatticeWorld, max: u32) {
         }
         ScaleDecision::NoChange => {
             // At max already: also acceptable
-            assert!(
-                current >= max,
-                "NoChange but current {current} < max {max}"
-            );
+            assert!(current >= max, "NoChange but current {current} < max {max}");
         }
         other => panic!("expected ScaleUp or NoChange, got {other:?}"),
     }
@@ -328,10 +325,7 @@ fn then_allocation_not_terminated(world: &mut LatticeWorld) {
         .allocations
         .iter()
         .find(|a| matches!(a.lifecycle.lifecycle_type, LifecycleType::Reactive { .. }));
-    assert!(
-        reactive.is_some(),
-        "reactive allocation should still exist"
-    );
+    assert!(reactive.is_some(), "reactive allocation should still exist");
     let alloc = reactive.unwrap();
     assert_eq!(
         alloc.state,

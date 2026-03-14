@@ -58,11 +58,7 @@ fn given_allocation_with_scratch(world: &mut LatticeWorld) {
 
 #[when(regex = r#"^an allocation is submitted with data mount "([^"]+)" to "([^"]+)"$"#)]
 fn when_submit_with_data_mount(world: &mut LatticeWorld, source: String, target: String) {
-    let readiness = world
-        .data_readiness
-        .get(&source)
-        .copied()
-        .unwrap_or(0.0);
+    let readiness = world.data_readiness.get(&source).copied().unwrap_or(0.0);
 
     let mut alloc = AllocationBuilder::new()
         .nodes(1)
@@ -72,9 +68,7 @@ fn when_submit_with_data_mount(world: &mut LatticeWorld, source: String, target:
 
     if readiness >= READINESS_THRESHOLD {
         // Data is already ready: no staging needed.
-        alloc
-            .tags
-            .insert("staging_skipped".into(), "true".into());
+        alloc.tags.insert("staging_skipped".into(), "true".into());
         world.staging_plan = Some(StagingPlan::default());
     } else {
         // Build a staging plan.
@@ -109,16 +103,14 @@ fn when_submit_with_multiple_data_mounts(world: &mut LatticeWorld) {
 #[when("the allocation reaches the front of the scheduling queue")]
 fn when_allocation_front_of_queue(world: &mut LatticeWorld) {
     let alloc = world.last_allocation_mut();
-    let has_staging_failure = alloc
-        .tags
-        .get("staging_failure")
-        .is_some();
+    let has_staging_failure = alloc.tags.get("staging_failure").is_some();
     if has_staging_failure {
         // Staging failed but allocation proceeds (non-fatal).
         alloc.state = AllocationState::Running;
-        alloc
-            .tags
-            .insert("staging_warning".into(), "staging incomplete due to VAST API error".into());
+        alloc.tags.insert(
+            "staging_warning".into(),
+            "staging incomplete due to VAST API error".into(),
+        );
         alloc.assigned_nodes = vec!["node-0".into()];
         alloc.started_at = Some(chrono::Utc::now());
     }
@@ -129,9 +121,7 @@ fn when_data_staging_executes(world: &mut LatticeWorld) {
     let alloc = world.last_allocation_mut();
     // Record QoS policy set during staging.
     if !alloc.data.mounts.is_empty() {
-        alloc
-            .tags
-            .insert("qos_policy".into(), "ReadWrite".into());
+        alloc.tags.insert("qos_policy".into(), "ReadWrite".into());
     }
 }
 
@@ -150,12 +140,8 @@ fn when_prologue_with_scratch(world: &mut LatticeWorld) {
 
     // Simulate prologue creating scratch directory.
     let scratch_path = format!("/scratch/{}", alloc.id);
-    alloc
-        .tags
-        .insert("scratch_path".into(), scratch_path);
-    alloc
-        .tags
-        .insert("scratch_created".into(), "true".into());
+    alloc.tags.insert("scratch_path".into(), scratch_path);
+    alloc.tags.insert("scratch_created".into(), "true".into());
     alloc.state = AllocationState::Running;
     alloc.started_at = Some(chrono::Utc::now());
     world.allocations.push(alloc);
@@ -171,12 +157,8 @@ fn when_epilogue_executes(world: &mut LatticeWorld) {
         .map(|v| v == "true")
         .unwrap_or(false);
     if had_scratch {
-        alloc
-            .tags
-            .insert("scratch_cleaned".into(), "true".into());
-        alloc
-            .tags
-            .insert("cleanup_nonfatal".into(), "true".into());
+        alloc.tags.insert("scratch_cleaned".into(), "true".into());
+        alloc.tags.insert("cleanup_nonfatal".into(), "true".into());
     }
     alloc.state = AllocationState::Completed;
     alloc.completed_at = Some(chrono::Utc::now());
@@ -195,12 +177,8 @@ fn when_sensitive_alloc_with_mount(world: &mut LatticeWorld, source: String, tar
         access: DataAccess::ReadWrite,
         tier_hint: Some(StorageTier::Hot),
     });
-    alloc
-        .tags
-        .insert("storage_pool".into(), "encrypted".into());
-    alloc
-        .tags
-        .insert("access_logged".into(), "true".into());
+    alloc.tags.insert("storage_pool".into(), "encrypted".into());
+    alloc.tags.insert("access_logged".into(), "true".into());
 
     let stager = DataStager::new();
     let plan = stager.plan_staging(&[alloc.clone()]);
@@ -243,10 +221,7 @@ fn then_staging_plan_includes_mount(world: &mut LatticeWorld) {
 
 #[then("the staging plan priority should match the allocation priority")]
 fn then_staging_plan_priority(world: &mut LatticeWorld) {
-    let plan = world
-        .staging_plan
-        .as_ref()
-        .expect("no staging plan");
+    let plan = world.staging_plan.as_ref().expect("no staging plan");
     let alloc = world.last_allocation();
     for req in &plan.requests {
         assert_eq!(
@@ -269,10 +244,7 @@ fn then_no_staging_required(world: &mut LatticeWorld) {
 
 #[then("the staging plan should include all mounts sorted by priority")]
 fn then_staging_sorted_by_priority(world: &mut LatticeWorld) {
-    let plan = world
-        .staging_plan
-        .as_ref()
-        .expect("no staging plan");
+    let plan = world.staging_plan.as_ref().expect("no staging plan");
     assert_eq!(
         plan.requests.len(),
         3,
@@ -327,10 +299,7 @@ fn then_scratch_path_available(world: &mut LatticeWorld) {
         .tags
         .get("scratch_path")
         .expect("scratch_path not set");
-    assert!(
-        !scratch_path.is_empty(),
-        "Scratch path should not be empty"
-    );
+    assert!(!scratch_path.is_empty(), "Scratch path should not be empty");
     assert!(
         scratch_path.starts_with("/scratch/"),
         "Scratch path should be under /scratch/, got {scratch_path}"
@@ -406,11 +375,7 @@ fn then_data_staged_and_ready(world: &mut LatticeWorld) {
         .first()
         .map(|m| m.source.clone())
         .expect("no data mount");
-    let readiness = world
-        .data_readiness
-        .get(&source)
-        .copied()
-        .unwrap_or(0.0);
+    let readiness = world.data_readiness.get(&source).copied().unwrap_or(0.0);
     assert!(
         readiness >= READINESS_THRESHOLD,
         "Data readiness ({readiness}) should be >= threshold ({READINESS_THRESHOLD})"
