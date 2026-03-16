@@ -26,7 +26,7 @@ config = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
-hpc-scheduler-core = { path = "../hpc-scheduler-core", optional = true }
+hpc-scheduler-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

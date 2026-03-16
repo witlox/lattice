@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 lattice-common = { path = "../lattice-common", features = ["scheduler-core"] }
-hpc-scheduler-core = { path = "../hpc-scheduler-core" }
+hpc-scheduler-core = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }

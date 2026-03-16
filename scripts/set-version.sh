@@ -42,10 +42,6 @@ sed -i.bak "s/^version = \"${BASE_VERSION}\"/version = \"${RELEASE_VERSION}\"/" 
 sed -i.bak "s/^version = \"${BASE_VERSION}\"/version = \"${RELEASE_VERSION}\"/" \
     "$REPO_ROOT/tools/rm-replay/Cargo.toml"
 
-# hpc-scheduler-core (publishable to crates.io, own version)
-sed -i.bak "s/^version = \"${BASE_VERSION}\"/version = \"${RELEASE_VERSION}\"/" \
-    "$REPO_ROOT/crates/hpc-scheduler-core/Cargo.toml"
-
 # Python SDK
 sed -i.bak "s/^version = \"${BASE_VERSION}\"/version = \"${RELEASE_VERSION}\"/" \
     "$REPO_ROOT/sdk/python/pyproject.toml"

@@ -45,7 +45,6 @@ crates/
 ├── lattice-common/        Shared types, config, protobuf bindings
 ├── lattice-quorum/        Raft consensus, persistent WAL, snapshots, backup/restore
 ├── lattice-scheduler/     vCluster schedulers, knapsack solver, cost function
-├── hpc-scheduler-core/    Reusable HPC scheduling library (publishable to crates.io)
 ├── lattice-api/           gRPC (tonic) + REST (axum) server, OIDC, RBAC, mTLS
 ├── lattice-checkpoint/    Checkpoint broker, cost evaluator
 ├── lattice-node-agent/    Per-node daemon, GPU/memory discovery, eBPF telemetry, data staging

@@ -10,7 +10,6 @@ members = [
     "crates/lattice-checkpoint",
     "crates/lattice-test-harness",
     "crates/lattice-acceptance",
-    "crates/hpc-scheduler-core",
 ]
 
 [workspace.package]
@@ -35,6 +34,7 @@ tokio-stream = "0.1"
 # Raft consensus
 openraft = { version = "0.10.0-alpha.14", features = ["serde"] }
 raft-hpc-core = "2026.1"
+hpc-scheduler-core = { version = "2026.1", features = ["serde"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
