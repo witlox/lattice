@@ -1,8 +1,7 @@
 use cucumber::{given, then, when};
-use uuid::Uuid;
 
 use crate::LatticeWorld;
-use lattice_common::traits::{AuditAction, AuditEntry};
+use lattice_common::traits::{audit_actions, lattice_audit_event, AuditEntry};
 use lattice_common::types::*;
 use lattice_node_agent::telemetry::log_buffer::LogRingBuffer;
 use lattice_test_harness::fixtures::*;
@@ -130,18 +129,18 @@ fn when_user_attaches(world: &mut LatticeWorld, user: String) {
             .map(|v| v == "sensitive")
             .unwrap_or(false)
         {
-            let entry = AuditEntry {
-                id: Uuid::new_v4(),
-                timestamp: chrono::Utc::now(),
-                user: user.clone(),
-                action: AuditAction::AttachSession,
-                details: serde_json::json!({
+            let entry = AuditEntry::new(lattice_audit_event(
+                audit_actions::ATTACH_SESSION,
+                &user,
+                hpc_audit::AuditScope::default(),
+                hpc_audit::AuditOutcome::Success,
+                "attach session",
+                serde_json::json!({
                     "allocation_id": alloc.id.to_string(),
                     "user": user,
                 }),
-                previous_hash: String::new(),
-                signature: String::new(),
-            };
+                hpc_audit::AuditSource::LatticeQuorum,
+            ));
             world.audit.entries.lock().unwrap().push(entry);
         }
     } else {
@@ -389,7 +388,9 @@ fn then_metrics_from_both(world: &mut LatticeWorld) {
 
 #[then("an audit entry should be committed before the terminal opens")]
 fn then_audit_attach(world: &mut LatticeWorld) {
-    let entries = world.audit.entries_for_action(&AuditAction::AttachSession);
+    let entries = world
+        .audit
+        .entries_for_action(audit_actions::ATTACH_SESSION);
     assert!(
         !entries.is_empty(),
         "Expected an AttachSession audit entry to be committed"
@@ -397,7 +398,7 @@ fn then_audit_attach(world: &mut LatticeWorld) {
     let entry = &entries[0];
     let attach_user = world.attach_user.as_deref().unwrap_or("");
     assert_eq!(
-        entry.user, attach_user,
+        entry.event.principal.identity, attach_user,
         "Audit entry user should match attaching user"
     );
 }

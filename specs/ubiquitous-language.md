@@ -122,6 +122,34 @@ Precise definitions for every domain term used in Lattice. When two terms seem s
 
 **Eventual Consistency** — State that may be briefly stale (bounded by scheduling cycle time, ~5-30s). In Lattice: job queues, telemetry, quota accounting, session state, node capacity, DAG state, vCluster config.
 
+## hpc-core Shared Contracts
+
+**hpc-core** — A separate workspace of crates (published to crates.io) defining shared trait-based contracts for HPC infrastructure. Both PACT and Lattice depend on hpc-core; neither depends on the other. Prevents convention drift without code coupling.
+
+**Dual-Mode Operation** — Lattice-node-agent's ability to operate in two modes: **standalone** (self-services all resource isolation) or **PACT-managed** (delegates to PACT via hpc-node contracts). Mode is detected at runtime by probing for PACT's handoff socket and readiness file. Also referred to informally as the "steroids model" — PACT presence enhances Lattice capabilities without changing its correctness guarantees.
+
+**CgroupManager** — hpc-node trait for cgroup v2 hierarchy management. Methods: `create_hierarchy()`, `create_scope()`, `destroy_scope()`, `read_metrics()`, `is_scope_empty()`. Lattice implements this in standalone mode; PACT implements it in managed mode. Both use the well-known `workload.slice/` path.
+
+**NamespaceConsumer** — hpc-node trait implemented by lattice-node-agent. Requests pid/net/mount namespaces from PACT via unix socket (`/run/pact/handoff.sock`). Falls back to self-service (`unshare(2)`) when PACT is absent. Contrast with **NamespaceProvider** (implemented by PACT, not Lattice).
+
+**MountManager** — hpc-node trait for refcounted SquashFS mount management. `acquire_mount()` increments refcount (or mounts on first use), `release_mount()` decrements (lazy unmount when zero). `reconstruct_state()` recovers from agent restart by scanning `/proc/mounts`.
+
+**ReadinessGate** — hpc-node trait signaling that PACT has completed node initialization (all infrastructure services started, cgroup hierarchy created). Lattice waits for this signal with a timeout; standalone mode skips it.
+
+**AuditEvent** — hpc-audit struct defining the universal audit event format: who (`AuditPrincipal`), what (`action` string from well-known constants), when (`timestamp`), where (`AuditScope`: node/vCluster/allocation), outcome (Success/Failure/Denied), detail, metadata, and source (`AuditSource` enum). Lattice wraps this in a signed envelope for Raft storage.
+
+**AuditSink** — hpc-audit trait for non-blocking audit event emission. `emit()` buffers internally; `flush()` drains on shutdown. Lattice's implementation proposes events to the Raft quorum.
+
+**CompliancePolicy** — hpc-audit struct defining audit retention rules (retention days, required audit points, full-access logging flag). `CompliancePolicy::regulated()` preset: 2555 days (7 years), full access logging, ~35 required actions.
+
+**IdentityCascade** — hpc-identity struct that tries multiple `IdentityProvider` implementations in priority order to obtain a `WorkloadIdentity`. Standard order: SPIRE → self-signed CA → bootstrap cert. Used by both lattice-node-agent and lattice-quorum for mTLS.
+
+**WorkloadIdentity** — hpc-identity struct containing cert chain PEM, private key PEM (never logged/transmitted), trust bundle PEM, expiration, and source provenance. Renewal triggered at 2/3 of certificate lifetime.
+
+**CertRotator** — hpc-identity trait for non-disruptive certificate rotation using dual-channel swap: build new TLS channel → health-check → atomically swap → drain old channel.
+
+**AuthClient** — hpc-auth struct providing OAuth2 token management. Cascading flow selection (Auth Code + PKCE → Device Code → Manual Paste → Client Credentials), per-server token caching (`~/.config/{app}/tokens.json`), automatic refresh, OIDC discovery. Used by lattice-cli.
+
 ## External Systems
 
 **OpenCHAMI** — Infrastructure management system. Handles node boot/reimage (BSS), hardware discovery (Magellan/Redfish), state management (SMD), identity (OPAAL), and configuration injection (cloud-init). Lattice integrates but does not own.

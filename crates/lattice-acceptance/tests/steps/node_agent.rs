@@ -5,6 +5,7 @@ use cucumber::{given, then, when};
 use crate::LatticeWorld;
 use lattice_common::types::*;
 use lattice_node_agent::agent::{AgentCommand, NodeAgent};
+use lattice_node_agent::cgroup::StubCgroupManager;
 use lattice_node_agent::data_stage::{MockDataStageExecutor, NoopDataStageExecutor};
 use lattice_node_agent::epilogue::{
     EpilogueConfig, EpiloguePipeline, NoopEpilogueReporter, NoopSensitiveWiper,
@@ -142,6 +143,7 @@ async fn run_prologue(world: &mut LatticeWorld) {
         is_unified_memory: false,
         data_mounts: vec![],
         scratch_per_node: None,
+        resource_limits: None,
     };
     let result = pipeline
         .execute(
@@ -150,6 +152,7 @@ async fn run_prologue(world: &mut LatticeWorld) {
             &runtime,
             cache,
             &NoopDataStageExecutor,
+            &StubCgroupManager,
             &NoopReporter,
         )
         .await
@@ -177,6 +180,7 @@ async fn run_prologue_with_uenv(world: &mut LatticeWorld, uenv_ref: String) {
         is_unified_memory: false,
         data_mounts: vec![],
         scratch_per_node: None,
+        resource_limits: None,
     };
     let result = pipeline
         .execute(
@@ -185,6 +189,7 @@ async fn run_prologue_with_uenv(world: &mut LatticeWorld, uenv_ref: String) {
             &runtime,
             cache,
             &NoopDataStageExecutor,
+            &StubCgroupManager,
             &NoopReporter,
         )
         .await
@@ -212,6 +217,7 @@ async fn run_prologue_with_container(world: &mut LatticeWorld, image_ref: String
         is_unified_memory: false,
         data_mounts: vec![],
         scratch_per_node: None,
+        resource_limits: None,
     };
     let result = pipeline
         .execute(
@@ -220,6 +226,7 @@ async fn run_prologue_with_container(world: &mut LatticeWorld, image_ref: String
             &runtime,
             cache,
             &NoopDataStageExecutor,
+            &StubCgroupManager,
             &NoopReporter,
         )
         .await
@@ -252,6 +259,7 @@ async fn run_prologue_fails(world: &mut LatticeWorld) {
         is_unified_memory: false,
         data_mounts: vec![],
         scratch_per_node: None,
+        resource_limits: None,
     };
     let result = pipeline
         .execute(
@@ -260,6 +268,7 @@ async fn run_prologue_fails(world: &mut LatticeWorld) {
             &runtime,
             cache,
             &NoopDataStageExecutor,
+            &StubCgroupManager,
             &NoopReporter,
         )
         .await;
@@ -293,9 +302,18 @@ async fn run_prologue_for_allocation(world: &mut LatticeWorld) {
         is_unified_memory: false,
         data_mounts: data_mounts.clone(),
         scratch_per_node: None,
+        resource_limits: None,
     };
     let result = pipeline
-        .execute(alloc_id, &config, &runtime, cache, &stager, &NoopReporter)
+        .execute(
+            alloc_id,
+            &config,
+            &runtime,
+            cache,
+            &stager,
+            &StubCgroupManager,
+            &NoopReporter,
+        )
         .await
         .unwrap();
     world.prologue_result = Some(result);
@@ -321,6 +339,7 @@ async fn run_epilogue_for_allocation(world: &mut LatticeWorld) {
         is_unified_memory: false,
         data_mounts: vec![],
         scratch_per_node: None,
+        resource_limits: None,
     };
     runtime.prepare(&config).await.unwrap();
 
@@ -335,6 +354,8 @@ async fn run_epilogue_for_allocation(world: &mut LatticeWorld) {
             None,
             &NoopDataStageExecutor,
             &[],
+            &StubCgroupManager,
+            None,
             &NoopSensitiveWiper,
             &NoopEpilogueReporter,
         )
@@ -358,6 +379,7 @@ async fn run_sensitive_epilogue(world: &mut LatticeWorld) {
         is_unified_memory: false,
         data_mounts: vec![],
         scratch_per_node: None,
+        resource_limits: None,
     };
     runtime.prepare(&config).await.unwrap();
 
@@ -375,6 +397,8 @@ async fn run_sensitive_epilogue(world: &mut LatticeWorld) {
             None,
             &NoopDataStageExecutor,
             &[],
+            &StubCgroupManager,
+            None,
             &NoopSensitiveWiper,
             &NoopEpilogueReporter,
         )
@@ -398,6 +422,7 @@ async fn run_standard_epilogue(world: &mut LatticeWorld) {
         is_unified_memory: false,
         data_mounts: vec![],
         scratch_per_node: None,
+        resource_limits: None,
     };
     runtime.prepare(&config).await.unwrap();
 
@@ -412,6 +437,8 @@ async fn run_standard_epilogue(world: &mut LatticeWorld) {
             None,
             &NoopDataStageExecutor,
             &[],
+            &StubCgroupManager,
+            None,
             &NoopSensitiveWiper,
             &NoopEpilogueReporter,
         )

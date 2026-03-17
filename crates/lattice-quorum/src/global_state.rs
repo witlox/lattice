@@ -526,11 +526,9 @@ impl GlobalState {
     /// Compute SHA-256 hash of an audit entry for chain linking.
     fn hash_audit_entry(entry: &AuditEntry) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(entry.id.as_bytes());
-        hasher.update(entry.timestamp.to_rfc3339().as_bytes());
-        hasher.update(entry.user.as_bytes());
-        hasher.update(format!("{:?}", entry.action).as_bytes());
-        hasher.update(entry.details.to_string().as_bytes());
+        // Hash the serialized AuditEvent as canonical representation.
+        let event_json = serde_json::to_string(&entry.event).unwrap_or_default();
+        hasher.update(event_json.as_bytes());
         hasher.update(entry.previous_hash.as_bytes());
         format!("{:x}", hasher.finalize())
     }
@@ -538,11 +536,8 @@ impl GlobalState {
     /// Canonical byte representation of an audit entry for signing/verification.
     fn canonical_bytes(entry: &AuditEntry) -> Vec<u8> {
         let mut buf = Vec::new();
-        buf.extend(entry.id.as_bytes());
-        buf.extend(entry.timestamp.to_rfc3339().as_bytes());
-        buf.extend(entry.user.as_bytes());
-        buf.extend(format!("{:?}", entry.action).as_bytes());
-        buf.extend(entry.details.to_string().as_bytes());
+        let event_json = serde_json::to_string(&entry.event).unwrap_or_default();
+        buf.extend(event_json.as_bytes());
         buf.extend(entry.previous_hash.as_bytes());
         buf
     }
@@ -616,9 +611,9 @@ impl GlobalState {
             ));
         }
 
-        let first_timestamp = self.audit_log[0].timestamp;
+        let first_timestamp = self.audit_log[0].event.timestamp;
         let last_entry = &self.audit_log[entries_to_archive - 1];
-        let last_timestamp = last_entry.timestamp;
+        let last_timestamp = last_entry.event.timestamp;
         let last_entry_hash = Self::hash_audit_entry(last_entry);
 
         let archive = AuditArchive {
@@ -750,18 +745,29 @@ impl GlobalState {
         self.audit_log
             .iter()
             .filter(|e| {
-                if let Some(ref user) = filter.user {
-                    if &e.user != user {
+                if let Some(ref principal) = filter.principal {
+                    if &e.event.principal.identity != principal {
+                        return false;
+                    }
+                }
+                if let Some(ref action) = filter.action {
+                    if &e.event.action != action {
+                        return false;
+                    }
+                }
+                if let Some(ref alloc) = filter.allocation {
+                    let alloc_str = alloc.to_string();
+                    if e.event.scope.allocation_id.as_deref() != Some(alloc_str.as_str()) {
                         return false;
                     }
                 }
                 if let Some(ref since) = filter.since {
-                    if e.timestamp < *since {
+                    if e.event.timestamp < *since {
                         return false;
                     }
                 }
                 if let Some(ref until) = filter.until {
-                    if e.timestamp > *until {
+                    if e.event.timestamp > *until {
                         return false;
                     }
                 }
@@ -775,7 +781,7 @@ impl GlobalState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_common::traits::AuditAction;
+    use lattice_common::traits::{audit_actions, lattice_audit_event};
     use lattice_common::types::{AllocationState, NodeOwnership, NodeState, TenantQuota};
     use lattice_test_harness::fixtures::{
         AllocationBuilder, NodeBuilder, TenantBuilder, VClusterBuilder,
@@ -1037,23 +1043,23 @@ mod tests {
     #[test]
     fn audit_log_append_and_query() {
         let mut state = GlobalState::new();
-        let entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            user: "dr-smith".into(),
-            action: AuditAction::NodeClaim,
-            details: serde_json::json!({"node": "x1000c0s0b0n0"}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::NODE_CLAIM,
+            "dr-smith",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "node claim",
+            serde_json::json!({"node": "x1000c0s0b0n0"}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         state.apply(Command::RecordAudit(entry.clone()));
 
         let results = state.query_audit(&AuditFilter {
-            user: Some("dr-smith".into()),
+            principal: Some("dr-smith".into()),
             ..Default::default()
         });
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].action, AuditAction::NodeClaim);
+        assert_eq!(results[0].event.action, audit_actions::NODE_CLAIM);
         // ADV-03: verify hash chain and signature are populated
         assert!(!results[0].signature.is_empty());
         // First entry has empty previous_hash
@@ -1066,26 +1072,26 @@ mod tests {
     #[test]
     fn audit_hash_chain_links_entries() {
         let mut state = GlobalState::new();
-        let entry1 = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            user: "user-1".into(),
-            action: AuditAction::NodeClaim,
-            details: serde_json::json!({}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry1 = AuditEntry::new(lattice_audit_event(
+            audit_actions::NODE_CLAIM,
+            "user-1",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "node claim",
+            serde_json::json!({}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         state.apply(Command::RecordAudit(entry1));
 
-        let entry2 = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            user: "user-2".into(),
-            action: AuditAction::NodeRelease,
-            details: serde_json::json!({}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry2 = AuditEntry::new(lattice_audit_event(
+            audit_actions::NODE_RELEASE,
+            "user-2",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "node release",
+            serde_json::json!({}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         state.apply(Command::RecordAudit(entry2));
 
         assert_eq!(state.audit_log.len(), 2);
@@ -1102,15 +1108,15 @@ mod tests {
     #[test]
     fn audit_signature_verification() {
         let mut state = GlobalState::new();
-        let entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            user: "user-1".into(),
-            action: AuditAction::DataAccess,
-            details: serde_json::json!({"file": "/data/sensitive.csv"}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::DATA_ACCESS,
+            "user-1",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "data access",
+            serde_json::json!({"file": "/data/sensitive.csv"}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         state.apply(Command::RecordAudit(entry));
 
         let vk = state.verifying_key();
@@ -1119,7 +1125,7 @@ mod tests {
 
         // Tamper with the entry and verify it fails
         let mut tampered = state.audit_log[0].clone();
-        tampered.user = "attacker".into();
+        tampered.event.principal.identity = "attacker".into();
         assert!(!GlobalState::verify_audit_entry(&tampered, &vk));
 
         // Invalid hex signature fails gracefully
@@ -1145,27 +1151,27 @@ mod tests {
     fn audit_chain_integrity_full() {
         let mut state = GlobalState::new();
         let actions = [
-            AuditAction::NodeClaim,
-            AuditAction::AllocationStart,
-            AuditAction::DataAccess,
-            AuditAction::MetricsQuery,
-            AuditAction::CheckpointEvent,
-            AuditAction::LogAccess,
-            AuditAction::AttachSession,
-            AuditAction::AllocationComplete,
-            AuditAction::NodeRelease,
-            AuditAction::WipeCompleted,
+            audit_actions::NODE_CLAIM,
+            audit_actions::ALLOCATION_START,
+            audit_actions::DATA_ACCESS,
+            audit_actions::METRICS_QUERY,
+            audit_actions::CHECKPOINT_TRIGGERED,
+            audit_actions::LOG_ACCESS,
+            audit_actions::ATTACH_SESSION,
+            audit_actions::ALLOCATION_COMPLETE,
+            audit_actions::NODE_RELEASE,
+            audit_actions::WIPE_COMPLETED,
         ];
         for (i, action) in actions.iter().enumerate() {
-            let entry = AuditEntry {
-                id: Uuid::new_v4(),
-                timestamp: Utc::now(),
-                user: format!("user-{i}"),
-                action: action.clone(),
-                details: serde_json::json!({"step": i}),
-                previous_hash: String::new(),
-                signature: String::new(),
-            };
+            let entry = AuditEntry::new(lattice_audit_event(
+                action,
+                &format!("user-{i}"),
+                hpc_audit::AuditScope::default(),
+                hpc_audit::AuditOutcome::Success,
+                "chain test",
+                serde_json::json!({"step": i}),
+                hpc_audit::AuditSource::LatticeQuorum,
+            ));
             state.apply(Command::RecordAudit(entry));
         }
 
@@ -1174,7 +1180,7 @@ mod tests {
         assert!(state.verify_audit_chain().is_ok());
 
         // Tamper with an entry in the middle — chain should break
-        state.audit_log[5].details = serde_json::json!({"tampered": true});
+        state.audit_log[5].event.metadata = serde_json::json!({"tampered": true});
         let result = state.verify_audit_chain();
         assert!(result.is_err());
         // Should report the tampered entry's signature failure
@@ -1474,15 +1480,15 @@ mod tests {
 
     fn add_audit_entries(state: &mut GlobalState, count: usize) {
         for i in 0..count {
-            let entry = AuditEntry {
-                id: Uuid::new_v4(),
-                timestamp: Utc::now(),
-                user: format!("user-{i}"),
-                action: AuditAction::DataAccess,
-                details: serde_json::json!({"index": i}),
-                previous_hash: String::new(),
-                signature: String::new(),
-            };
+            let entry = AuditEntry::new(lattice_audit_event(
+                audit_actions::DATA_ACCESS,
+                &format!("user-{i}"),
+                hpc_audit::AuditScope::default(),
+                hpc_audit::AuditOutcome::Success,
+                "data access",
+                serde_json::json!({"index": i}),
+                hpc_audit::AuditSource::LatticeQuorum,
+            ));
             state.apply(Command::RecordAudit(entry));
         }
     }
@@ -1523,15 +1529,15 @@ mod tests {
         assert_eq!(state.audit_log.len(), 3);
 
         // Add a new entry — its previous_hash should reference the last in-memory entry
-        let new_entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            user: "user-new".into(),
-            action: AuditAction::NodeClaim,
-            details: serde_json::json!({}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let new_entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::NODE_CLAIM,
+            "user-new",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "node claim",
+            serde_json::json!({}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         state.apply(Command::RecordAudit(new_entry));
 
         assert_eq!(state.audit_log.len(), 4);
@@ -1545,8 +1551,8 @@ mod tests {
         let mut state = GlobalState::new();
         add_audit_entries(&mut state, 10);
 
-        let first_ts = state.audit_log[0].timestamp;
-        let last_archived_ts = state.audit_log[4].timestamp;
+        let first_ts = state.audit_log[0].event.timestamp;
+        let last_archived_ts = state.audit_log[4].event.timestamp;
         let last_archived_hash = GlobalState::hash_audit_entry(&state.audit_log[4]);
 
         state.apply(Command::CompactAuditLog {

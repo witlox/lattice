@@ -12,7 +12,7 @@ use lattice_common::tsdb_client::TsdbClient;
 use lattice_node_agent::pty::PtyBackend;
 
 use crate::events::EventBus;
-use crate::middleware::oidc::OidcValidator;
+use crate::middleware::oidc::{OidcConfig, OidcValidator};
 use crate::middleware::rate_limit::RateLimiter;
 use crate::mpi::NodeAgentPool;
 
@@ -46,4 +46,6 @@ pub struct ApiState {
     pub pty: Option<Arc<dyn PtyBackend>>,
     /// Optional node agent pool for MPI launch fan-out.
     pub agent_pool: Option<Arc<dyn NodeAgentPool>>,
+    /// Optional OIDC configuration for auth discovery endpoint.
+    pub oidc_config: Option<OidcConfig>,
 }

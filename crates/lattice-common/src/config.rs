@@ -63,6 +63,7 @@ impl Default for LatticeConfig {
                 grpc_address: "0.0.0.0:50051".to_string(),
                 rest_address: Some("0.0.0.0:8080".to_string()),
                 oidc_issuer: String::new(),
+                oidc_client_id: None,
                 tls_cert: None,
                 tls_key: None,
                 tls_ca: None,
@@ -157,6 +158,9 @@ pub struct ApiConfig {
     pub rest_address: Option<String>,
     /// OIDC provider URL for token validation
     pub oidc_issuer: String,
+    /// OIDC client ID for auth discovery
+    #[serde(default)]
+    pub oidc_client_id: Option<String>,
     /// TLS certificate path (PEM)
     pub tls_cert: Option<PathBuf>,
     /// TLS private key path (PEM)

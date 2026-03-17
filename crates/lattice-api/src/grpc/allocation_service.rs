@@ -1251,6 +1251,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         })
     }
 
@@ -1271,6 +1272,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         })
     }
 
@@ -1916,6 +1918,7 @@ mod tests {
             pty: Some(pty.clone()),
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         });
         assert!(state.pty.is_some());
 
@@ -1955,6 +1958,7 @@ mod tests {
             pty: Some(pty),
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         });
         let svc = LatticeAllocationService::new(state.clone());
 

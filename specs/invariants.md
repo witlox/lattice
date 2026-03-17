@@ -247,3 +247,167 @@ These invariants may be briefly violated during consistency windows (bounded by 
 **Statement:** Waldur unavailability must never prevent or delay allocation scheduling.
 
 **Enforcement:** Async push with bounded buffer. Events dropped (with counter metric) rather than blocking.
+
+## Resource Isolation Invariants (hpc-node)
+
+### INV-RI1: Cgroup Slice Ownership
+
+**Statement:** Lattice owns the `workload.slice/` cgroup subtree exclusively. When PACT is present, PACT owns `pact.slice/`. Neither system writes to the other's subtree.
+
+**Enforcement:** `CgroupManager` implementation creates scopes only under `workload.slice/`. Standalone mode: lattice-node-agent creates the `workload.slice/` hierarchy at startup. PACT-managed mode: PACT creates both slices at boot; lattice-node-agent verifies `workload.slice/` exists before creating scopes.
+
+**Violation consequence:** Cross-system resource limit interference. Processes placed in wrong cgroup could escape resource accounting.
+
+---
+
+### INV-RI2: Namespace Handoff Fallback
+
+**Statement:** If the PACT handoff socket (`/run/pact/handoff.sock`) is unavailable, lattice-node-agent creates namespaces via `unshare(2)` directly (self-service mode). Namespace handoff failure must never block allocation startup.
+
+**Enforcement:** `NamespaceConsumer` implementation: attempt socket connection → on failure, log warning + emit audit event (`namespace.handoff_failed`) → create namespaces locally. Timeout: 1s for socket connection.
+
+**Violation consequence:** Allocation startup blocked indefinitely. Violates principle that PACT absence must not degrade Lattice functionality.
+
+---
+
+### INV-RI3: Mount Refcount Consistency
+
+**Statement:** When using `MountManager`, every `acquire_mount()` must have a corresponding `release_mount()`. Refcount must never go negative. On agent restart, mount state is reconstructed from `/proc/mounts` and active allocations.
+
+**Enforcement:** `MountManager` implementation tracks refcounts in-memory. `reconstruct_state()` called on agent startup. Standalone mode: simpler mount/unmount without refcounting (one mount per allocation).
+
+**Violation consequence:** Orphaned mounts consume memory and block image updates. Negative refcount causes premature unmount, crashing running allocations.
+
+---
+
+### INV-RI4: Readiness Gate Non-Blocking
+
+**Statement:** Lattice-node-agent waits for PACT readiness signal for at most `readiness_timeout` (default: 30s). If timeout expires or readiness gate is absent (standalone mode), the agent proceeds as ready. Readiness waiting must never prevent the agent from starting.
+
+**Enforcement:** `ReadinessGate` consumer: check `/run/pact/ready` file → if exists, ready. If not, poll with timeout → on timeout, log warning and proceed.
+
+**Violation consequence:** Node never becomes schedulable. Stuck in Booting state.
+
+## Audit Format Invariants (hpc-audit)
+
+### INV-AF1: Standardized Audit Event Schema
+
+**Statement:** All audit events emitted by Lattice components use the `hpc_audit::AuditEvent` struct (id, timestamp, principal, action, scope, outcome, detail, metadata, source). The `source` field is set to the appropriate `AuditSource` variant (`LatticeNodeAgent`, `LatticeQuorum`, or `LatticeCli`).
+
+**Enforcement:** `AuditEntry` wraps `hpc_audit::AuditEvent` directly (clean break — no backwards compatibility layer). The Raft state machine stores `AuditEntry { event: AuditEvent, previous_hash: String, signature: String }`. The old `AuditAction` enum and flat `user`/`action`/`details` fields are removed. The `event.source` field is set per component (`LatticeNodeAgent`, `LatticeQuorum`, `LatticeCli`). The `event.action` field uses hpc-audit constants or lattice-specific constants with `lattice.` prefix (see IP-12 action mapping). `event.principal.identity` replaces the old `user: UserId` field.
+
+**Violation consequence:** SIEM forwarding requires a translation layer. Cross-system audit correlation breaks.
+
+---
+
+### INV-AF2: Well-Known Action Constants
+
+**Statement:** Lattice uses `hpc_audit::actions::*` constants for action strings in audit events. Custom lattice-specific actions use the `lattice.` prefix (e.g., `lattice.scheduling.proposal_rejected`). No ad-hoc action strings.
+
+**Enforcement:** Code review. Action constants imported from hpc-audit crate. Custom actions defined in lattice-common as constants.
+
+**Violation consequence:** Audit queries miss events due to inconsistent action naming.
+
+---
+
+### INV-AF3: Audit Sink Non-Blocking
+
+**Statement:** `AuditSink::emit()` must never block the caller. Implementations buffer internally. If the sink is unavailable, events are buffered locally. Dropping audit events violates audit trail continuity.
+
+**Enforcement:** Lattice's `AuditSink` implementation (Raft-backed) buffers events in-memory and proposes them to the quorum asynchronously. Sensitive audit events are the exception: they block on Raft commit (INV-S3/INV-O3).
+
+**Violation consequence:** Audit gap. For sensitive workloads, this is a regulatory violation.
+
+## Identity Invariants (hpc-identity)
+
+### INV-ID1: Identity Cascade Order
+
+**Statement:** Lattice components use `IdentityCascade` with providers in priority order: SPIRE (preferred) → self-signed CA (fallback) → bootstrap cert (last resort). The cascade tries each provider's `is_available()` before calling `get_identity()`.
+
+**Enforcement:** `IdentityCascade::new()` called with providers in correct order at agent/quorum startup. Provider list is immutable after construction.
+
+**Violation consequence:** Using a weaker identity source when a stronger one is available. Not a security breach (all sources are valid), but suboptimal trust posture.
+
+---
+
+### INV-ID2: Private Key Locality
+
+**Statement:** Private keys generated by `IdentityProvider` implementations must never be transmitted over the network or stored by the identity manager. Keys are generated locally and used only for local TLS termination.
+
+**Enforcement:** `WorkloadIdentity.private_key_pem` is generated in-process. CSR signing sends only the public key to the signing endpoint. `Debug` trait redacts private key field.
+
+**Violation consequence:** Private key compromise. mTLS security model broken.
+
+---
+
+### INV-ID3: Certificate Rotation Non-Disruptive
+
+**Statement:** `CertRotator::rotate()` must not interrupt in-flight gRPC connections. The rotation protocol is: build passive channel with new cert → health-check → atomically swap active ↔ passive → drain old channel.
+
+**Enforcement:** Dual-channel pattern in `CertRotator` implementation. Old channel continues serving until drained. Rotation failure leaves active channel unchanged.
+
+**Violation consequence:** Dropped gRPC connections during cert rotation. Heartbeat gaps, scheduling pauses.
+
+## Raft Co-location Invariants
+
+### INV-R1: Independent Raft Group
+
+**Statement:** Lattice quorum is always an independent Raft group, even when co-located with PACT journal on the same physical servers. Separate consensus, separate state machine, separate ports, separate WAL.
+
+**Enforcement:** Distinct port configuration (Lattice: 9000/50051/8080, PACT: 9444/9443). Separate raft-hpc-core instances. No shared state.
+
+**Violation consequence:** State corruption in one system propagates to the other.
+
+---
+
+### INV-R2: PACT Is Incumbent
+
+**Statement:** In co-located mode, PACT journal quorum is running before Lattice starts. Lattice does not depend on PACT being present (standalone mode is valid), but when co-located, PACT is the pre-existing service.
+
+**Enforcement:** Deployment ordering. Lattice startup does not wait for or check PACT state.
+
+---
+
+## Authentication Invariants (Lattice-specific)
+
+### INV-A1: Unauthenticated Command Allowlist
+
+**Statement:** Only `login`, `logout`, `version`, and `--help` may execute without a valid token. All other commands require authentication.
+
+**Enforcement:** CLI middleware checks token before dispatching to command handler.
+
+---
+
+### INV-A2: Lenient Permission Mode
+
+**Statement:** Lattice CLI uses lenient permission mode for the token cache (warn and fix, not reject). This differs from PACT's strict mode.
+
+**Enforcement:** Configuration passed to hpc-auth crate at initialization.
+
+---
+
+### INV-A3: Waldur Authorization Is Runtime
+
+**Statement:** vCluster access authorization is checked at request time via Waldur allocation state, not at login time. The login token identifies the user; Waldur determines what they can do.
+
+**Enforcement:** lattice-api checks Waldur allocations on each authenticated request that targets a vCluster.
+
+**Violation consequence:** Users could access vClusters they have no allocation for, or be denied access despite having a valid allocation.
+
+---
+
+### INV-A4: Auth Discovery Endpoint Is Public
+
+**Statement:** The lattice-api auth discovery endpoint does not require authentication. It returns the IdP URL and public client ID needed to initiate login.
+
+**Enforcement:** Endpoint excluded from auth middleware.
+
+**Violation consequence:** Chicken-and-egg — users cannot login because login requires a token.
+
+---
+
+### INV-A5: FirecREST Optionality
+
+**Statement:** FirecREST presence or absence does not change the authentication model. Lattice authenticates directly against the IdP. If FirecREST is present, it accepts the same token as a passthrough.
+
+**Enforcement:** No FirecREST-specific code in the auth path.

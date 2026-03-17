@@ -3,7 +3,9 @@ use uuid::Uuid;
 
 use super::helpers::parse_allocation_state;
 use crate::LatticeWorld;
-use lattice_common::traits::{AllocationStore, AuditAction, AuditEntry, AuditLog, NodeRegistry};
+use lattice_common::traits::{
+    audit_actions, lattice_audit_event, AllocationStore, AuditEntry, AuditLog, NodeRegistry,
+};
 use lattice_common::types::*;
 use lattice_test_harness::fixtures::*;
 
@@ -839,15 +841,15 @@ fn when_quorum_processes_claim(world: &mut LatticeWorld) {
         });
     }
     // Record audit
-    let entry = AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user,
-        action: AuditAction::NodeClaim,
-        details: serde_json::json!({"nodes": world.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()}),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
+    let entry = AuditEntry::new(lattice_audit_event(
+        audit_actions::NODE_CLAIM,
+        &user,
+        hpc_audit::AuditScope::default(),
+        hpc_audit::AuditOutcome::Success,
+        "node claim",
+        serde_json::json!({"nodes": world.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()}),
+        hpc_audit::AuditSource::LatticeQuorum,
+    ));
     let _ = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(world.audit.record(entry))
     });
@@ -891,15 +893,15 @@ fn when_user_requests_attach(world: &mut LatticeWorld, user: String) {
     let owner = world.attach_owner.as_ref().unwrap();
     world.attach_allowed = Some(user == *owner);
     if world.attach_allowed == Some(true) {
-        let entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: chrono::Utc::now(),
-            user,
-            action: AuditAction::AttachSession,
-            details: serde_json::json!({"result": "allowed"}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::ATTACH_SESSION,
+            &user,
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "attach session",
+            serde_json::json!({"result": "allowed"}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         let _ = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(world.audit.record(entry))
         });
@@ -934,15 +936,15 @@ fn when_user_attempts_attach_named(world: &mut LatticeWorld, user: String, _allo
     let owner = world.attach_owner.as_ref().unwrap();
     world.attach_allowed = Some(user == *owner);
     if world.attach_allowed == Some(false) {
-        let entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: chrono::Utc::now(),
-            user,
-            action: AuditAction::AttachSession,
-            details: serde_json::json!({"result": "denied", "reason": "not_claiming_user"}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::ATTACH_SESSION,
+            &user,
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Denied,
+            "attach denied",
+            serde_json::json!({"result": "denied", "reason": "not_claiming_user"}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         let _ = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(world.audit.record(entry))
         });
@@ -956,7 +958,9 @@ fn then_attach_denied_reason(world: &mut LatticeWorld, _reason: String) {
 
 #[then("an audit entry recording the denied attempt is Raft-committed")]
 fn then_denied_audit_committed(world: &mut LatticeWorld) {
-    let entries = world.audit.entries_for_action(&AuditAction::AttachSession);
+    let entries = world
+        .audit
+        .entries_for_action(audit_actions::ATTACH_SESSION);
     assert!(!entries.is_empty());
 }
 
@@ -1088,15 +1092,15 @@ fn then_not_returned_to_pool(world: &mut LatticeWorld, node_id: String) {
 
 #[then("a critical audit entry is Raft-committed recording the wipe failure")]
 fn then_critical_audit_committed(world: &mut LatticeWorld) {
-    let entry = AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user: "system".into(),
-        action: AuditAction::DataAccess,
-        details: serde_json::json!({"event": "wipe_failure", "severity": "critical"}),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
+    let entry = AuditEntry::new(lattice_audit_event(
+        audit_actions::DATA_ACCESS,
+        "system",
+        hpc_audit::AuditScope::default(),
+        hpc_audit::AuditOutcome::Failure,
+        "wipe failure",
+        serde_json::json!({"event": "wipe_failure", "severity": "critical"}),
+        hpc_audit::AuditSource::LatticeQuorum,
+    ));
     let _ = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(world.audit.record(entry))
     });
@@ -1374,15 +1378,15 @@ fn when_user_compare_metrics(world: &mut LatticeWorld, _user: String, a1: String
     let same_tenant = alloc1.tenant == alloc2.tenant;
     if same_tenant {
         world.last_error = None; // Allowed
-        let entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: chrono::Utc::now(),
-            user: _user,
-            action: AuditAction::MetricsQuery,
-            details: serde_json::json!({"alloc1": a1, "alloc2": a2}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::METRICS_QUERY,
+            &_user,
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "metrics comparison",
+            serde_json::json!({"alloc1": a1, "alloc2": a2}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         let _ = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(world.audit.record(entry))
         });
@@ -1396,7 +1400,7 @@ fn then_comparison_performed(world: &mut LatticeWorld) {
 
 #[then("an audit entry is committed for both allocations")]
 fn then_audit_for_both(world: &mut LatticeWorld) {
-    let entries = world.audit.entries_for_action(&AuditAction::MetricsQuery);
+    let entries = world.audit.entries_for_action(audit_actions::METRICS_QUERY);
     assert!(!entries.is_empty());
 }
 

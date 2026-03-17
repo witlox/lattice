@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use lattice_common::error::LatticeError;
 use lattice_common::traits::{
-    AllocationStore, AuditAction, AuditEntry, AuditFilter, AuditLog, NodeRegistry,
+    audit_actions, lattice_audit_event, AllocationStore, AuditEntry, AuditFilter, AuditLog,
+    NodeRegistry,
 };
 use lattice_common::types::*;
 use lattice_quorum::commands::{Command, CommandResponse};
@@ -99,26 +100,26 @@ mod consensus_interface {
     #[tokio::test]
     async fn audit_log_record_and_query() {
         let client = lattice_quorum::create_test_quorum().await.unwrap();
-        let entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            user: "contract-user".into(),
-            action: AuditAction::NodeClaim,
-            details: serde_json::json!({"test": "contract"}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::NODE_CLAIM,
+            "contract-user",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "contract test",
+            serde_json::json!({"test": "contract"}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
 
         client.record(entry).await.unwrap();
         let results = client
             .query(&AuditFilter {
-                user: Some("contract-user".into()),
+                principal: Some("contract-user".into()),
                 ..Default::default()
             })
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].user, "contract-user");
+        assert_eq!(results[0].event.principal.identity, "contract-user");
     }
 
     // Contract: consensus.md § NodeRegistry — list_nodes returns registered nodes
@@ -400,15 +401,15 @@ mod data_contracts {
     #[test]
     fn audit_entry_hash_chain_populated_on_apply() {
         let mut state = GlobalState::new();
-        let entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            user: "hash-test".into(),
-            action: AuditAction::NodeClaim,
-            details: serde_json::json!({}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::NODE_CLAIM,
+            "hash-test",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "hash test",
+            serde_json::json!({}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         state.apply(Command::RecordAudit(entry));
 
         assert!(
@@ -509,15 +510,15 @@ mod invariant_contracts {
     fn inv_s4_audit_log_append_only_with_hash_chain() {
         let mut state = GlobalState::new();
         for i in 0..5 {
-            let entry = AuditEntry {
-                id: Uuid::new_v4(),
-                timestamp: Utc::now(),
-                user: format!("user-{i}"),
-                action: AuditAction::NodeClaim,
-                details: serde_json::json!({"i": i}),
-                previous_hash: String::new(),
-                signature: String::new(),
-            };
+            let entry = AuditEntry::new(lattice_audit_event(
+                audit_actions::NODE_CLAIM,
+                &format!("user-{i}"),
+                hpc_audit::AuditScope::default(),
+                hpc_audit::AuditOutcome::Success,
+                "hash chain test",
+                serde_json::json!({"i": i}),
+                hpc_audit::AuditSource::LatticeQuorum,
+            ));
             state.apply(Command::RecordAudit(entry));
         }
         assert_eq!(state.audit_log.len(), 5);
@@ -1004,15 +1005,15 @@ mod event_contracts {
             },
             Command::SetSensitivePoolSize(Some(5)),
             Command::UpdateTopology(TopologyModel { groups: vec![] }),
-            Command::RecordAudit(AuditEntry {
-                id: Uuid::new_v4(),
-                timestamp: Utc::now(),
-                user: "evt-user".into(),
-                action: AuditAction::NodeClaim,
-                details: serde_json::json!({}),
-                previous_hash: String::new(),
-                signature: String::new(),
-            }),
+            Command::RecordAudit(AuditEntry::new(lattice_audit_event(
+                audit_actions::NODE_CLAIM,
+                "evt-user",
+                hpc_audit::AuditScope::default(),
+                hpc_audit::AuditOutcome::Success,
+                "event test",
+                serde_json::json!({}),
+                hpc_audit::AuditSource::LatticeQuorum,
+            ))),
             Command::UpdateTenant {
                 id: "evt-t".into(),
                 quota: None,
@@ -1032,31 +1033,39 @@ mod event_contracts {
         }
     }
 
-    // Contract: event-catalog.md § AuditAction — all action variants serialize
+    // Contract: event-catalog.md § AuditEntry — serialization round-trip with new structure
     #[test]
-    fn audit_action_variants_all_serialize() {
-        let actions = vec![
-            AuditAction::NodeClaim,
-            AuditAction::NodeRelease,
-            AuditAction::AllocationStart,
-            AuditAction::AllocationComplete,
-            AuditAction::DataAccess,
-            AuditAction::AttachSession,
-            AuditAction::LogAccess,
-            AuditAction::MetricsQuery,
-            AuditAction::CheckpointEvent,
-            AuditAction::WipeStarted,
-            AuditAction::WipeCompleted,
-            AuditAction::WipeFailed,
+    fn audit_entry_serde_roundtrip() {
+        let actions = [
+            audit_actions::NODE_CLAIM,
+            audit_actions::NODE_RELEASE,
+            audit_actions::ALLOCATION_START,
+            audit_actions::ALLOCATION_COMPLETE,
+            audit_actions::DATA_ACCESS,
+            audit_actions::ATTACH_SESSION,
+            audit_actions::LOG_ACCESS,
+            audit_actions::METRICS_QUERY,
+            audit_actions::CHECKPOINT_TRIGGERED,
+            audit_actions::WIPE_STARTED,
+            audit_actions::WIPE_COMPLETED,
+            audit_actions::WIPE_FAILED,
         ];
 
         for action in actions {
-            let json = serde_json::to_string(&action).unwrap();
-            let deserialized: AuditAction = serde_json::from_str(&json).unwrap();
+            let entry = AuditEntry::new(lattice_audit_event(
+                action,
+                "serde-user",
+                hpc_audit::AuditScope::default(),
+                hpc_audit::AuditOutcome::Success,
+                "serde test",
+                serde_json::json!({}),
+                hpc_audit::AuditSource::LatticeQuorum,
+            ));
+            let json = serde_json::to_string(&entry).unwrap();
+            let deserialized: AuditEntry = serde_json::from_str(&json).unwrap();
             assert_eq!(
-                format!("{action:?}"),
-                format!("{deserialized:?}"),
-                "AuditAction variant must round-trip"
+                entry.event.action, deserialized.event.action,
+                "AuditEntry action must round-trip for {action}"
             );
         }
     }

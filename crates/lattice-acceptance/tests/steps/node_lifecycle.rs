@@ -213,15 +213,15 @@ fn wipe_operation_fails(world: &mut LatticeWorld) {
         };
     }
     // Record an audit entry for the alert.
-    let entry = AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user: "system".into(),
-        action: AuditAction::NodeRelease,
-        details: serde_json::json!({"alert": "wipe_failed", "node": node.id}),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
+    let entry = AuditEntry::new(lattice_audit_event(
+        audit_actions::NODE_RELEASE,
+        "system",
+        hpc_audit::AuditScope::node(&node.id),
+        hpc_audit::AuditOutcome::Failure,
+        "wipe failed",
+        serde_json::json!({"alert": "wipe_failed", "node": node.id}),
+        hpc_audit::AuditSource::LatticeNodeAgent,
+    ));
     world.audit.entries.lock().unwrap().push(entry);
 }
 
@@ -358,7 +358,8 @@ fn node_not_in_scheduling_pool(world: &mut LatticeWorld, node_id: String) {
 fn operator_alert_raised(world: &mut LatticeWorld) {
     let entries = world.audit.entries.lock().unwrap();
     let has_alert = entries.iter().any(|e| {
-        e.details
+        e.event
+            .metadata
             .get("alert")
             .and_then(|v| v.as_str())
             .map(|s| s.contains("wipe_failed"))

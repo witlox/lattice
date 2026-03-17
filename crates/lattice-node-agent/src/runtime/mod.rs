@@ -63,6 +63,8 @@ pub struct PrepareConfig {
     pub data_mounts: Vec<DataMount>,
     /// Per-node scratch directory size hint.
     pub scratch_per_node: Option<String>,
+    /// Resource limits for cgroup isolation (hpc-node).
+    pub resource_limits: Option<hpc_node::ResourceLimits>,
 }
 
 /// Handle to a running process managed by a runtime.
@@ -157,6 +159,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
         assert!(config.uenv.is_some());
         assert!(config.image.is_none());

@@ -330,6 +330,15 @@ async fn main() -> Result<()> {
         pty,
         agent_pool: None,
         data_dir: config.quorum.data_dir.clone(),
+        oidc_config: if !config.api.oidc_issuer.is_empty() {
+            Some(lattice_api::middleware::oidc::OidcConfig {
+                issuer_url: config.api.oidc_issuer.clone(),
+                audience: config.api.oidc_client_id.clone().unwrap_or_default(),
+                required_scopes: vec![],
+            })
+        } else {
+            None
+        },
     });
 
     let server_config = ServerConfig {

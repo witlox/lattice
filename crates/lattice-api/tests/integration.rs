@@ -122,6 +122,7 @@ fn test_state() -> Arc<ApiState> {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     })
 }
 
@@ -946,6 +947,7 @@ fn rest_test_state() -> Arc<ApiState> {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     })
 }
 
@@ -1380,15 +1382,16 @@ async fn rest_logs_returns_200_with_empty_lines() {
 #[tokio::test]
 async fn rest_audit_returns_entries() {
     let audit_log = Arc::new(MockAuditLog::new());
-    let entry = lattice_common::traits::AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user: "admin".into(),
-        action: lattice_common::traits::AuditAction::NodeClaim,
-        details: serde_json::json!({"node": "n1"}),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
+    let entry =
+        lattice_common::traits::AuditEntry::new(lattice_common::traits::lattice_audit_event(
+            lattice_common::traits::audit_actions::NODE_CLAIM,
+            "admin",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "node claim",
+            serde_json::json!({"node": "n1"}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
     audit_log.record(entry).await.unwrap();
 
     let state = Arc::new(ApiState {
@@ -1407,6 +1410,7 @@ async fn rest_audit_returns_entries() {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     });
 
     let app = rest::router(state);
@@ -1522,6 +1526,7 @@ fn streaming_test_state() -> Arc<ApiState> {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     })
 }
 
@@ -1542,6 +1547,7 @@ fn streaming_test_state_with_tsdb(tsdb: Arc<MockTsdb>) -> Arc<ApiState> {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     })
 }
 
@@ -1914,6 +1920,7 @@ async fn node_disable_sets_down_state() {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     });
     let node_svc = LatticeNodeService::new(state.clone());
 
@@ -2197,6 +2204,7 @@ async fn rest_undrain_node() {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     });
     let node_id = &nodes[0].id;
 
@@ -2255,6 +2263,7 @@ async fn admin_drain_and_node_list_filters_correctly() {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     });
     let node_svc = LatticeNodeService::new(state.clone());
 
@@ -2372,6 +2381,7 @@ async fn launch_tasks_with_agent_pool_succeeds() {
         pty: None,
         agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
         data_dir: None,
+        oidc_config: None,
     });
     let svc = LatticeAllocationService::new(state.clone());
 
@@ -2432,6 +2442,7 @@ async fn launch_tasks_with_agent_pool_no_nodes_fails() {
         pty: None,
         agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
         data_dir: None,
+        oidc_config: None,
     });
     let svc = LatticeAllocationService::new(state.clone());
 
@@ -2482,6 +2493,7 @@ async fn launch_tasks_pmi_mode_pmix() {
         pty: None,
         agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
         data_dir: None,
+        oidc_config: None,
     });
     let svc = LatticeAllocationService::new(state.clone());
 
@@ -2540,6 +2552,7 @@ async fn launch_tasks_with_env_and_args() {
         pty: None,
         agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
         data_dir: None,
+        oidc_config: None,
     });
     let svc = LatticeAllocationService::new(state.clone());
 

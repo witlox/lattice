@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod attach;
+pub mod auth;
 pub mod cancel;
 pub mod dag;
 pub mod diag;
@@ -77,6 +78,12 @@ pub enum Command {
 
     /// DAG workflow management
     Dag(dag::DagArgs),
+
+    /// Login to lattice server
+    Login(auth::LoginArgs),
+
+    /// Logout from lattice server
+    Logout(auth::LogoutArgs),
 
     /// Generate shell completions
     Completions {

@@ -174,49 +174,132 @@ pub struct AllocationFilter {
 }
 
 /// A single audit log entry with cryptographic integrity chain (ADV-03).
+///
+/// Wraps `hpc_audit::AuditEvent` as the standardized payload, adding
+/// hash chaining and ed25519 signing for tamper evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
-    pub id: Uuid,
-    pub timestamp: DateTime<Utc>,
-    pub user: UserId,
-    pub action: AuditAction,
-    pub details: serde_json::Value,
+    /// Standardized audit event (hpc-audit format: who, what, when, where, outcome).
+    pub event: hpc_audit::AuditEvent,
     /// SHA-256 hash of the previous audit entry (hex string).
     /// Empty string for the first entry in the chain.
     #[serde(default)]
     pub previous_hash: String,
-    /// HMAC-SHA256 signature over (id, timestamp, user, action, details, previous_hash).
+    /// Ed25519 signature over (event + previous_hash).
     /// Empty until signed by the quorum on commit.
     #[serde(default)]
     pub signature: String,
 }
 
-/// Categories of auditable actions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuditAction {
-    NodeClaim,
-    NodeRelease,
-    AllocationStart,
-    AllocationComplete,
-    DataAccess,
-    AttachSession,
-    LogAccess,
-    MetricsQuery,
-    CheckpointEvent,
-    /// GPU HBM wipe initiated (ADV-01).
-    WipeStarted,
-    /// GPU HBM wipe completed successfully (ADV-01).
-    WipeCompleted,
-    /// GPU HBM wipe failed (ADV-01).
-    WipeFailed,
+impl AuditEntry {
+    /// Create a new unsigned audit entry (previous_hash and signature filled by quorum).
+    pub fn new(event: hpc_audit::AuditEvent) -> Self {
+        Self {
+            event,
+            previous_hash: String::new(),
+            signature: String::new(),
+        }
+    }
+
+    /// Convenience: access the action string.
+    pub fn action(&self) -> &str {
+        &self.event.action
+    }
+
+    /// Convenience: access the principal identity.
+    pub fn principal_identity(&self) -> &str {
+        &self.event.principal.identity
+    }
+}
+
+/// Lattice-specific audit action constants (supplement hpc_audit::actions).
+///
+/// Shared actions (cgroup, namespace, mount, workload lifecycle) use
+/// hpc_audit::actions constants directly. These lattice-prefixed constants
+/// cover scheduling, sensitive workloads, and lattice-specific operations.
+pub mod audit_actions {
+    // Re-export shared actions for convenience
+    pub use hpc_audit::actions::*;
+
+    // Node ownership (sensitive audit path)
+    pub const NODE_CLAIM: &str = "lattice.node.claim";
+    pub const NODE_RELEASE: &str = "lattice.node.release";
+
+    // Allocation lifecycle (extends hpc-audit workload actions)
+    pub const ALLOCATION_COMPLETE: &str = "lattice.allocation.complete";
+    pub const ALLOCATION_FAILED: &str = "lattice.allocation.failed";
+    pub const ALLOCATION_CANCELLED: &str = "lattice.allocation.cancelled";
+    pub const ALLOCATION_REQUEUED: &str = "lattice.allocation.requeued";
+    pub const ALLOCATION_SUSPENDED: &str = "lattice.allocation.suspended";
+
+    // Sensitive workload operations
+    pub const DATA_ACCESS: &str = "lattice.data.access";
+    pub const ATTACH_SESSION: &str = "lattice.attach.session";
+    pub const LOG_ACCESS: &str = "lattice.log.access";
+    pub const METRICS_QUERY: &str = "lattice.metrics.query";
+
+    // Secure wipe
+    pub const WIPE_STARTED: &str = "lattice.wipe.started";
+    pub const WIPE_COMPLETED: &str = "lattice.wipe.completed";
+    pub const WIPE_FAILED: &str = "lattice.wipe.failed";
+
+    // Scheduling
+    pub const PROPOSAL_COMMITTED: &str = "lattice.scheduling.proposal_committed";
+    pub const PROPOSAL_REJECTED: &str = "lattice.scheduling.proposal_rejected";
+    pub const PREEMPTION_INITIATED: &str = "lattice.scheduling.preemption_initiated";
+
+    // Quota
+    pub const QUOTA_EXCEEDED: &str = "lattice.quota.exceeded";
+    pub const QUOTA_UPDATED: &str = "lattice.quota.updated";
+
+    // DAG
+    pub const DAG_SUBMITTED: &str = "lattice.dag.submitted";
+    pub const DAG_COMPLETED: &str = "lattice.dag.completed";
+
+    // VNI / Network domain
+    pub const VNI_ASSIGNED: &str = "lattice.network.vni_assigned";
+    pub const VNI_RELEASED: &str = "lattice.network.vni_released";
+}
+
+/// Helper to construct an `hpc_audit::AuditEvent` for lattice components.
+pub fn lattice_audit_event(
+    action: &str,
+    principal_identity: &str,
+    scope: hpc_audit::AuditScope,
+    outcome: hpc_audit::AuditOutcome,
+    detail: &str,
+    metadata: serde_json::Value,
+    source: hpc_audit::AuditSource,
+) -> hpc_audit::AuditEvent {
+    hpc_audit::AuditEvent {
+        id: Uuid::new_v4().to_string(),
+        timestamp: Utc::now(),
+        principal: hpc_audit::AuditPrincipal {
+            identity: principal_identity.to_string(),
+            principal_type: hpc_audit::PrincipalType::Human,
+            role: String::new(),
+        },
+        action: action.to_string(),
+        scope,
+        outcome,
+        detail: detail.to_string(),
+        metadata,
+        source,
+    }
 }
 
 /// Filter criteria for audit log queries.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuditFilter {
-    pub user: Option<UserId>,
+    /// Filter by principal identity (OIDC subject or service account).
+    pub principal: Option<String>,
+    /// Filter by allocation ID (matches scope.allocation_id).
     pub allocation: Option<AllocId>,
+    /// Filter by action string (exact match).
+    pub action: Option<String>,
+    /// Filter entries after this timestamp.
     pub since: Option<DateTime<Utc>>,
+    /// Filter entries before this timestamp.
     pub until: Option<DateTime<Utc>>,
 }
 

@@ -132,7 +132,7 @@ impl fmt::Display for Command {
             Command::UpdateVCluster { id, .. } => write!(f, "UpdateVCluster({id})"),
             Command::UpdateTopology(_) => write!(f, "UpdateTopology"),
             Command::SetSensitivePoolSize(s) => write!(f, "SetSensitivePoolSize({s:?})"),
-            Command::RecordAudit(e) => write!(f, "RecordAudit({:?})", e.action),
+            Command::RecordAudit(e) => write!(f, "RecordAudit({})", e.event.action),
             Command::CompactAuditLog {
                 entries_to_archive, ..
             } => write!(f, "CompactAuditLog({entries_to_archive} entries)"),

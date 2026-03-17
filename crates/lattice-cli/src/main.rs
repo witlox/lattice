@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     debug!("Parsed CLI: output={}, quiet={}", cli.output, cli.quiet);
 
-    // Shell completions don't need a gRPC connection.
+    // Shell completions don't need a gRPC connection or auth.
     if let Command::Completions { shell } = cli.command {
         lattice_cli::completions::generate_completions(shell);
         return Ok(());
@@ -39,16 +39,39 @@ async fn main() -> Result<()> {
     );
 
     let output_format = OutputFormat::parse(merged.output_format.as_deref().unwrap_or(&cli.output));
+    let server_url = format!("http://{}", merged.server_addr());
+    let quiet = cli.quiet;
+
+    // INV-A1: Login, Logout, and Completions execute without a token.
+    match &cli.command {
+        Command::Login(args) => {
+            return commands::auth::execute_login(args, &server_url, quiet).await;
+        }
+        Command::Logout(_) => {
+            return commands::auth::execute_logout(&server_url, quiet).await;
+        }
+        _ => {}
+    }
+
+    // For all other commands: attempt to get a cached token (INV-A1).
+    let token = match commands::auth::get_token_for_server(&server_url).await {
+        Ok(t) => Some(t),
+        Err(_) => {
+            eprintln!("Not logged in. Run `lattice login` first.");
+            std::process::exit(1);
+        }
+    };
 
     // Build client config from merged configuration.
     let client_config = ClientConfig {
-        api_endpoint: format!("http://{}", merged.server_addr()),
+        api_endpoint: server_url.clone(),
         timeout_secs: 30,
         user: std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "anonymous".to_string()),
         tenant: merged.default_tenant.clone(),
         vcluster: merged.default_vcluster.clone(),
+        token,
     };
 
     // Connect to the lattice-server.
@@ -62,8 +85,6 @@ async fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-
-    let quiet = cli.quiet;
 
     match cli.command {
         Command::Submit(args) => {
@@ -105,7 +126,7 @@ async fn main() -> Result<()> {
             commands::dag::execute(&args, &mut client, &client_config, output_format, quiet)
                 .await?;
         }
-        Command::Completions { .. } => unreachable!(),
+        Command::Login(_) | Command::Logout(_) | Command::Completions { .. } => unreachable!(),
     }
 
     Ok(())

@@ -96,6 +96,126 @@ trait DataStageExecutor: Send + Sync
 - `MockDataStageExecutor` — test stub
 - `NoopDataStageExecutor` — when no data mounts
 
+## Resource Isolation (hpc-node contracts)
+
+Lattice-node-agent implements four hpc-node traits for resource isolation. In standalone mode, all implementations are self-contained. In PACT-managed mode, namespace and mount operations delegate to PACT.
+
+```
+trait CgroupManager: Send + Sync
+  ├── create_hierarchy() → Result<()>
+  │     Boot-time: creates /sys/fs/cgroup/workload.slice/ (standalone)
+  │     or verifies it exists (PACT-managed). Idempotent.
+  │
+  ├── create_scope(parent_slice: &str, name: &str, limits: ResourceLimits) → Result<CgroupHandle>
+  │     Creates scoped cgroup for an allocation under workload.slice/.
+  │     ResourceLimits: memory_max (bytes), cpu_weight (1-10000), io_max (bytes/sec).
+  │     Returns opaque handle for process placement.
+  │
+  ├── destroy_scope(handle: CgroupHandle) → Result<()>
+  │     Kills all processes via cgroup.kill (Linux 5.14+) or SIGKILL fallback.
+  │     Returns CgroupError::KillFailed if processes in D-state.
+  │
+  ├── read_metrics(path: &str) → Result<CgroupMetrics>
+  │     Reads memory.current, memory.max, cpu.stat (usage_usec), cgroup.procs count.
+  │     No ownership check (shared read access).
+  │
+  └── is_scope_empty(handle: &CgroupHandle) → Result<bool>
+        Detects allocation completion (cgroup.procs == 0).
+```
+
+**Implementation:** `LinuxCgroupManager` (target_os = "linux") — direct cgroup v2 filesystem API.
+
+**Spec source:** INV-RI1 (slice ownership), A-HC5 (cgroup v2 available)
+
+---
+
+```
+trait NamespaceConsumer: Send + Sync
+  └── request_namespaces(request: NamespaceRequest) → Result<NamespaceResponse>
+        PACT-managed: connect to /run/pact/handoff.sock → send request →
+          receive FDs via SCM_RIGHTS → return response.
+        Standalone: unshare(2) for each requested namespace type →
+          mount uenv if requested → return response with local FDs.
+        Fallback: if socket unavailable (1s timeout), switch to standalone.
+
+NamespaceRequest:
+  allocation_id: String
+  namespaces: Vec<NamespaceType>  (Pid, Net, Mount)
+  uenv_image: Option<String>
+
+NamespaceResponse:
+  allocation_id: String
+  fd_types: Vec<NamespaceType>
+  uenv_mount_path: Option<String>
+```
+
+**Implementation:** `DualModeNamespaceConsumer` — probes socket at startup, caches mode. Falls back per-request on socket failure (INV-RI2).
+
+**Spec source:** IP-11 (namespace handoff), A-HC2 (dual-mode), A-HC6 (well-known paths)
+
+---
+
+```
+trait MountManager: Send + Sync
+  ├── acquire_mount(image_path: &str) → Result<MountHandle>
+  │     First reference: mount SquashFS image at /run/pact/uenv/{name}.
+  │     Subsequent: increment refcount, prepare bind-mount for allocation.
+  │     Standalone: always mount (no refcounting).
+  │
+  ├── release_mount(handle: MountHandle) → Result<()>
+  │     Decrement refcount. At zero: start cache hold timer (default 60s).
+  │     After timer: lazy unmount. Standalone: immediate unmount.
+  │
+  ├── force_unmount(image_path: &str) → Result<()>
+  │     Emergency: override hold timer, unmount immediately.
+  │
+  └── reconstruct_state(active_allocations: &[AllocId]) → Result<()>
+        On agent restart: scan /proc/mounts, correlate with active allocations.
+        Orphaned mounts get refcount=0 and start hold timers (INV-RI3).
+```
+
+**Implementation:** `RefcountedMountManager` (PACT-managed, shared cache) and `SimpleMountManager` (standalone, per-allocation). Selected based on mode detection.
+
+**Spec source:** INV-RI3 (refcount consistency)
+
+---
+
+```
+trait ReadinessGate: Send + Sync
+  ├── is_ready() → bool
+  │     Fast, non-blocking check: /run/pact/ready file exists.
+  │
+  └── wait_ready(timeout: Duration) → Result<()>
+        Polls file with backoff until present or timeout (INV-RI4).
+        Standalone: always returns Ok immediately (no readiness gate).
+```
+
+**Implementation:** `PactReadinessGate` (checks file) and `NoopReadinessGate` (standalone).
+
+**Spec source:** INV-RI4 (non-blocking), FM-22 (readiness timeout)
+
+## Identity Management (hpc-identity)
+
+```
+Startup sequence:
+  1. Construct IdentityCascade with providers:
+     [SpireProvider(socket), SelfSignedProvider(signing_endpoint), StaticProvider(bootstrap_certs)]
+  2. Call cascade.get_identity() → WorkloadIdentity
+  3. Configure tonic TLS with identity cert/key/trust_bundle
+  4. Schedule CertRotator at 2/3 certificate lifetime intervals
+
+CertRotator protocol:
+  1. cascade.get_identity() → new WorkloadIdentity
+  2. Build passive tonic Channel with new TLS config
+  3. Health-check passive channel (connect + handshake)
+  4. Atomic swap: passive → active, old active → draining
+  5. Drain old channel (wait for in-flight RPCs to complete)
+  6. Drop old channel
+  7. On failure at any step: abort, keep current active channel
+```
+
+**Spec source:** INV-ID1 (cascade order), INV-ID2 (key locality), INV-ID3 (non-disruptive rotation), FM-20 (cascade exhaustion), FM-23 (rotation failure)
+
 ## Attach / PTY
 
 ```

@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod allocation_runner;
 pub mod attach;
+pub mod cgroup;
 pub mod checkpoint_handler;
 pub mod conformance;
 pub mod data_stage;

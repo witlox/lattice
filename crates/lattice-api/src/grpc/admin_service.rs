@@ -427,6 +427,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         })
     }
 
@@ -449,6 +450,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         })
     }
 

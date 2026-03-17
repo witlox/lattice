@@ -98,7 +98,7 @@ Cross-context coordination mechanisms (not contexts themselves):
 
 **NodeOwnership** — Which Tenant/vCluster/Allocation owns which nodes. Raft-committed. Cannot be violated even momentarily.
 
-**SensitiveAuditLog** — Append-only, cryptographically signed, tamper-evident log of all sensitive workload events. 7-year retention.
+**SensitiveAuditLog** — Append-only, cryptographically signed, tamper-evident log of all sensitive workload events. 7-year retention. Events use standardized `hpc_audit::AuditEvent` schema wrapped in ed25519-signed envelope. `CompliancePolicy::regulated()` preset defines required audit points.
 
 ### Node Management Context
 
@@ -110,6 +110,10 @@ Cross-context coordination mechanisms (not contexts themselves):
 **NodeAgent** — Per-node daemon managing runtime lifecycle.
 - Owns: uenv mount, Sarus container, DMTCP checkpoint, eBPF telemetry loading, health reporting, PMI-2 server
 - Executes prologue (image pull, mount, data stage) and epilogue (cleanup, scratch wipe)
+- Implements hpc-node contracts: `CgroupManager` (standalone), `NamespaceConsumer` (dual-mode), `MountManager` (dual-mode)
+- Dual-mode operation: detects PACT presence at runtime. When PACT is present, delegates namespace creation and mount management to PACT via hpc-node handoff protocol. When standalone, self-services all resource isolation.
+- Uses `IdentityCascade` (hpc-identity) for mTLS workload identity: SPIRE → self-signed → bootstrap cert
+- Emits `AuditEvent` (hpc-audit) for resource isolation operations, wrapped in signed Raft envelope
 
 **ConformanceFingerprint** — SHA-256 hash of GPU driver, NIC firmware, BIOS, kernel version. Nodes with identical fingerprints form conformance groups. Used by scheduler f9 to prefer homogeneous placement.
 
@@ -146,6 +150,30 @@ Cross-context coordination mechanisms (not contexts themselves):
 
 **Sovra Trust** — Cryptographic trust via sovereign key management. Site root keys never leave the site. Federation revocable by workspace revocation.
 
+### hpc-core Shared Contracts (External)
+
+Lattice depends on four shared contract crates from the hpc-core workspace (published to crates.io). These define trait-only interfaces with no implementations — both PACT and Lattice implement the traits independently. No code coupling exists between the two systems.
+
+**hpc-node** — Cgroup hierarchy (`CgroupManager`), namespace handoff (`NamespaceProvider`/`NamespaceConsumer`), refcounted mounts (`MountManager`), boot readiness (`ReadinessGate`). Defines well-known filesystem paths (`workload.slice/`, `/run/pact/handoff.sock`, `/run/pact/uenv/`). Lattice implements `CgroupManager` and `NamespaceConsumer` in lattice-node-agent.
+
+**hpc-audit** — Universal audit event format (`AuditEvent`), sink trait (`AuditSink`), 40+ well-known action constants, compliance policy (`CompliancePolicy`). Includes `AuditSource` enum with variants for both systems. Lattice wraps `AuditEvent` in signed Raft envelope.
+
+**hpc-identity** — Workload identity cascade (`IdentityCascade`: SPIRE → self-signed → bootstrap), certificate rotation (`CertRotator`: dual-channel non-disruptive swap), identity provider trait (`IdentityProvider`). Used by both lattice-node-agent (per-node mTLS) and lattice-quorum (inter-replica mTLS).
+
+**hpc-auth** — OAuth2/OIDC token management (`AuthClient`), cascading flows (PKCE → Device Code → Manual Paste → Client Credentials), per-server token caching, OIDC discovery. Used by lattice-cli for user authentication.
+
+**Dual-mode operation model:**
+
+| Capability | Standalone (no PACT) | PACT-managed (steroids) |
+|---|---|---|
+| Cgroup hierarchy | lattice-node-agent creates `workload.slice/` | PACT creates both slices at boot |
+| Namespace creation | Self-service via `unshare(2)` | Handed off from PACT via SCM_RIGHTS |
+| uenv mounts | One mount per allocation | Shared refcounted mounts (cache locality) |
+| Boot readiness | Ready at startup | Waits for PACT readiness signal |
+| Audit trail | Lattice quorum only | Both pact-journal + lattice-quorum, unified format |
+| mTLS identity | IdentityCascade (same) | IdentityCascade (same, shared trust bundle) |
+| Resource limits | Lattice writes cgroup limits | PACT creates scopes, Lattice writes limits |
+
 ## Cross-Context Coordination Mechanisms
 
 **Checkpoint Broker** — Reads scheduling state (queue depth, preemption demand, cost function) and node state (health, storage bandwidth). Evaluates `Value > Cost` per running allocation. Acts through node agents (sends CHECKPOINT_HINT). Stateless — crash recovery is re-evaluation on restart.
@@ -175,3 +203,5 @@ Cross-context coordination mechanisms (not contexts themselves):
 4. **Network Domains are orthogonal to vClusters.** Two allocations in different vClusters but the same Tenant can share a Network Domain. This is intentional — it enables optimal resource sharing across scheduling policies while maintaining network reachability.
 5. **Sensitive workloads are risk-averse by design.** No clever optimizations. User (not Tenant) claims nodes. No sharing, no borrowing, no preemption. Wipe on release.
 6. **Federation is always optional.** The system is fully functional without it. When enabled, sovereignty is preserved — the local scheduler always has final say.
+7. **PACT is complementary, never required.** Lattice is fully functional standalone. When PACT is co-deployed, Lattice gains enhanced capabilities (faster boot, shared mounts, unified audit, integrated namespace management) via hpc-core trait contracts. Detection is automatic (socket/file probes), not configured. Both systems are independently developed with zero code coupling.
+8. **Shared contracts via hpc-core are trait-only.** hpc-node, hpc-audit, hpc-identity, and hpc-auth define interfaces, not implementations. Each system implements traits independently. Breaking changes affect both systems equally — version coordination is required.

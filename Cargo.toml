@@ -36,6 +36,12 @@ openraft = { version = "0.10.0-alpha.14", features = ["serde"] }
 raft-hpc-core = "2026.1"
 hpc-scheduler-core = { version = "2026.1", features = ["serde"] }
 
+# hpc-core shared contracts
+hpc-node = "2026.1"
+hpc-audit = "2026.1"
+hpc-identity = "2026.1"
+hpc-auth = "2026.1"
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

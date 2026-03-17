@@ -3,12 +3,46 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tonic::service::interceptor::InterceptedService;
+use tonic::service::Interceptor;
 use tonic::transport::Channel;
 
 use lattice_common::proto::lattice::v1 as pb;
 use pb::admin_service_client::AdminServiceClient;
 use pb::allocation_service_client::AllocationServiceClient;
 use pb::node_service_client::NodeServiceClient;
+
+/// Interceptor that adds a bearer token to outgoing gRPC requests.
+#[derive(Clone)]
+pub struct AuthInterceptor {
+    token: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
+}
+
+impl AuthInterceptor {
+    pub fn new(token: Option<String>) -> Self {
+        Self {
+            token: token.and_then(|t| {
+                format!("Bearer {t}")
+                    .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+                    .ok()
+            }),
+        }
+    }
+}
+
+impl Interceptor for AuthInterceptor {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        if let Some(ref token) = self.token {
+            request
+                .metadata_mut()
+                .insert("authorization", token.clone());
+        }
+        Ok(request)
+    }
+}
 
 /// Client configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +52,9 @@ pub struct ClientConfig {
     pub user: String,
     pub tenant: Option<String>,
     pub vcluster: Option<String>,
+    /// Bearer token for authenticated gRPC requests.
+    #[serde(skip)]
+    pub token: Option<String>,
 }
 
 impl Default for ClientConfig {
@@ -28,6 +65,7 @@ impl Default for ClientConfig {
             user: whoami().unwrap_or_else(|| "anonymous".to_string()),
             tenant: None,
             vcluster: None,
+            token: None,
         }
     }
 }
@@ -44,11 +82,13 @@ fn whoami() -> Option<String> {
         .ok()
 }
 
+type AuthChannel = InterceptedService<Channel, AuthInterceptor>;
+
 /// gRPC client that wraps all three Lattice services.
 pub struct LatticeGrpcClient {
-    pub(crate) allocations: AllocationServiceClient<Channel>,
-    nodes: NodeServiceClient<Channel>,
-    admin: AdminServiceClient<Channel>,
+    pub(crate) allocations: AllocationServiceClient<AuthChannel>,
+    nodes: NodeServiceClient<AuthChannel>,
+    admin: AdminServiceClient<AuthChannel>,
 }
 
 impl LatticeGrpcClient {
@@ -58,10 +98,14 @@ impl LatticeGrpcClient {
             .timeout(config.timeout())
             .connect()
             .await?;
+        let interceptor = AuthInterceptor::new(config.token.clone());
         Ok(Self {
-            allocations: AllocationServiceClient::new(channel.clone()),
-            nodes: NodeServiceClient::new(channel.clone()),
-            admin: AdminServiceClient::new(channel),
+            allocations: AllocationServiceClient::with_interceptor(
+                channel.clone(),
+                interceptor.clone(),
+            ),
+            nodes: NodeServiceClient::with_interceptor(channel.clone(), interceptor.clone()),
+            admin: AdminServiceClient::with_interceptor(channel, interceptor),
         })
     }
 
@@ -311,5 +355,28 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(LatticeGrpcClient::connect(&config));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_config_has_no_token() {
+        let config = ClientConfig::default();
+        assert!(config.token.is_none());
+    }
+
+    #[test]
+    fn auth_interceptor_with_token_adds_authorization_header() {
+        let mut interceptor = AuthInterceptor::new(Some("test-token-123".to_string()));
+        let request = tonic::Request::new(());
+        let result = interceptor.call(request).unwrap();
+        let auth_value = result.metadata().get("authorization").unwrap();
+        assert_eq!(auth_value.to_str().unwrap(), "Bearer test-token-123");
+    }
+
+    #[test]
+    fn auth_interceptor_without_token_passes_through() {
+        let mut interceptor = AuthInterceptor::new(None);
+        let request = tonic::Request::new(());
+        let result = interceptor.call(request).unwrap();
+        assert!(result.metadata().get("authorization").is_none());
     }
 }
