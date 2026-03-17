@@ -144,3 +144,16 @@ The root `CLAUDE.md` provides project context and is always loaded alongside the
 ## License
 
 [Apache-2.0](LICENSE)
+
+## Citation
+
+If you use this in research, please cite:
+
+```bibtex
+@software{lattice,
+  title={Lattice: A scheduler for HPC and AI workloads},
+  author={Pim Witlox},
+  year={2026},
+  url={https://github.com/witlox/lattice}
+}
+```

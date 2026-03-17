@@ -32,11 +32,10 @@ impl IdentityProvider for BootstrapProvider {
     async fn get_identity(&self) -> Result<WorkloadIdentity, IdentityError> {
         info!("loading bootstrap identity from filesystem");
 
-        let cert = std::fs::read(&self.cert_path).map_err(|e| {
-            IdentityError::BootstrapNotFound {
+        let cert =
+            std::fs::read(&self.cert_path).map_err(|e| IdentityError::BootstrapNotFound {
                 path: format!("{}: {e}", self.cert_path),
-            }
-        })?;
+            })?;
         let key = std::fs::read(&self.key_path).map_err(|e| IdentityError::BootstrapNotFound {
             path: format!("{}: {e}", self.key_path),
         })?;

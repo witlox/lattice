@@ -97,8 +97,7 @@ pub async fn execute_logout(server_url: &str, quiet: bool) -> anyhow::Result<()>
 /// Try to get a valid token for the given server URL.
 /// Returns `Ok(token_string)` if successful, or an error if not logged in.
 pub async fn get_token_for_server(server_url: &str) -> Result<String, hpc_auth::AuthError> {
-    let auth_config =
-        build_auth_config(server_url, None).map_err(hpc_auth::AuthError::Internal)?;
+    let auth_config = build_auth_config(server_url, None).map_err(hpc_auth::AuthError::Internal)?;
     let auth_client = AuthClient::new(auth_config);
     auth_client.get_token().await
 }

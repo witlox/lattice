@@ -39,9 +39,11 @@ pub fn build_cascade(config: &IdentityConfig) -> IdentityCascade {
     }
 
     // Bootstrap provider (last resort)
-    if let (Some(ref cert), Some(ref key), Some(ref ca)) =
-        (&config.bootstrap_cert, &config.bootstrap_key, &config.bootstrap_ca)
-    {
+    if let (Some(ref cert), Some(ref key), Some(ref ca)) = (
+        &config.bootstrap_cert,
+        &config.bootstrap_key,
+        &config.bootstrap_ca,
+    ) {
         providers.push(Box::new(BootstrapProvider::new(cert, key, ca)));
     }
 
