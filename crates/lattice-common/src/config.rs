@@ -52,6 +52,10 @@ pub struct LatticeConfig {
     /// Slurm compatibility layer configuration
     #[serde(default)]
     pub compat: Option<CompatConfig>,
+
+    /// Identity cascade configuration for workload mTLS
+    #[serde(default)]
+    pub identity: Option<IdentityConfig>,
 }
 
 impl Default for LatticeConfig {
@@ -92,6 +96,7 @@ impl Default for LatticeConfig {
             accounting: None,
             rate_limit: None,
             compat: None,
+            identity: None,
         }
     }
 }
@@ -434,6 +439,55 @@ impl Default for CompatConfig {
     }
 }
 
+// ─── Identity ──────────────────────────────────────────────
+
+/// Identity cascade configuration for workload mTLS.
+///
+/// Configures the three identity providers tried in order:
+/// SPIRE -> SelfSigned (quorum CA) -> Bootstrap (filesystem).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityConfig {
+    /// SPIRE agent socket path. Default: /run/spire/agent.sock
+    #[serde(default = "default_spire_socket")]
+    pub spire_socket: String,
+    /// Lattice-quorum endpoint for CSR signing (SelfSignedProvider fallback).
+    #[serde(default)]
+    pub signing_endpoint: Option<String>,
+    /// Bootstrap certificate path.
+    #[serde(default)]
+    pub bootstrap_cert: Option<String>,
+    /// Bootstrap private key path.
+    #[serde(default)]
+    pub bootstrap_key: Option<String>,
+    /// Bootstrap CA trust bundle path.
+    #[serde(default)]
+    pub bootstrap_ca: Option<String>,
+    /// Certificate lifetime for self-signed certs (seconds). Default: 259200 (3 days).
+    #[serde(default = "default_cert_lifetime")]
+    pub cert_lifetime_seconds: u64,
+}
+
+fn default_spire_socket() -> String {
+    "/run/spire/agent.sock".to_string()
+}
+
+fn default_cert_lifetime() -> u64 {
+    259_200 // 3 days
+}
+
+impl Default for IdentityConfig {
+    fn default() -> Self {
+        Self {
+            spire_socket: default_spire_socket(),
+            signing_endpoint: None,
+            bootstrap_cert: None,
+            bootstrap_key: None,
+            bootstrap_ca: None,
+            cert_lifetime_seconds: default_cert_lifetime(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,6 +550,33 @@ mod tests {
         assert!(cfg.set_slurm_env);
         assert!(cfg.partition_mapping.is_empty());
         assert!(cfg.qos_mapping.is_empty());
+    }
+
+    #[test]
+    fn identity_config_defaults() {
+        let cfg = IdentityConfig::default();
+        assert_eq!(cfg.spire_socket, "/run/spire/agent.sock");
+        assert!(cfg.signing_endpoint.is_none());
+        assert!(cfg.bootstrap_cert.is_none());
+        assert!(cfg.bootstrap_key.is_none());
+        assert!(cfg.bootstrap_ca.is_none());
+        assert_eq!(cfg.cert_lifetime_seconds, 259_200);
+    }
+
+    #[test]
+    fn identity_config_deserializes() {
+        let yaml = r#"
+spire_socket: /custom/spire.sock
+signing_endpoint: https://quorum:9443
+bootstrap_cert: /etc/lattice/cert.pem
+bootstrap_key: /etc/lattice/key.pem
+bootstrap_ca: /etc/lattice/ca.pem
+cert_lifetime_seconds: 86400
+"#;
+        let cfg: IdentityConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.spire_socket, "/custom/spire.sock");
+        assert_eq!(cfg.signing_endpoint.as_deref(), Some("https://quorum:9443"));
+        assert_eq!(cfg.cert_lifetime_seconds, 86400);
     }
 
     #[test]
