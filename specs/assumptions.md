@@ -196,6 +196,26 @@ These paths prevent configuration drift between the two systems.
 **If wrong:** Misconfigured paths cause namespace handoff failure. Detection: handoff error logged, fallback to self-service.
 **Critical:** No — fallback to self-service (A-HC2).
 
+## Network Topology Assumptions
+
+### A-NET1: Lattice Traffic on HSN
+**Source:** PACT ADR-017 (Network Topology — Management Network for Pact, HSN for Lattice)
+**Assumption:** All lattice control plane traffic (Raft consensus, node-agent heartbeats, allocation lifecycle, checkpoint coordination) runs on the high-speed network (Slingshot/Ultra Ethernet, 200G+). The management network (1G Ethernet) is used by PACT for admin operations, PXE boot, and BMC access. Lattice does not use the management network.
+**If wrong:** Lattice traffic on management network would saturate 1G links at scale (10,000 nodes × 30s telemetry). Raft consensus latency would increase from sub-microsecond to milliseconds.
+**Critical:** Yes at scale — management network cannot sustain lattice traffic volume.
+
+### A-NET2: HSN Available Before Lattice Starts
+**Source:** PACT ADR-017 boot ordering, ADR-006 (pact as init)
+**Assumption:** When PACT is present, HSN is available by the time lattice-node-agent starts (PACT starts `cxi_rh` in Phase 5, lattice-node-agent starts after). In standalone mode (systemd), HSN availability is assumed (operator responsibility).
+**If wrong:** Lattice-node-agent cannot connect to quorum. Agent retries with backoff until HSN comes up. No data loss (node enters Booting → Ready once connected).
+**Critical:** No — retry with backoff handles transient HSN unavailability.
+
+### A-NET3: SPIRE Bridges Both Networks
+**Source:** PACT ADR-017
+**Assumption:** SPIRE agent runs locally on each node (unix socket `/run/spire/agent.sock`). SVIDs are X.509 certificates that authenticate identity, not network interfaces. The same SVID works on both management and HSN networks. Identity acquisition has no network dependency (local socket only).
+**If wrong:** Would need separate identity providers per network. Significant complexity increase.
+**Critical:** No — self-signed CA fallback (hpc-identity cascade) works without SPIRE.
+
 ## Authentication Assumptions
 
 ### A-Auth1: hpc-auth Crate Available

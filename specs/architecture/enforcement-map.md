@@ -52,6 +52,13 @@ Maps every invariant from `specs/invariants.md` to its enforcement point(s) in t
 | **INV-N4** No silent failure | All modules | `LatticeError` typed error enum. Metrics for all failure paths (`lattice_*` counters). Alert rules in `infra/`. Audit log for sensitive. |
 | **INV-N5** Accounting never blocks scheduling | lattice-common (Waldur client) + lattice-scheduler | Async push with bounded buffer (10K memory + 100K disk). Events dropped with `lattice_accounting_events_dropped_total` counter rather than blocking. Scheduling cycle never awaits Waldur response. |
 
+## Network Topology Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-NET1** HSN binding | lattice-common (config) | `BindNetwork` enum on `QuorumConfig`, `ApiConfig`, `NodeAgentConfig`. Default `Any` (dev); production sets `Hsn`. Config validation logs warning if `Any` used with >10 nodes. | Config tests, deployment validation |
+| **INV-NET2** No port conflicts (co-located) | Deployment config | Lattice ports (50051, 9000, 8080) vs PACT ports (9443, 9444) on different NICs. Startup bind failure is immediate and fatal. | Docker compose tests, deployment docs |
+
 ## Resource Isolation Invariants (hpc-node)
 
 | Invariant | Enforcement Module | Enforcement Mechanism | Verified By |

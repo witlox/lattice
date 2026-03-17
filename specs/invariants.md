@@ -348,6 +348,26 @@ These invariants may be briefly violated during consistency windows (bounded by 
 
 **Violation consequence:** Dropped gRPC connections during cert rotation. Heartbeat gaps, scheduling pauses.
 
+## Network Topology Invariants
+
+### INV-NET1: HSN Binding for Lattice Services
+
+**Statement:** Lattice quorum (Raft transport + gRPC API) and lattice-node-agent bind to the high-speed network interface, not the management network. In co-located mode with PACT, lattice and PACT use different network interfaces on the same physical servers (PACT: management 1G, lattice: HSN 200G+).
+
+**Enforcement:** `QuorumConfig.bind_network` and `NodeAgentConfig.bind_network` specify `hsn` (default) or `management`. When set to `hsn`, the bind address resolves to the HSN interface. Standalone mode: defaults to `0.0.0.0` (all interfaces) for backwards compatibility.
+
+**Violation consequence:** Lattice traffic on management network saturates 1G links. Raft consensus latency degrades. At scale (>1000 nodes), scheduling becomes unreliable.
+
+---
+
+### INV-NET2: No Port Conflicts in Co-located Mode
+
+**Statement:** When lattice quorum and PACT journal share physical servers, they use different ports on different network interfaces. Lattice: gRPC 50051, Raft 9000 (HSN). PACT: gRPC 9443, Raft 9444 (management). No overlap.
+
+**Enforcement:** Default port configuration. Deployment validation checks for port conflicts at startup.
+
+**Violation consequence:** Service bind failure at startup. One system fails to start.
+
 ## Raft Co-location Invariants
 
 ### INV-R1: Independent Raft Group

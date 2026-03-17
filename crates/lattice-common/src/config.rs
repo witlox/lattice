@@ -67,6 +67,7 @@ impl Default for LatticeConfig {
                 tls_cert: None,
                 tls_key: None,
                 tls_ca: None,
+                bind_network: BindNetwork::Any,
             },
             storage: StorageConfig {
                 vast_api_url: None,
@@ -124,10 +125,39 @@ pub struct QuorumConfig {
     /// When None, uses in-memory storage (test/dev mode).
     #[serde(default)]
     pub data_dir: Option<PathBuf>,
+    /// Network to bind to: "hsn" (high-speed, default for production),
+    /// "management" (1G admin), or "any" (0.0.0.0, for dev/standalone).
+    /// See PACT ADR-017: lattice traffic runs on HSN, PACT on management.
+    #[serde(default = "default_bind_network")]
+    pub bind_network: BindNetwork,
 }
 
 fn default_raft_listen_address() -> String {
     "0.0.0.0:9000".to_string()
+}
+
+fn default_bind_network() -> BindNetwork {
+    BindNetwork::Any
+}
+
+/// Which network interface lattice services bind to.
+///
+/// HPC infrastructure has two networks (PACT ADR-017):
+/// - Management (1G Ethernet): PXE boot, BMC, admin — PACT uses this
+/// - HSN (Slingshot/UE 200G+): workload traffic, MPI, storage — Lattice uses this
+///
+/// In production, lattice should bind to HSN. In dev/standalone mode, "any" is fine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BindNetwork {
+    /// Bind to high-speed network interface (Slingshot/Ultra Ethernet).
+    /// Production default when co-deployed with PACT.
+    Hsn,
+    /// Bind to management network interface (1G Ethernet).
+    /// Not recommended for lattice — use for diagnostics only.
+    Management,
+    /// Bind to all interfaces (0.0.0.0). Default for dev/standalone mode.
+    Any,
 }
 
 impl Default for QuorumConfig {
@@ -140,6 +170,7 @@ impl Default for QuorumConfig {
             snapshot_threshold: 10000,
             raft_listen_address: default_raft_listen_address(),
             data_dir: None,
+            bind_network: BindNetwork::Any,
         }
     }
 }
@@ -170,6 +201,9 @@ pub struct ApiConfig {
     /// signed by this CA.
     #[serde(default)]
     pub tls_ca: Option<PathBuf>,
+    /// Network to bind to (see [`BindNetwork`]).
+    #[serde(default = "default_bind_network")]
+    pub bind_network: BindNetwork,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +274,11 @@ pub struct NodeAgentConfig {
     pub grace_period_seconds: u64,
     /// Extended grace period for sensitive nodes (seconds)
     pub sensitive_grace_period_seconds: u64,
+    /// Network to bind to (see [`BindNetwork`]).
+    /// Production: "hsn" (connects to quorum on HSN).
+    /// Standalone: "any" (default).
+    #[serde(default = "default_bind_network")]
+    pub bind_network: BindNetwork,
 }
 
 impl Default for NodeAgentConfig {
@@ -249,6 +288,7 @@ impl Default for NodeAgentConfig {
             heartbeat_timeout_seconds: 30,
             grace_period_seconds: 120,
             sensitive_grace_period_seconds: 600,
+            bind_network: BindNetwork::Any,
         }
     }
 }
