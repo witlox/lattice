@@ -126,7 +126,7 @@ Precise definitions for every domain term used in Lattice. When two terms seem s
 
 **hpc-core** — A separate workspace of crates (published to crates.io) defining shared trait-based contracts for HPC infrastructure. Both PACT and Lattice depend on hpc-core; neither depends on the other. Prevents convention drift without code coupling.
 
-**Dual-Mode Operation** — Lattice-node-agent's ability to operate in two modes: **standalone** (self-services all resource isolation) or **PACT-managed** (delegates to PACT via hpc-node contracts). Mode is detected at runtime by probing for PACT's handoff socket and readiness file. Also referred to informally as the "steroids model" — PACT presence enhances Lattice capabilities without changing its correctness guarantees.
+**Dual-Mode Operation** — Lattice-node-agent's ability to operate in two modes: **standalone** (self-services all resource isolation) or **PACT-managed** (delegates to PACT via hpc-node contracts). Mode is detected at runtime by probing for PACT's handoff socket and readiness file. Also referred to informally as the "supercharged model" — PACT presence enhances Lattice capabilities without changing its correctness guarantees.
 
 **CgroupManager** — hpc-node trait for cgroup v2 hierarchy management. Methods: `create_hierarchy()`, `create_scope()`, `destroy_scope()`, `read_metrics()`, `is_scope_empty()`. Lattice implements this in standalone mode; PACT implements it in managed mode. Both use the well-known `workload.slice/` path.
 

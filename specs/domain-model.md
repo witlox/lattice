@@ -164,7 +164,7 @@ Lattice depends on four shared contract crates from the hpc-core workspace (publ
 
 **Dual-mode operation model:**
 
-| Capability | Standalone (no PACT) | PACT-managed (steroids) |
+| Capability | Standalone (no PACT) | PACT-managed (supercharged) |
 |---|---|---|
 | Cgroup hierarchy | lattice-node-agent creates `workload.slice/` | PACT creates both slices at boot |
 | Namespace creation | Self-service via `unshare(2)` | Handed off from PACT via SCM_RIGHTS |
