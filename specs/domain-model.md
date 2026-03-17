@@ -158,7 +158,7 @@ Lattice depends on four shared contract crates from the hpc-core workspace (publ
 
 **hpc-audit** — Universal audit event format (`AuditEvent`), sink trait (`AuditSink`), 40+ well-known action constants, compliance policy (`CompliancePolicy`). Includes `AuditSource` enum with variants for both systems. Lattice wraps `AuditEvent` in signed Raft envelope.
 
-**hpc-identity** — Workload identity cascade (`IdentityCascade`: SPIRE → self-signed → bootstrap), certificate rotation (`CertRotator`: dual-channel non-disruptive swap), identity provider trait (`IdentityProvider`). Used by both lattice-node-agent (per-node mTLS) and lattice-quorum (inter-replica mTLS).
+**hpc-identity** — Workload identity cascade (`IdentityCascade`: SPIRE → self-signed → bootstrap), certificate rotation (`CertRotator`: dual-channel non-disruptive swap), identity provider trait (`IdentityProvider`). Used by both lattice-node-agent (per-node mTLS on HSN) and lattice-quorum (inter-replica mTLS). SPIRE is the primary provider on HPE Cray deployments. Lattice-quorum acts as ephemeral self-signed CA (same model as PACT ADR-008) when SPIRE is not deployed. Trust domains are separate from PACT even when co-deployed.
 
 **hpc-auth** — OAuth2/OIDC token management (`AuthClient`), cascading flows (PKCE → Device Code → Manual Paste → Client Credentials), per-server token caching, OIDC discovery. Used by lattice-cli for user authentication.
 

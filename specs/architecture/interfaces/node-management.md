@@ -196,25 +196,90 @@ trait ReadinessGate: Send + Sync
 
 ## Identity Management (hpc-identity)
 
-```
-Startup sequence:
-  1. Construct IdentityCascade with providers:
-     [SpireProvider(socket), SelfSignedProvider(signing_endpoint), StaticProvider(bootstrap_certs)]
-  2. Call cascade.get_identity() → WorkloadIdentity
-  3. Configure tonic TLS with identity cert/key/trust_bundle
-  4. Schedule CertRotator at 2/3 certificate lifetime intervals
+### Provider Configuration
 
-CertRotator protocol:
+```
+SpireProvider:
+  socket: /run/spire/agent.sock   (SPIRE agent, standard on HPE Cray)
+  spiffe_id: auto-detect           (from node attestation)
+  timeout: 30s
+
+SelfSignedProvider:
+  signing_endpoint: lattice-quorum gRPC   (quorum acts as ephemeral CA)
+  cert_lifetime: 3 days (259200s)         (same as PACT ADR-008)
+  Agent generates keypair → submits CSR → quorum signs with in-memory CA key
+  CA key: ephemeral, generated at quorum startup, never persisted
+
+StaticProvider:
+  cert_path: /etc/lattice/tls/bootstrap.crt   (from SquashFS or cloud-init)
+  key_path: /etc/lattice/tls/bootstrap.key
+  trust_bundle_path: /etc/lattice/tls/ca-bundle.crt
+```
+
+### Startup Sequence
+
+```
+T+0.0s  lattice-node-agent starts (under PACT supervision or systemd)
+T+0.1s  IdentityCascade constructed:
+        [SpireProvider(socket), SelfSignedProvider(quorum), StaticProvider(files)]
+T+0.2s  cascade.get_identity():
+        - SpireProvider.is_available() → check socket exists
+        - [yes] SpireProvider.get_identity() → SVID (primary path on HPE Cray)
+        - [no]  SelfSignedProvider.is_available() → check quorum reachable
+          - [yes] generate keypair, submit CSR, receive signed cert
+          - [no]  StaticProvider.is_available() → check bootstrap cert files
+            - [yes] read cert/key from disk (bootstrap identity)
+            - [no]  IdentityError::NoProviderAvailable → agent fails to start
+T+0.3s  Configure tonic TLS with WorkloadIdentity cert/key/trust_bundle
+T+0.4s  Connect to lattice-quorum on HSN (mTLS)
+T+0.5s  Schedule CertRotator at 2/3 certificate lifetime
+
+Boot window upgrade (if started with StaticProvider):
+T+1.0s  SPIRE agent becomes available (started by PACT or systemd)
+T+1.1s  CertRotator fires: cascade.get_identity() → SpireProvider now available
+T+1.2s  Dual-channel swap: bootstrap → SVID
+T+1.3s  Bootstrap identity discarded
+```
+
+### CertRotator Protocol
+
+```
+CertRotator (triggered at 2/3 cert lifetime or on provider upgrade):
   1. cascade.get_identity() → new WorkloadIdentity
   2. Build passive tonic Channel with new TLS config
-  3. Health-check passive channel (connect + handshake)
+  3. Health-check passive channel (connect + handshake to quorum)
   4. Atomic swap: passive → active, old active → draining
   5. Drain old channel (wait for in-flight RPCs to complete)
   6. Drop old channel
   7. On failure at any step: abort, keep current active channel
+     (retry at next scheduled interval)
 ```
 
-**Spec source:** INV-ID1 (cascade order), INV-ID2 (key locality), INV-ID3 (non-disruptive rotation), FM-20 (cascade exhaustion), FM-23 (rotation failure)
+### Lattice-Quorum as Ephemeral CA (SelfSignedProvider)
+
+When SPIRE is not deployed, lattice-quorum provides the `SelfSignedProvider` signing endpoint:
+
+```
+Quorum startup:
+  1. Generate ephemeral intermediate CA key in memory (never persisted)
+  2. Derive CA cert (self-signed or signed by site root CA if configured)
+  3. Expose CSR signing via authenticated gRPC endpoint
+
+Agent CSR signing:
+  1. Agent generates keypair locally (in RAM)
+  2. Agent sends CSR to quorum (authenticated via bootstrap cert)
+  3. Quorum validates: caller's identity matches a registered node
+  4. Quorum signs CSR with ephemeral CA key (~1ms CPU, no network)
+  5. Returns signed cert + trust bundle
+  6. Agent builds mTLS channel with new cert
+
+Trust separation:
+  - Lattice-quorum and pact-journal use SEPARATE CA keys
+  - Even when co-deployed, trust domains are independent
+  - A lattice cert cannot authenticate to pact, and vice versa
+```
+
+**Spec source:** INV-ID1 (cascade order), INV-ID2 (key locality), INV-ID3 (non-disruptive rotation), FM-20 (cascade exhaustion), FM-23 (rotation failure), A-HC4/A-HC4a/A-HC4b (SPIRE + self-signed + bootstrap), PACT ADR-008 (ephemeral CA model)
 
 ## Attach / PTY
 

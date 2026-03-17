@@ -183,8 +183,8 @@ Fail-safe defaults. Running allocations survive component failures. No silent fa
 |---|---|
 | **Detection** | All `IdentityProvider` implementations return errors |
 | **Blast radius** | Node agent or quorum member cannot establish mTLS connections. Cannot register, heartbeat, or serve RPCs. |
-| **Degradation** | SPIRE unavailable → try self-signed CA → bootstrap cert expired → **no valid identity**. Agent enters degraded state. Existing connections continue until cert expires. |
-| **Recovery** | Fix underlying provider: restart SPIRE agent, renew bootstrap cert, or restore signing endpoint. Agent automatically retries cascade on next rotation cycle. |
+| **Degradation** | SPIRE unavailable (socket missing or agent down) → SelfSignedProvider fails (quorum unreachable) → StaticProvider fails (bootstrap cert expired or files missing) → **no valid identity**. Agent enters degraded state. Existing connections continue until cert expires. |
+| **Recovery** | Fix underlying provider: restart SPIRE agent (primary path on HPE Cray), restore quorum for self-signed CA, or provision new bootstrap certs. Agent automatically retries cascade on next rotation cycle. |
 | **Data loss** | None. Running allocations continue (existing TLS sessions remain valid). |
 | **Unacceptable** | Silent operation without mTLS. Must refuse to serve RPCs without valid identity. |
 

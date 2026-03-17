@@ -173,10 +173,26 @@ Assumptions surfaced from architecture docs, ADRs, and domain analysis. Categori
 **Critical:** No — temporal correlation is sufficient for most regulatory queries. Causal linking is a future enhancement (requires PACT→Lattice notification channel).
 
 ### A-HC4: hpc-identity Crate Available
-**Source:** ADR-015, ADR-008 (node enrollment certificate lifecycle)
-**Assumption:** The hpc-identity crate provides `IdentityCascade` (SPIRE → self-signed → bootstrap) and `CertRotator` for dual-channel certificate rotation. Lattice-node-agent and lattice-quorum use this for mTLS identity instead of static `rcgen` certs. Private keys are generated locally and never transmitted.
-**If wrong:** Lattice continues with static certs from `rcgen`. Production mTLS requires manual cert management.
-**Critical:** No — but blocks production mTLS deployment without manual intervention.
+**Source:** ADR-015, PACT ADR-008 (node enrollment certificate lifecycle, amended 2026-03-17)
+**Assumption:** The hpc-identity crate provides `IdentityCascade` and `CertRotator` for mTLS workload identity. Both lattice-node-agent and lattice-quorum use this instead of pre-provisioned static cert files. The cascade order is:
+1. **SpireProvider** (primary) — obtains X.509 SVID from local SPIRE agent socket (`/run/spire/agent.sock`). SPIRE is standard infrastructure on HPE Cray systems (target deployment platform). Handles rotation, attestation, and trust bundle management.
+2. **SelfSignedProvider** (fallback) — agent generates keypair + CSR, lattice-quorum signs with ephemeral intermediate CA key (same pattern as pact-journal in PACT ADR-008). Used when SPIRE is not deployed (dev, CI, small clusters).
+3. **StaticProvider** (bootstrap) — reads cert/key/trust-bundle from SquashFS image or local files. Used during the boot window before SPIRE or quorum is reachable.
+Private keys are generated locally and never transmitted (INV-ID2).
+**If wrong:** Would need manual cert management or external PKI dependency on the boot path.
+**Critical:** No — static cert fallback always works, but limits rotation and automation.
+
+### A-HC4a: SPIRE Available on Target Deployments
+**Source:** PACT ADR-008 amendment, HPE Cray infrastructure
+**Assumption:** Target deployment hardware (HPE Cray with Slingshot/UE) runs SPIRE agent on every compute node. SPIRE provides workload attestation, X.509 SVID issuance, and automatic rotation. Identity acquisition is via local unix socket (no network dependency). The same SVID works on both management and HSN networks (A-NET3).
+**If wrong:** Lattice falls back to SelfSignedProvider (quorum-signed certs) or StaticProvider (bootstrap certs). All functionality works but cert rotation requires manual intervention or quorum availability.
+**Critical:** No — cascade handles SPIRE absence gracefully.
+
+### A-HC4b: Lattice-Quorum as Self-Signed CA
+**Source:** PACT ADR-008 (ephemeral CA model), adapted for lattice
+**Assumption:** When SPIRE is not available, lattice-quorum nodes can act as ephemeral intermediate CAs for signing agent CSRs (same model as pact-journal in ADR-008). The CA key is generated in-memory at quorum startup, never persisted. CSR signing is a local CPU operation (~1ms per cert). Lattice owns its own trust domain independently of PACT — even when co-deployed, lattice-quorum and pact-journal use separate CA keys and separate trust chains.
+**If wrong:** Without SPIRE and without quorum CA, only static bootstrap certs are available. No rotation until either SPIRE or quorum CA is implemented.
+**Critical:** No — bootstrap certs work for initial deployment, but production requires at least one rotation mechanism.
 
 ### A-HC5: Cgroup v2 Filesystem Available
 **Source:** hpc-node `CgroupManager` trait

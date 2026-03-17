@@ -322,9 +322,14 @@ These invariants may be briefly violated during consistency windows (bounded by 
 
 ### INV-ID1: Identity Cascade Order
 
-**Statement:** Lattice components use `IdentityCascade` with providers in priority order: SPIRE (preferred) → self-signed CA (fallback) → bootstrap cert (last resort). The cascade tries each provider's `is_available()` before calling `get_identity()`.
+**Statement:** Lattice components use `IdentityCascade` with providers in priority order:
+1. **SpireProvider** (primary) — SPIRE agent socket, X.509 SVID. Standard on HPE Cray.
+2. **SelfSignedProvider** (fallback) — agent-generated keypair + CSR signed by lattice-quorum ephemeral CA. Same model as PACT ADR-008.
+3. **StaticProvider** (bootstrap) — pre-provisioned cert from SquashFS image or local files. Used during boot window.
 
-**Enforcement:** `IdentityCascade::new()` called with providers in correct order at agent/quorum startup. Provider list is immutable after construction.
+The cascade tries each provider's `is_available()` before calling `get_identity()`. SPIRE availability is detected via local socket probe (no network dependency).
+
+**Enforcement:** `IdentityCascade::new()` called with providers in correct order at agent/quorum startup. Provider list is immutable after construction. Lattice owns its own trust domain — separate CA keys from PACT even when co-deployed.
 
 **Violation consequence:** Using a weaker identity source when a stronger one is available. Not a security breach (all sources are valid), but suboptimal trust posture.
 
