@@ -304,7 +304,7 @@ Completions cover: subcommands, flag names, allocation IDs (from recent `lattice
 
 ```yaml
 # ~/.config/lattice/config.yaml
-api_url: "https://firecrest.example.com/lattice/v1"
+api_url: "https://lattice.example.com:50051"
 default_tenant: "physics"
 default_vcluster: "hpc-batch"
 default_uenv: "prgenv-gnu/24.11:v1"

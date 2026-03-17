@@ -431,8 +431,8 @@ The cascade tries each provider's `is_available()` before calling `get_identity(
 
 ---
 
-### INV-A5: FirecREST Optionality
+### INV-A5: FirecREST Is Not Part of the Architecture
 
-**Statement:** FirecREST presence or absence does not change the authentication model. Lattice authenticates directly against the IdP. If FirecREST is present, it accepts the same token as a passthrough.
+**Statement:** FirecREST is not part of the Lattice architecture. Lattice authenticates directly against the institutional IdP via hpc-auth. If FirecREST is present as a legacy compatibility gateway for hybrid Slurm deployments, it is transparent — it does not participate in authentication, authorization, or any Lattice-specific logic.
 
-**Enforcement:** No FirecREST-specific code in the auth path.
+**Enforcement:** No FirecREST-specific code anywhere in the codebase. The auth path uses hpc-auth for OIDC flows.

@@ -175,7 +175,7 @@ allocation:
 
 ### Tier 2: Compatibility API (Slurm-like)
 
-Translates familiar Slurm commands to Intent API calls. Implemented as CLI wrappers + FirecREST endpoints.
+Translates familiar Slurm commands to Intent API calls. Implemented as CLI wrappers + lattice-api REST endpoints.
 
 #### Command Mapping
 
@@ -246,6 +246,6 @@ Planned services will be added as the proto matures. REST endpoints for planned 
 
 ## Authentication
 
-All API calls require OIDC bearer token. FirecREST handles the OIDC flow (institutional IdP integration). The lattice-api server validates tokens against the configured OIDC provider.
+All API calls require OIDC bearer token. The lattice CLI handles the OIDC flow via hpc-auth (institutional IdP integration). The lattice-api server validates tokens against the configured OIDC provider.
 
 Sensitive tenant tokens include additional claims for audit trail binding.

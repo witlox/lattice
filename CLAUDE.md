@@ -153,7 +153,7 @@ Detailed design documents: system-architecture, api-design, scheduling-algorithm
 |---|---|---|
 | OpenCHAMI | Infrastructure management | Go, separate deployment, API integration |
 | Sovra | Federation trust | Go, optional, pluggable |
-| FirecREST | User API gateway | Sits in front of lattice-api |
+| FirecREST | Optional compatibility gateway | Passthrough for hybrid Slurm deployments, not required |
 | uenv/squashfs-mount | Software delivery | C, existing binary, integrated by node agent |
 | Sarus | OCI container runtime | C++, existing, used by node agent |
 | libfabric | Network abstraction | C, Slingshot/UE interface |

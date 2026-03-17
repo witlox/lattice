@@ -96,12 +96,13 @@ Feature: CLI Authentication (Lattice-specific)
     Then the server returns the IdP URL and public client ID
     And the endpoint does not require authentication
 
-  Scenario: lattice-api auth discovery with FirecREST configured
+  Scenario: lattice-api auth discovery with optional FirecREST gateway
     Given the lattice-api server is running
-    And FirecREST is configured as an optional gateway
+    And FirecREST is deployed as an optional compatibility gateway
     When a client requests the auth discovery endpoint
     Then the server returns the same IdP configuration
-    And FirecREST presence does not change the IdP endpoint
+    And FirecREST presence does not change the auth model
+    And lattice authenticates directly against the IdP via hpc-auth
 
   # --- Multi-Server ---
 

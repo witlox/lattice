@@ -25,7 +25,7 @@ A distributed workload scheduler for large-scale scientific computing, AI/ML tra
 ## Architecture
 
 ```
-User Plane         FirecREST API Gateway (OIDC/SAML)
+User Plane         lattice-cli + lattice-api (OIDC via hpc-auth)
 Software Plane     uenv (SquashFS) + Sarus (OCI) + Registry
 Scheduling Plane   Raft Quorum + vCluster Schedulers (knapsack)
 Data Plane         VAST (NFS/S3) tiered storage + data mover
@@ -121,7 +121,7 @@ docker compose up
 | System | Role |
 |---|---|
 | [OpenCHAMI](https://openchami.org) | Infrastructure management (Redfish BMC) |
-| [FirecREST](https://github.com/eth-cscs/firecrest) | User API gateway |
+| [FirecREST](https://github.com/eth-cscs/firecrest) | Optional compatibility gateway (hybrid Slurm deployments) |
 | [uenv](https://github.com/eth-cscs/uenv) / [Sarus](https://github.com/eth-cscs/sarus) | Software delivery (SquashFS / OCI) |
 | [Sovra](https://github.com/witlox/sovra) | Federation trust (optional) |
 | VAST | Tiered storage (NFS + S3) |

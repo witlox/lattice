@@ -156,7 +156,7 @@ Precise definitions for every domain term used in Lattice. When two terms seem s
 
 **Sovra** — Federated sovereign key management. Each site has its own root key. Shared workspaces enable cross-site trust. Feature-gated.
 
-**FirecREST** — User-facing API gateway. Handles OIDC authentication flow. Sits in front of lattice-api.
+**FirecREST** — Optional compatibility gateway for hybrid Slurm deployments. When present, acts as passthrough — lattice authenticates directly against the IdP via hpc-auth. Not required.
 
 **Waldur** — External accounting and billing system. Lattice pushes usage events; Waldur pushes quota updates. Feature-gated. Failure never blocks scheduling.
 

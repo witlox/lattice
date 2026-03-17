@@ -6,7 +6,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 
 ```
 ┌─ User Plane ───────────────────────────────────────────────────┐
-│  FirecREST API Gateway (OIDC/SAML)                             │
+│  lattice-cli + lattice-api (OIDC via hpc-auth)                   │
 │  ├── Job lifecycle (submit, monitor, cancel)                   │
 │  ├── Interactive sessions (WebSocket terminal)                 │
 │  ├── Data management (stage, browse, transfer)                 │
@@ -81,7 +81,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 ### Allocation Lifecycle
 
 ```
-1. User/Agent → FirecREST → lattice-api (Intent API or Compat API)
+1. User/Agent → lattice-cli → lattice-api (Intent API or Compat API)
 2. lattice-api validates request, resolves uenv, creates Allocation object
 3. Allocation placed in vCluster scheduler's queue (eventually consistent)
 4. vCluster scheduler runs scheduling cycle:

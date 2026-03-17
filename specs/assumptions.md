@@ -246,11 +246,11 @@ These paths prevent configuration drift between the two systems.
 **If wrong:** Users must manually configure IdP details. Worse UX but functional.
 **Critical:** No — manual config fallback exists.
 
-### A-Auth3: FirecREST Is Optional for Auth
+### A-Auth3: FirecREST Is Not Required *(validated)*
 **Source:** CLI authentication design
-**Assumption:** Lattice authenticates directly against the institutional IdP. FirecREST, when present, is a passthrough gateway for hybrid Slurm deployments, not required for authentication.
-**If wrong:** Lattice would depend on FirecREST for all user authentication. Single point of failure.
-**Critical:** No — but changes the deployment model significantly.
+**Status:** Validated — confirmed as architectural decision. Lattice authenticates directly against the institutional IdP via hpc-auth. FirecREST, when present, is a transparent passthrough gateway for hybrid Slurm deployments. It is not part of the authentication path.
+**If wrong:** N/A — this is now a validated design decision, not an assumption.
+**Critical:** No.
 
 ### A-Auth4: Waldur Is Source of Truth for vCluster Authorization
 **Source:** CLI authentication design
