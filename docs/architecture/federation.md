@@ -30,7 +30,7 @@ Site A Sovra Instance              Site B Sovra Instance
 ├── Site A Root Key (sovereign)    ├── Site B Root Key (sovereign)
 ├── Workspace: "hpc-general"       ├── Workspace: "hpc-general"
 │   (shared federation key)        │   (federated with Site A)
-├── Workspace: "sensitive-ch"        └── Policy: Site B OPA rules
+├── Workspace: "sensitive-ch"      └── Policy: Site B OPA rules
 │   (hospital CRK, delegated)
 └── Policy: Site A OPA rules
 

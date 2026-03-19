@@ -8,7 +8,7 @@
 │  Use: active datasets, home dirs, checkpoints, scratch │
 │  Performance: NVMe-speed, low-latency                  │
 │  Scheduler integration: QoS per export, pre-staging    │
-│  Sensitive: encrypted pool, access-logged                │
+│  Sensitive: encrypted pool, access-logged              │
 └────────────────────┬───────────────────────────────────┘
                      │ policy-driven data mover
 ┌────────────────────┴───────────────────────────────────┐
@@ -22,7 +22,7 @@
 │  Cold Tier (tape/object archive)                       │
 │  Protocol: S3-compatible (Glacier-style retrieval)     │
 │  Use: regulatory retention, long-term archival         │
-│  Sensitive: 7+ year retention, immutable                 │
+│  Sensitive: 7+ year retention, immutable               │
 └────────────────────────────────────────────────────────┘
 ```
 
