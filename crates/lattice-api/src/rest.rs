@@ -71,6 +71,7 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
         .route("/api/v1/nodes/{id}", get(get_node))
         .route("/api/v1/nodes/{id}/drain", post(drain_node))
         .route("/api/v1/nodes/{id}/undrain", post(undrain_node))
+        .route("/api/v1/nodes/{id}/enable", post(enable_node))
         .route("/api/v1/auth/discovery", get(auth_discovery))
         .route("/healthz", get(healthz))
         .with_state(state)
@@ -1658,6 +1659,22 @@ async fn drain_node(
 }
 
 async fn undrain_node(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.nodes.update_node_state(&id, NodeState::Ready).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"success": true}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn enable_node(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {

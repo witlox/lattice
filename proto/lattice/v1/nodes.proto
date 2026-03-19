@@ -24,11 +24,17 @@ service NodeService {
   // Disable a node (mark as permanently unavailable until re-enabled)
   rpc DisableNode(DisableNodeRequest) returns (DisableNodeResponse);
 
+  // Re-enable a previously disabled node (transition from Down back to Ready)
+  rpc EnableNode(EnableNodeRequest) returns (EnableNodeResponse);
+
   // Register a compute node with the quorum
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
 
   // Send a heartbeat from a compute node
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
 }
 
 // ─── Request / Response Messages ────────────────────────────
@@ -75,6 +81,14 @@ message DisableNodeRequest {
 }
 
 message DisableNodeResponse {
+  bool success = 1;
+}
+
+message EnableNodeRequest {
+  string node_id = 1;
+}
+
+message EnableNodeResponse {
   bool success = 1;
 }
 
@@ -165,4 +179,14 @@ message HeartbeatRequest {
 
 message HeartbeatResponse {
   bool accepted = 1;
+}
+
+// ─── Health Check ────────────────────────────────────────────
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;          // "healthy", "degraded", "unhealthy"
+  string version = 2;
+  uint64 uptime_secs = 3;
 }

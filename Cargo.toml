@@ -8,6 +8,7 @@ members = [
     "crates/lattice-api",
     "crates/lattice-cli",
     "crates/lattice-checkpoint",
+    "crates/lattice-client",
     "crates/lattice-test-harness",
     "crates/lattice-acceptance",
 ]

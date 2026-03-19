@@ -5,13 +5,13 @@ Module boundaries, responsibilities, and ownership. Each module maps to a Rust c
 ## Module Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         lattice-cli                                     │
-│  CLI client + Slurm compat layer                                        │
-│  Stateless. Consumes gRPC services.                                     │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │ gRPC
-┌───────────────────────────────┴─────────────────────────────────────────┐
+┌────────────────────────────────┐  ┌──────────────────────────────────────┐
+│         lattice-cli            │  │       lattice-client (SDK)           │
+│  CLI + Slurm compat layer      │  │  Rust gRPC client SDK (42 methods)   │
+│  Delegates to lattice-client   │──│  Publishable. Full API parity.       │
+└────────────────────────────────┘  └──────────────────┬───────────────────┘
+                                                       │ gRPC
+┌──────────────────────────────────────────────────────┴──────────────────┐
 │                         lattice-api                                      │
 │  gRPC + REST gateway. Middleware (OIDC, RBAC, rate limit).               │
 │  Owns: API surface, request validation, event streaming.                 │

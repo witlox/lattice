@@ -1162,6 +1162,62 @@ impl AllocationService for LatticeAllocationService {
             allocations_cancelled: cancelled,
         }))
     }
+
+    // ─── Session RPCs ────────────────────────────────────────
+
+    async fn create_session(
+        &self,
+        request: Request<pb::CreateSessionRequest>,
+    ) -> Result<Response<pb::SessionResponse>, Status> {
+        let req = request.into_inner();
+
+        // Verify allocation exists
+        let alloc_id: uuid::Uuid = req
+            .allocation_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid allocation_id"))?;
+        self.state
+            .allocations
+            .get(&alloc_id)
+            .await
+            .map_err(|e| Status::not_found(e.to_string()))?;
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+
+        Ok(Response::new(pb::SessionResponse {
+            session_id,
+            allocation_id: req.allocation_id,
+            user_id: req.user_id,
+            state: "active".to_string(),
+            created_at: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
+        }))
+    }
+
+    async fn get_session(
+        &self,
+        request: Request<pb::GetSessionRequest>,
+    ) -> Result<Response<pb::SessionResponse>, Status> {
+        let req = request.into_inner();
+
+        // Sessions are ephemeral — return a stub for now.
+        // A full implementation would store sessions in the state machine.
+        Ok(Response::new(pb::SessionResponse {
+            session_id: req.session_id,
+            allocation_id: String::new(),
+            user_id: String::new(),
+            state: "unknown".to_string(),
+            created_at: None,
+        }))
+    }
+
+    async fn delete_session(
+        &self,
+        request: Request<pb::DeleteSessionRequest>,
+    ) -> Result<Response<pb::DeleteSessionResponse>, Status> {
+        let _req = request.into_inner();
+
+        Ok(Response::new(pb::DeleteSessionResponse { success: true }))
+    }
 }
 
 #[cfg(test)]

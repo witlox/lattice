@@ -32,6 +32,27 @@ service AdminService {
 
   // Restore from a backup (requires restart)
   rpc RestoreBackup(RestoreBackupRequest) returns (RestoreBackupResponse);
+
+  // List all tenants
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+
+  // Get a single tenant by ID
+  rpc GetTenant(GetTenantRequest) returns (TenantResponse);
+
+  // List all vClusters
+  rpc ListVClusters(ListVClustersRequest) returns (ListVClustersResponse);
+
+  // Get a single vCluster by ID
+  rpc GetVCluster(GetVClusterRequest) returns (VClusterResponse);
+
+  // Get queue info for a vCluster
+  rpc GetVClusterQueue(GetVClusterQueueRequest) returns (VClusterQueueResponse);
+
+  // Query audit log entries
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+
+  // Get accounting usage
+  rpc GetAccountingUsage(GetAccountingUsageRequest) returns (AccountingUsageResponse);
 }
 
 // ─── Tenant Management ─────────────────────────────────────
@@ -162,4 +183,88 @@ message RestoreBackupRequest {
 message RestoreBackupResponse {
   bool success = 1;
   string message = 2;
+}
+
+// ─── Tenant Queries ─────────────────────────────────────────
+
+message ListTenantsRequest {
+  uint32 limit = 1;
+  string cursor = 2;
+}
+
+message ListTenantsResponse {
+  repeated TenantResponse tenants = 1;
+  string next_cursor = 2;
+}
+
+message GetTenantRequest {
+  string tenant_id = 1;
+}
+
+// ─── VCluster Queries ───────────────────────────────────────
+
+message ListVClustersRequest {
+  string tenant_id = 1;       // optional filter by tenant
+  uint32 limit = 2;
+  string cursor = 3;
+}
+
+message ListVClustersResponse {
+  repeated VClusterResponse vclusters = 1;
+  string next_cursor = 2;
+}
+
+message GetVClusterRequest {
+  string vcluster_id = 1;
+}
+
+message GetVClusterQueueRequest {
+  string vcluster_id = 1;
+}
+
+message VClusterQueueResponse {
+  string vcluster_id = 1;
+  uint32 pending = 2;
+  uint32 running = 3;
+  uint32 total = 4;
+}
+
+// ─── Audit Queries ──────────────────────────────────────────
+
+message QueryAuditRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string action = 3;
+  uint32 limit = 4;
+  string cursor = 5;
+}
+
+message QueryAuditResponse {
+  repeated AuditEntryProto entries = 1;
+  string next_cursor = 2;
+}
+
+message AuditEntryProto {
+  string id = 1;
+  string tenant_id = 2;
+  string user_id = 3;
+  string action = 4;
+  string details = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+// ─── Accounting ─────────────────────────────────────────────
+
+message GetAccountingUsageRequest {
+  string tenant_id = 1;
+  google.protobuf.Timestamp start = 2;
+  google.protobuf.Timestamp end = 3;
+}
+
+message AccountingUsageResponse {
+  string tenant_id = 1;
+  double cpu_hours = 2;
+  double gpu_hours = 3;
+  uint64 storage_bytes = 4;
+  uint32 allocation_count = 5;
 }

@@ -64,6 +64,7 @@ pub enum Operation {
     DrainNode,
     UndrainNode,
     DisableNode,
+    EnableNode,
 
     // Tenant / vCluster administration
     CreateTenant,
@@ -75,6 +76,22 @@ pub enum Operation {
     GetRaftStatus,
     BackupVerify,
     QueryAudit,
+
+    // Session operations
+    CreateSession,
+    GetSession,
+    DeleteSession,
+
+    // Read operations (tenants, vclusters, audit, accounting)
+    ListTenants,
+    GetTenantDetails,
+    ListVClusters,
+    GetVClusterDetails,
+    GetVClusterQueue,
+    GetAccountingUsage,
+
+    // Health
+    HealthCheck,
 
     // Sensitive node claiming
     ClaimNode,
@@ -144,7 +161,10 @@ impl RbacPolicy {
             Role::Operator => {
                 match op {
                     // Operators can drain/undrain/disable nodes.
-                    Operation::DrainNode | Operation::UndrainNode | Operation::DisableNode => true,
+                    Operation::DrainNode
+                    | Operation::UndrainNode
+                    | Operation::DisableNode
+                    | Operation::EnableNode => true,
                     // Cannot create tenants or manage federation.
                     Operation::CreateTenant
                     | Operation::UpdateTenant
@@ -172,6 +192,14 @@ impl RbacPolicy {
                         | Operation::ListNodes
                         | Operation::GetNode
                         | Operation::GetRaftStatus
+                        | Operation::GetSession
+                        | Operation::ListTenants
+                        | Operation::GetTenantDetails
+                        | Operation::ListVClusters
+                        | Operation::GetVClusterDetails
+                        | Operation::GetVClusterQueue
+                        | Operation::GetAccountingUsage
+                        | Operation::HealthCheck
                 )
             }
 
@@ -193,7 +221,17 @@ impl RbacPolicy {
                 | Operation::CancelDag
                 | Operation::LaunchTasks
                 | Operation::ListNodes
-                | Operation::GetNode => true,
+                | Operation::GetNode
+                | Operation::CreateSession
+                | Operation::GetSession
+                | Operation::DeleteSession
+                | Operation::ListTenants
+                | Operation::GetTenantDetails
+                | Operation::ListVClusters
+                | Operation::GetVClusterDetails
+                | Operation::GetVClusterQueue
+                | Operation::GetAccountingUsage
+                | Operation::HealthCheck => true,
 
                 // Mutations on own allocations only.
                 Operation::CancelAllocation | Operation::UpdateAllocation => {
@@ -306,6 +344,7 @@ pub fn operation_from_grpc_method(method: &str) -> Option<Operation> {
         "/lattice.v1.NodeService/DrainNode" => Some(Operation::DrainNode),
         "/lattice.v1.NodeService/UndrainNode" => Some(Operation::UndrainNode),
         "/lattice.v1.NodeService/DisableNode" => Some(Operation::DisableNode),
+        "/lattice.v1.NodeService/EnableNode" => Some(Operation::EnableNode),
         "/lattice.v1.NodeService/ClaimNode" => Some(Operation::ClaimNode),
         "/lattice.v1.NodeService/ReleaseNode" => Some(Operation::ReleaseNode),
 
@@ -317,6 +356,22 @@ pub fn operation_from_grpc_method(method: &str) -> Option<Operation> {
         "/lattice.v1.AdminService/GetRaftStatus" => Some(Operation::GetRaftStatus),
         "/lattice.v1.AdminService/BackupVerify" => Some(Operation::BackupVerify),
         "/lattice.v1.AdminService/QueryAudit" => Some(Operation::QueryAudit),
+        "/lattice.v1.AdminService/CreateBackup" => Some(Operation::BackupExport),
+        "/lattice.v1.AdminService/RestoreBackup" => Some(Operation::BackupExport),
+        "/lattice.v1.AdminService/ListTenants" => Some(Operation::ListTenants),
+        "/lattice.v1.AdminService/GetTenant" => Some(Operation::GetTenantDetails),
+        "/lattice.v1.AdminService/ListVClusters" => Some(Operation::ListVClusters),
+        "/lattice.v1.AdminService/GetVCluster" => Some(Operation::GetVClusterDetails),
+        "/lattice.v1.AdminService/GetVClusterQueue" => Some(Operation::GetVClusterQueue),
+        "/lattice.v1.AdminService/GetAccountingUsage" => Some(Operation::GetAccountingUsage),
+
+        // AllocationService — sessions
+        "/lattice.v1.AllocationService/CreateSession" => Some(Operation::CreateSession),
+        "/lattice.v1.AllocationService/GetSession" => Some(Operation::GetSession),
+        "/lattice.v1.AllocationService/DeleteSession" => Some(Operation::DeleteSession),
+
+        // NodeService — health
+        "/lattice.v1.NodeService/Health" => Some(Operation::HealthCheck),
 
         _ => None,
     }
@@ -434,6 +489,11 @@ mod tests {
         ));
         assert!(!RbacPolicy::is_allowed(
             &Role::User,
+            &Operation::EnableNode,
+            &c
+        ));
+        assert!(!RbacPolicy::is_allowed(
+            &Role::User,
             &Operation::CreateTenant,
             &c
         ));
@@ -543,6 +603,17 @@ mod tests {
             derive_role(&claims_with_scopes(&["jobs:read", "jobs:write"])),
             Role::User
         );
+    }
+
+    // 10a. Operator can enable nodes.
+    #[test]
+    fn operator_can_enable_nodes() {
+        let c = ctx("ops-user");
+        assert!(RbacPolicy::is_allowed(
+            &Role::Operator,
+            &Operation::EnableNode,
+            &c
+        ));
     }
 
     // 10. operation_from_grpc_method maps all known methods.

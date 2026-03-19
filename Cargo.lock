@@ -2020,6 +2020,7 @@ dependencies = [
  "clap_complete",
  "dirs",
  "hpc-auth",
+ "lattice-client",
  "lattice-common",
  "prost",
  "prost-types",
@@ -2037,6 +2038,20 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "lattice-client"
+version = "2026.1.0"
+dependencies = [
+ "lattice-common",
+ "prost",
+ "prost-types",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

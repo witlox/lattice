@@ -48,8 +48,7 @@ pub async fn execute(args: &AttachArgs, client: &mut LatticeGrpcClient) -> anyho
 
     let input_stream = tokio_stream::once(start);
 
-    let mut output_stream: tonic::Streaming<pb::AttachOutput> =
-        client.allocations.attach(input_stream).await?.into_inner();
+    let mut output_stream: tonic::Streaming<pb::AttachOutput> = client.attach(input_stream).await?;
 
     while let Some(msg) = output_stream.next().await {
         let msg = msg?;

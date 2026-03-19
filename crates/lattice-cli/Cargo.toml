@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 lattice-common = { path = "../lattice-common" }
+lattice-client = { path = "../lattice-client" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }

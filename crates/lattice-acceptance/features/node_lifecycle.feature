@@ -1,5 +1,5 @@
 Feature: Node Lifecycle
-  Nodes can be drained, undrained, and claimed for tenants.
+  Nodes can be drained, undrained, disabled, enabled, and claimed for tenants.
 
   Scenario: Drain transitions node to Draining
     Given 5 ready nodes in group 0
@@ -58,6 +58,19 @@ Feature: Node Lifecycle
     And a heartbeat timeout of 30 seconds
     When node "x1000c0s0b0n0" sends no heartbeat for 30 seconds
     Then node "x1000c0s0b0n0" should transition to "Degraded"
+
+  Scenario: Enable transitions disabled node from Down to Ready
+    Given 5 ready nodes in group 0
+    When I disable node 0 with reason "maintenance"
+    Then node 0 should be in state "Down"
+    When I enable node 0
+    Then node 0 should be in state "Ready"
+    And node 0 should be available for scheduling
+
+  Scenario: Enable on non-disabled node fails
+    Given 5 ready nodes in group 0
+    When I attempt to enable node 0
+    Then the operation should fail with an invalid transition error
 
   Scenario: Multiple nodes drained simultaneously
     Given 5 ready nodes in group 0

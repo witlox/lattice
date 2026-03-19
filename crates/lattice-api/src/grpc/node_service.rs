@@ -1,6 +1,6 @@
 //! NodeService gRPC implementation.
 //!
-//! Implements the 5 RPCs defined in nodes.proto.
+//! Implements the RPCs defined in nodes.proto.
 
 use std::sync::Arc;
 
@@ -114,6 +114,21 @@ impl NodeService for LatticeNodeService {
         Ok(Response::new(pb::DisableNodeResponse { success: true }))
     }
 
+    async fn enable_node(
+        &self,
+        request: Request<pb::EnableNodeRequest>,
+    ) -> Result<Response<pb::EnableNodeResponse>, Status> {
+        let req = request.into_inner();
+
+        self.state
+            .nodes
+            .update_node_state(&req.node_id, NodeState::Ready)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(pb::EnableNodeResponse { success: true }))
+    }
+
     async fn register_node(
         &self,
         request: Request<pb::RegisterNodeRequest>,
@@ -181,6 +196,17 @@ impl NodeService for LatticeNodeService {
         }
 
         Ok(Response::new(pb::HeartbeatResponse { accepted: true }))
+    }
+
+    async fn health(
+        &self,
+        _request: Request<pb::HealthRequest>,
+    ) -> Result<Response<pb::HealthResponse>, Status> {
+        Ok(Response::new(pb::HealthResponse {
+            status: "healthy".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            uptime_secs: 0, // Would be computed from server start time
+        }))
     }
 }
 
@@ -400,5 +426,37 @@ mod tests {
             .unwrap();
 
         assert!(resp.get_ref().success);
+    }
+
+    #[tokio::test]
+    async fn enable_node_from_down_succeeds() {
+        let state = test_state(3);
+        let svc = LatticeNodeService::new(state);
+
+        // First disable, then enable
+        svc.disable_node(Request::new(pb::DisableNodeRequest {
+            node_id: "x1000c0s0b0n0".to_string(),
+            reason: "maintenance".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let resp = svc
+            .enable_node(Request::new(pb::EnableNodeRequest {
+                node_id: "x1000c0s0b0n0".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        assert!(resp.get_ref().success);
+
+        // Verify node is back to ready
+        let got = svc
+            .get_node(Request::new(pb::GetNodeRequest {
+                node_id: "x1000c0s0b0n0".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(got.get_ref().state, "ready");
     }
 }

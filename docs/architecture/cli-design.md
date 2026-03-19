@@ -282,6 +282,7 @@ lattice node drain x1000c0s0b0n0
 lattice node drain x1000c0s0b0n0 --urgent
 lattice node undrain x1000c0s0b0n0
 lattice node disable x1000c0s0b0n0
+lattice node enable x1000c0s0b0n0
 
 # Tenant management
 lattice admin tenant create --name=physics --max-nodes=200
