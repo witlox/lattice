@@ -10,7 +10,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let proto_root = if local_proto.join("lattice/v1/allocations.proto").exists() {
         local_proto
-    } else if workspace_proto.join("lattice/v1/allocations.proto").exists() {
+    } else if workspace_proto
+        .join("lattice/v1/allocations.proto")
+        .exists()
+    {
         workspace_proto
     } else {
         return Err("proto files not found in either ./proto or ../../proto".into());
