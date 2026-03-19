@@ -38,6 +38,9 @@ docker-compose.override.yml
 # mdBook
 book/
 
+# Vendored proto files (copied into crates for crates.io publish)
+crates/lattice-common/proto/
+
 # Environment
 .env
 .env.*

@@ -73,6 +73,11 @@ jobs:
       - name: Set release version
         run: ./scripts/set-version.sh
 
+      - name: Vendor proto files into lattice-common for publish
+        run: |
+          mkdir -p crates/lattice-common/proto
+          cp -r proto/lattice crates/lattice-common/proto/
+
       - name: Check if lattice-common already published
         id: check_common
         run: |
