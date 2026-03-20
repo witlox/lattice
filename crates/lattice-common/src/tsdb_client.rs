@@ -74,18 +74,16 @@ impl Default for VictoriaMetricsConfig {
 /// VictoriaMetrics / Prometheus-compatible TSDB client.
 pub struct VictoriaMetricsClient {
     config: VictoriaMetricsConfig,
-    /// HTTP client handle — stored as an opaque type to avoid
-    /// requiring reqwest at the trait level.
-    /// Callers construct this via `new()` which accepts a config.
-    _config_clone: VictoriaMetricsConfig,
+    client: reqwest::Client,
 }
 
 impl VictoriaMetricsClient {
     pub fn new(config: VictoriaMetricsConfig) -> Self {
-        Self {
-            _config_clone: config.clone(),
-            config,
-        }
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .build()
+            .unwrap_or_default();
+        Self { client, config }
     }
 
     /// Build the import URL for Prometheus format.
@@ -132,7 +130,8 @@ impl TsdbClient for VictoriaMetricsClient {
         let body = Self::format_samples(samples);
         let url = self.import_url();
 
-        let mut builder = reqwest::Client::new()
+        let mut builder = self
+            .client
             .post(&url)
             .header("Content-Type", "text/plain")
             .body(body);
@@ -165,7 +164,7 @@ impl TsdbClient for VictoriaMetricsClient {
         let start = now.saturating_sub(time_range_secs);
         let url = self.query_range_url();
 
-        let mut builder = reqwest::Client::new().get(&url).query(&[
+        let mut builder = self.client.get(&url).query(&[
             ("query", promql),
             ("start", &start.to_string()),
             ("end", &now.to_string()),
@@ -200,7 +199,7 @@ impl TsdbClient for VictoriaMetricsClient {
     async fn query_instant(&self, promql: &str) -> Result<QueryResult, LatticeError> {
         let url = self.query_url();
 
-        let mut builder = reqwest::Client::new().get(&url).query(&[("query", promql)]);
+        let mut builder = self.client.get(&url).query(&[("query", promql)]);
 
         if let Some(token) = &self.config.auth_token {
             builder = builder.bearer_auth(token);

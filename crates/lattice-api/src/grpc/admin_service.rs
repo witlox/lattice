@@ -624,6 +624,11 @@ impl AdminService for LatticeAdminService {
         &self,
         request: Request<pb::LookupServiceRequest>,
     ) -> Result<Response<pb::LookupServiceResponse>, Status> {
+        let requesting_tenant = request
+            .metadata()
+            .get("x-lattice-tenant")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         let name = request.into_inner().name;
 
         let endpoints = if let Some(ref quorum) = self.state.quorum {
@@ -632,6 +637,8 @@ impl AdminService for LatticeAdminService {
                 Some(entry) => entry
                     .endpoints
                     .iter()
+                    // Filter to requesting tenant's endpoints only (F05)
+                    .filter(|ep| requesting_tenant.as_ref().map_or(true, |t| &ep.tenant == t))
                     .map(|ep| pb::RegisteredEndpointProto {
                         allocation_id: ep.allocation_id.to_string(),
                         tenant: ep.tenant.clone(),
@@ -651,11 +658,28 @@ impl AdminService for LatticeAdminService {
 
     async fn list_services(
         &self,
-        _request: Request<pb::ListServicesRequest>,
+        request: Request<pb::ListServicesRequest>,
     ) -> Result<Response<pb::ListServicesResponse>, Status> {
+        let requesting_tenant = request
+            .metadata()
+            .get("x-lattice-tenant")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
         let names = if let Some(ref quorum) = self.state.quorum {
             let sm = quorum.state().read().await;
-            sm.list_services()
+            // Filter to services that have endpoints for the requesting tenant (F05)
+            if let Some(ref tenant) = requesting_tenant {
+                sm.list_services()
+                    .into_iter()
+                    .filter(|name| {
+                        sm.lookup_service(name)
+                            .is_some_and(|e| e.endpoints.iter().any(|ep| &ep.tenant == tenant))
+                    })
+                    .collect()
+            } else {
+                sm.list_services()
+            }
         } else {
             vec![]
         };

@@ -158,17 +158,27 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
     /// Run a single scheduling cycle. Returns the number of allocations placed.
     pub async fn run_once(&self) -> Result<usize, lattice_common::error::LatticeError> {
         // ── Service reconciliation: requeue eligible failed allocations ──
+        // Track requeued IDs to exclude from pending (F13: prevent TOCTOU)
+        let mut requeued_ids = std::collections::HashSet::new();
         let failed = self.reader.failed_allocations().await?;
         for alloc in &failed {
             if Self::should_requeue(alloc) {
                 info!(alloc_id = %alloc.id, requeue_count = alloc.requeue_count, max = alloc.max_requeue, "Reconciler: requeuing failed service");
                 if let Err(e) = self.sink.requeue(alloc.id).await {
                     warn!(alloc_id = %alloc.id, error = %e, "Reconciler: failed to requeue");
+                } else {
+                    requeued_ids.insert(alloc.id);
                 }
             }
         }
 
-        let pending = self.reader.pending_allocations().await?;
+        let pending: Vec<_> = self
+            .reader
+            .pending_allocations()
+            .await?
+            .into_iter()
+            .filter(|a| !requeued_ids.contains(&a.id))
+            .collect();
         let running = self.reader.running_allocations().await?;
         let nodes = self.reader.available_nodes().await?;
 

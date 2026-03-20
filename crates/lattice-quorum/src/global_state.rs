@@ -96,6 +96,9 @@ pub struct VniPool {
     pub end: u32,
     /// Currently allocated VNIs (value = domain key "tenant/name").
     pub allocated: HashMap<u32, String>,
+    /// Next candidate VNI to try (F19: avoids O(n) linear scan).
+    #[serde(default)]
+    pub next_candidate: u32,
 }
 
 impl Default for VniPool {
@@ -104,6 +107,7 @@ impl Default for VniPool {
             start: 100,
             end: 4095,
             allocated: HashMap::new(),
+            next_candidate: 100,
         }
     }
 }
@@ -111,9 +115,19 @@ impl Default for VniPool {
 impl VniPool {
     /// Allocate the next available VNI. Returns None if pool is exhausted.
     pub fn allocate(&mut self, domain_key: &str) -> Option<u32> {
-        for vni in self.start..=self.end {
+        // Start from next_candidate for O(1) amortized allocation
+        for vni in self.next_candidate..=self.end {
             if let std::collections::hash_map::Entry::Vacant(e) = self.allocated.entry(vni) {
                 e.insert(domain_key.to_string());
+                self.next_candidate = vni + 1;
+                return Some(vni);
+            }
+        }
+        // Wrap around to start
+        for vni in self.start..self.next_candidate {
+            if let std::collections::hash_map::Entry::Vacant(e) = self.allocated.entry(vni) {
+                e.insert(domain_key.to_string());
+                self.next_candidate = vni + 1;
                 return Some(vni);
             }
         }
@@ -343,7 +357,9 @@ impl GlobalState {
             }
         }
 
-        let alloc = self.allocations.get_mut(&id).unwrap();
+        let Some(alloc) = self.allocations.get_mut(&id) else {
+            return CommandResponse::Error(format!("Allocation vanished during assign: {id}"));
+        };
         alloc.assigned_nodes = nodes;
         CommandResponse::Ok
     }
@@ -452,7 +468,9 @@ impl GlobalState {
             }
         }
 
-        let node = self.nodes.get_mut(&id).unwrap();
+        let Some(node) = self.nodes.get_mut(&id) else {
+            return CommandResponse::Error(format!("Node vanished during claim: {id}"));
+        };
         node.owner = Some(ownership);
         node.owner_version += 1; // ADV-06: bump on ownership change
         CommandResponse::Ok

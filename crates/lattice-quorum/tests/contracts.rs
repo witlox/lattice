@@ -731,6 +731,7 @@ mod invariant_contracts {
             start: 100,
             end: 101,
             allocated: std::collections::HashMap::new(),
+            next_candidate: 100,
         };
 
         state.apply(Command::CreateNetworkDomain {

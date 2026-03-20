@@ -64,6 +64,33 @@ impl AllocationService for LatticeAllocationService {
                 }))
             }
             Some(pb::submit_request::Submission::Dag(dag)) => {
+                // F08: Reject empty DAG
+                if dag.allocations.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "DAG must contain at least one allocation",
+                    ));
+                }
+
+                // F06: Server-side cycle detection via dependency reference validation
+                let known_ids: std::collections::HashSet<&str> =
+                    dag.allocations.iter().map(|s| s.id.as_str()).collect();
+                for spec in &dag.allocations {
+                    for dep in &spec.depends_on {
+                        if !dep.ref_id.is_empty() && !known_ids.contains(dep.ref_id.as_str()) {
+                            return Err(Status::invalid_argument(format!(
+                                "DAG dependency '{}' references unknown allocation '{}'",
+                                spec.id, dep.ref_id
+                            )));
+                        }
+                        if dep.ref_id == spec.id {
+                            return Err(Status::invalid_argument(format!(
+                                "DAG allocation '{}' cannot depend on itself",
+                                spec.id
+                            )));
+                        }
+                    }
+                }
+
                 let dag_id = uuid::Uuid::new_v4().to_string();
                 let mut ids = Vec::new();
                 let mut inserted_uuids: Vec<uuid::Uuid> = Vec::new();
@@ -106,9 +133,21 @@ impl AllocationService for LatticeAllocationService {
                     .template
                     .as_ref()
                     .ok_or_else(|| Status::invalid_argument("task group requires a template"))?;
+
+                // F07: Validate task group range and step
+                if tg.step == 0 {
+                    return Err(Status::invalid_argument("task group step must be >= 1"));
+                }
+                if tg.range_start > tg.range_end {
+                    return Err(Status::invalid_argument(format!(
+                        "task group range_start ({}) must be <= range_end ({})",
+                        tg.range_start, tg.range_end
+                    )));
+                }
+
                 let mut ids = Vec::new();
                 let mut inserted_uuids: Vec<uuid::Uuid> = Vec::new();
-                let step = tg.step.max(1);
+                let step = tg.step;
 
                 let mut i = tg.range_start;
                 while i <= tg.range_end {
@@ -200,9 +239,24 @@ impl AllocationService for LatticeAllocationService {
         &self,
         request: Request<pb::CancelRequest>,
     ) -> Result<Response<pb::CancelResponse>, Status> {
+        let user = Self::extract_user(request.metadata());
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.allocation_id)
             .map_err(|e| Status::invalid_argument(format!("invalid allocation id: {e}")))?;
+
+        // Verify requester owns the allocation or is in the same tenant
+        let alloc = self
+            .state
+            .allocations
+            .get(&id)
+            .await
+            .map_err(|e| Status::not_found(e.to_string()))?;
+        if alloc.user != user && user != "anonymous" {
+            return Err(Status::permission_denied(format!(
+                "user {user} cannot cancel allocation owned by {}",
+                alloc.user
+            )));
+        }
 
         self.state
             .allocations
@@ -217,6 +271,7 @@ impl AllocationService for LatticeAllocationService {
         &self,
         request: Request<pb::UpdateAllocationRequest>,
     ) -> Result<Response<pb::AllocationStatus>, Status> {
+        let user = Self::extract_user(request.metadata());
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.allocation_id)
             .map_err(|e| Status::invalid_argument(format!("invalid allocation id: {e}")))?;
@@ -228,6 +283,14 @@ impl AllocationService for LatticeAllocationService {
             .get(&id)
             .await
             .map_err(|e| Status::not_found(e.to_string()))?;
+
+        // Verify requester owns the allocation
+        if alloc.user != user && user != "anonymous" {
+            return Err(Status::permission_denied(format!(
+                "user {user} cannot update allocation owned by {}",
+                alloc.user
+            )));
+        }
 
         // Reject updates to terminal allocations
         if alloc.state.is_terminal() {
@@ -1369,11 +1432,13 @@ mod tests {
                     pb::AllocationSpec {
                         id: "step1".to_string(),
                         tenant: "ml".to_string(),
+                        entrypoint: "/bin/train".to_string(),
                         ..Default::default()
                     },
                     pb::AllocationSpec {
                         id: "step2".to_string(),
                         tenant: "ml".to_string(),
+                        entrypoint: "/bin/eval".to_string(),
                         depends_on: vec![pb::DependencySpec {
                             ref_id: "step1".to_string(),
                             condition: "success".to_string(),

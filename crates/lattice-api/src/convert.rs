@@ -92,6 +92,45 @@ pub fn allocation_from_proto(spec: &pb::AllocationSpec, user: &str) -> Result<Al
         }
     }
 
+    // F15: Reject empty required fields.
+    if spec.tenant.is_empty() {
+        return Err("tenant is required".to_string());
+    }
+    if spec.entrypoint.is_empty() {
+        return Err("entrypoint is required".to_string());
+    }
+
+    // F16: Validate reactive lifecycle min <= max.
+    if let Some(ref l) = spec.lifecycle {
+        if l.reactive_min_nodes > 0 && l.reactive_max_nodes > 0
+            && l.reactive_min_nodes > l.reactive_max_nodes {
+                return Err(format!(
+                    "reactive min_nodes ({}) must be <= max_nodes ({})",
+                    l.reactive_min_nodes, l.reactive_max_nodes
+                ));
+            }
+    }
+
+    // F17: Validate service endpoint ports.
+    if let Some(ref conn) = spec.connectivity {
+        for ep in &conn.expose {
+            if ep.port == 0 || ep.port > 65535 {
+                return Err(format!(
+                    "service endpoint port must be 1-65535, got {}",
+                    ep.port
+                ));
+            }
+        }
+    }
+
+    // F18: Cap max_requeue to a reasonable limit.
+    if spec.max_requeue > 100 {
+        return Err(format!(
+            "max_requeue must be <= 100, got {}",
+            spec.max_requeue
+        ));
+    }
+
     Ok(Allocation {
         id,
         tenant: spec.tenant.clone(),
