@@ -52,6 +52,38 @@ Maps every invariant from `specs/invariants.md` to its enforcement point(s) in t
 | **INV-N4** No silent failure | All modules | `LatticeError` typed error enum. Metrics for all failure paths (`lattice_*` counters). Alert rules in `infra/`. Audit log for sensitive. |
 | **INV-N5** Accounting never blocks scheduling | lattice-common (Waldur client) + lattice-scheduler | Async push with bounded buffer (10K memory + 100K disk). Events dropped with `lattice_accounting_events_dropped_total` counter rather than blocking. Scheduling cycle never awaits Waldur response. |
 
+## Network Topology Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-NET1** HSN binding | lattice-common (config) | `BindNetwork` enum on `QuorumConfig`, `ApiConfig`, `NodeAgentConfig`. Default `Any` (dev); production sets `Hsn`. Config validation logs warning if `Any` used with >10 nodes. | Config tests, deployment validation |
+| **INV-NET2** No port conflicts (co-located) | Deployment config | Lattice ports (50051, 9000, 8080) vs PACT ports (9443, 9444) on different NICs. Startup bind failure is immediate and fatal. | Docker compose tests, deployment docs |
+
+## Resource Isolation Invariants (hpc-node)
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-RI1** Cgroup slice ownership | lattice-node-agent | `CgroupManager::create_scope()` only creates under `workload.slice/`. Standalone: creates hierarchy at startup. PACT-managed: verifies hierarchy exists. | Unit tests (cgroup manager), acceptance tests |
+| **INV-RI2** Namespace handoff fallback | lattice-node-agent | `NamespaceConsumer::request_namespaces()` attempts socket → 1s timeout → self-service via `unshare(2)`. Audit event on fallback. | Unit tests (dual-mode consumer), integration tests |
+| **INV-RI3** Mount refcount consistency | lattice-node-agent | `MountManager` tracks refcounts in HashMap. `reconstruct_state()` on agent restart scans `/proc/mounts`. Orphaned mounts get hold timer. | Unit tests (refcount tracking), property tests |
+| **INV-RI4** Readiness gate non-blocking | lattice-node-agent | `ReadinessGate::wait_ready()` polls with `readiness_timeout` (default 30s). Timeout → proceed + log warning. Standalone: `NoopReadinessGate` always ready. | Unit tests, acceptance tests |
+
+## Audit Format Invariants (hpc-audit)
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-AF1** Standardized audit event schema | lattice-common + lattice-quorum | `AuditEntry` wraps `hpc_audit::AuditEvent`. All audit code paths construct `AuditEvent` with required fields. `AuditSource` enum set per component. | Unit tests (serialization round-trip), acceptance tests (audit scenarios) |
+| **INV-AF2** Well-known action constants | All crates emitting audit | Action strings imported from `hpc_audit::actions::*`. Custom actions use `lattice.` prefix, defined as constants in lattice-common. | Code review, grep for raw string action literals |
+| **INV-AF3** Audit sink non-blocking | lattice-common | `AuditSink::emit()` buffers in-memory, proposes to Raft async. Exception: sensitive events block on Raft commit (INV-S3). Buffer overflow: drop non-sensitive + counter metric. | Unit tests (buffer behavior), load tests |
+
+## Identity Invariants (hpc-identity)
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-ID1** Identity cascade order | lattice-node-agent, lattice-quorum | `IdentityCascade::new()` called with `[SpireProvider, SelfSignedProvider, StaticProvider]`. Provider list immutable after construction. | Unit tests (cascade ordering), integration tests |
+| **INV-ID2** Private key locality | lattice-node-agent, lattice-quorum | `IdentityProvider::get_identity()` generates keys in-process. CSR signing sends only public key. `WorkloadIdentity` Debug redacts `private_key_pem`. | Code review, unit tests (no key in logs) |
+| **INV-ID3** Cert rotation non-disruptive | lattice-node-agent, lattice-quorum | `CertRotator::rotate()` uses dual-channel swap: build → health-check → swap → drain. Failure leaves active channel unchanged. | Integration tests (rotation under load) |
+
 ## Cross-Context Enforcement
 
 Some invariants require coordination across modules:
@@ -98,6 +130,66 @@ lattice-node-agent              lattice-quorum        OpenCHAMI
      ├─ report wipe complete ──────►│                     │
      │                              ├─ Raft-commit       │
      │                              ├─ node → Ready      │
+```
+
+### INV-RI2 (Namespace Handoff Fallback — Dual-Mode)
+
+```
+lattice-node-agent
+     │
+     ├─ probe /run/pact/handoff.sock
+     │
+     ├─ [socket exists] ─────────────────────► PACT agent
+     │  NamespaceConsumer.request_namespaces()   │
+     │  via unix socket + SCM_RIGHTS             │
+     │  ◄── FDs returned ───────────────────────┤
+     │
+     └─ [socket absent / timeout 1s]
+        NamespaceConsumer self-service mode
+        unshare(2) + mount uenv directly
+        emit audit: namespace.handoff_failed
+```
+
+### INV-AF1 + INV-S3 (Audit Event Wrapping + Sensitive Ordering)
+
+```
+Any lattice component              lattice-common           lattice-quorum
+     │                                  │                       │
+     ├─ construct AuditEvent           │                       │
+     │  (hpc_audit::AuditEvent)        │                       │
+     ├─ call AuditSink::emit(event) ──►│                       │
+     │                                  ├─ wrap in AuditEntry  │
+     │                                  │  (ed25519 sign,      │
+     │                                  │   chain hash)        │
+     │                                  ├─ [non-sensitive]     │
+     │                                  │  buffer + async ─────►│ Raft propose
+     │                                  ├─ [sensitive]         │
+     │                                  │  sync commit ────────►│ Raft commit
+     │                                  │  ◄── confirmed ──────┤
+     │  ◄── proceed with action ────────┤                       │
+```
+
+### INV-ID1 (Identity Cascade — Startup)
+
+```
+lattice-node-agent                    SPIRE      Quorum/Journal    Bootstrap
+     │                                  │              │              │
+     ├─ SpireProvider.is_available() ──►│              │              │
+     │  [socket exists?]                │              │              │
+     │                                  │              │              │
+     ├─ [yes] get_identity() ──────────►│              │              │
+     │  ◄── WorkloadIdentity ──────────┤              │              │
+     │  source: Spire ✓                │              │              │
+     │                                  │              │              │
+     ├─ [no] SelfSignedProvider ───────┼──────────────►│              │
+     │  generate key, send CSR         │              │              │
+     │  ◄── signed cert ──────────────┼──────────────┤              │
+     │  source: SelfSigned ✓           │              │              │
+     │                                  │              │              │
+     └─ [no] StaticProvider ───────────┼──────────────┼──────────────►│
+        read files from disk           │              │              │
+        ◄── WorkloadIdentity ──────────┼──────────────┼──────────────┤
+        source: Bootstrap ✓            │              │              │
 ```
 
 ## Gaps Identified

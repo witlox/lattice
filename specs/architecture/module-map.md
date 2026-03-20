@@ -5,13 +5,13 @@ Module boundaries, responsibilities, and ownership. Each module maps to a Rust c
 ## Module Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         lattice-cli                                     │
-│  CLI client + Slurm compat layer                                        │
-│  Stateless. Consumes gRPC services.                                     │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │ gRPC
-┌───────────────────────────────┴─────────────────────────────────────────┐
+┌────────────────────────────────┐  ┌──────────────────────────────────────┐
+│         lattice-cli            │  │       lattice-client (SDK)           │
+│  CLI + Slurm compat layer      │  │  Rust gRPC client SDK (42 methods)   │
+│  Delegates to lattice-client   │──│  Publishable. Full API parity.       │
+└────────────────────────────────┘  └──────────────────┬───────────────────┘
+                                                       │ gRPC
+┌──────────────────────────────────────────────────────┴──────────────────┐
 │                         lattice-api                                      │
 │  gRPC + REST gateway. Middleware (OIDC, RBAC, rate limit).               │
 │  Owns: API surface, request validation, event streaming.                 │
@@ -60,8 +60,13 @@ Module boundaries, responsibilities, and ownership. Each module maps to a Rust c
 - Protobuf bindings (generated from `proto/`)
 - Prometheus metric definitions
 - External HTTP clients: OpenCHAMI, VAST, Sovra, Waldur
+- hpc-audit integration: `AuditEvent` wrapping in signed `AuditEntry` envelope, audit action constants
 
 **Does NOT own:** Business logic. No command processing, no scheduling decisions, no state mutation.
+
+**Feature flags:** `federation` (Sovra), `accounting` (Waldur), `scheduler-core` (hpc-scheduler-core)
+
+**Note:** hpc-audit is an always-on dependency — the standardized audit event format is valuable regardless of PACT presence or SIEM integration.
 
 **Justification:** Single source of truth for types prevents duplication and inconsistency across crates. Trait definitions here allow compile-time interface enforcement. External clients live here because multiple crates need storage/infra/accounting access.
 
@@ -144,10 +149,19 @@ Module boundaries, responsibilities, and ownership. Each module maps to a Rust c
 - Network management: VNI configuration for Slingshot domains
 - Data staging execution: VAST API calls for pre-stage/QoS/cleanup
 - Conformance fingerprint computation
+- **hpc-node implementations:** `CgroupManager` (standalone cgroup v2), `NamespaceConsumer` (dual-mode: PACT handoff or self-service), `MountManager` (dual-mode: refcounted or per-allocation)
+- **hpc-identity:** `IdentityCascade` for mTLS workload identity (SPIRE → self-signed → bootstrap), `CertRotator` for non-disruptive cert rotation
+- **hpc-audit:** Emits `AuditEvent` for resource isolation operations via `AuditSink`
 
 **Does NOT own:** Scheduling decisions, global state, audit log writes (reports to quorum, quorum commits).
 
 **Key autonomy:** Node agents continue running allocations during quorum outage. Heartbeats are buffered and replayed on reconnection. Grace periods prevent premature Down transitions.
+
+**Dual-mode operation:** Detects PACT presence at runtime (handoff socket probe). Falls back to self-service on PACT absence. See IP-11 in cross-context interactions.
+
+**Feature flags:** `nvidia` (GPU discovery), `rocm` (AMD GPU), `ebpf` (eBPF telemetry)
+
+**Note:** hpc-node, hpc-identity, and hpc-audit are always-on dependencies (not feature-gated). The standalone `CgroupManager` and `MountManager` implementations are valuable regardless of PACT presence. Dual-mode detection (PACT socket probe) is runtime, not compile-time.
 
 ---
 
@@ -171,14 +185,15 @@ Module boundaries, responsibilities, and ownership. Each module maps to a Rust c
 **Bounded context:** None — client-side.
 
 **Owns:**
-- CLI command structure (clap): submit, status, cancel, nodes, admin, attach, logs, top, watch, diag, session, dag
+- CLI command structure (clap): submit, status, cancel, nodes, admin, attach, logs, top, watch, diag, session, dag, **login, logout**
 - `LatticeGrpcClient`: typed wrapper around 3 tonic service clients
 - Slurm compatibility translation: sbatch/squeue/scancel → Intent API
 - DAG YAML parsing and validation
 - Output formatting: JSON, YAML, table
 - Shell completions
+- **hpc-auth:** `AuthClient` for OAuth2 token management (login, logout, token refresh, per-server caching)
 
-**Stateless:** All state lives on the server. CLI is a thin translation layer.
+**Stateless:** All state lives on the server (except local token cache). CLI is a thin translation layer.
 
 ---
 

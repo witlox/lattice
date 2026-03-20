@@ -22,6 +22,51 @@ lattice <command> [subcommand] [arguments] [flags]
 | `--config` | | Config file path (default: `~/.config/lattice/config.yaml`) |
 | `--no-color` | | Disable colored output |
 
+## Authentication Commands
+
+### Login (`lattice login`)
+
+Authenticate with the lattice server. Uses hpc-auth for OIDC token acquisition with cascading flow selection.
+
+```bash
+# Login (auto-discovers IdP from lattice-api auth discovery endpoint)
+lattice login
+
+# Force device code flow (for SSH sessions without browser)
+lattice login --flow device
+
+# Force manual paste flow
+lattice login --flow manual
+
+# Login to a specific server
+lattice login --server cluster.example.com
+```
+
+Token is cached per-server in `~/.config/lattice/tokens.json` with 0600 permissions (lenient mode: warn and fix if wrong).
+
+### Logout (`lattice logout`)
+
+Clear cached token and revoke at IdP (best-effort).
+
+```bash
+lattice logout
+```
+
+### Unauthenticated Commands
+
+These commands do not require a token (INV-A1):
+- `lattice login` / `lattice logout`
+- `lattice --version`
+- `lattice --help`
+- `lattice completions <shell>`
+
+All other commands require authentication. If no valid token is cached, the CLI prints:
+```
+Not logged in. Run `lattice login` first.
+```
+
+Expired tokens are silently refreshed if a valid refresh token exists.
+
 ## Core Commands
 
 ### Submit (`lattice submit`)
@@ -237,6 +282,7 @@ lattice node drain x1000c0s0b0n0
 lattice node drain x1000c0s0b0n0 --urgent
 lattice node undrain x1000c0s0b0n0
 lattice node disable x1000c0s0b0n0
+lattice node enable x1000c0s0b0n0
 
 # Tenant management
 lattice admin tenant create --name=physics --max-nodes=200
@@ -304,7 +350,7 @@ Completions cover: subcommands, flag names, allocation IDs (from recent `lattice
 
 ```yaml
 # ~/.config/lattice/config.yaml
-api_url: "https://firecrest.example.com/lattice/v1"
+api_url: "https://lattice.example.com:50051"
 default_tenant: "physics"
 default_vcluster: "hpc-batch"
 default_uenv: "prgenv-gnu/24.11:v1"

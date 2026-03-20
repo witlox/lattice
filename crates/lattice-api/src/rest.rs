@@ -71,6 +71,8 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
         .route("/api/v1/nodes/{id}", get(get_node))
         .route("/api/v1/nodes/{id}/drain", post(drain_node))
         .route("/api/v1/nodes/{id}/undrain", post(undrain_node))
+        .route("/api/v1/nodes/{id}/enable", post(enable_node))
+        .route("/api/v1/auth/discovery", get(auth_discovery))
         .route("/healthz", get(healthz))
         .with_state(state)
 }
@@ -311,6 +313,36 @@ pub struct RaftStatusResponse {
     pub available: bool,
     pub leader: Option<String>,
     pub state: String,
+}
+
+/// Response from the auth discovery endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthDiscoveryResponse {
+    pub idp_url: String,
+    pub client_id: String,
+    pub issuer: String,
+}
+
+/// Auth discovery endpoint (INV-A4: public, no auth required).
+async fn auth_discovery(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+    match &state.oidc_config {
+        Some(config) => (
+            StatusCode::OK,
+            Json(AuthDiscoveryResponse {
+                idp_url: config.issuer_url.clone(),
+                client_id: config.audience.clone(),
+                issuer: config.issuer_url.clone(),
+            }),
+        )
+            .into_response(),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "OIDC not configured".to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn healthz() -> &'static str {
@@ -952,7 +984,8 @@ async fn query_audit(
     Query(query): Query<AuditQuery>,
 ) -> impl IntoResponse {
     let filter = lattice_common::traits::AuditFilter {
-        user: query.user,
+        principal: query.user,
+        action: None,
         allocation: query
             .alloc_id
             .as_deref()
@@ -973,11 +1006,11 @@ async fn query_audit(
             let resp: Vec<AuditEntryResponse> = entries
                 .iter()
                 .map(|e| AuditEntryResponse {
-                    id: e.id.to_string(),
-                    timestamp: e.timestamp.to_rfc3339(),
-                    user: e.user.clone(),
-                    action: format!("{:?}", e.action),
-                    details: e.details.clone(),
+                    id: e.event.id.clone(),
+                    timestamp: e.event.timestamp.to_rfc3339(),
+                    user: e.event.principal.identity.clone(),
+                    action: e.event.action.clone(),
+                    details: e.event.metadata.clone(),
                 })
                 .collect();
             (StatusCode::OK, Json(resp)).into_response()
@@ -1641,6 +1674,22 @@ async fn undrain_node(
     }
 }
 
+async fn enable_node(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.nodes.update_node_state(&id, NodeState::Ready).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"success": true}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 // ─── SSE Streaming Endpoints ──────────────────────────────────
 
 async fn watch_allocation_sse(
@@ -1896,6 +1945,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         })
     }
 
@@ -1918,6 +1968,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         })
     }
 
@@ -2171,15 +2222,16 @@ mod tests {
     #[tokio::test]
     async fn audit_query_with_user_filter() {
         let audit_log = Arc::new(MockAuditLog::new());
-        let entry = lattice_common::traits::AuditEntry {
-            id: uuid::Uuid::new_v4(),
-            timestamp: chrono::Utc::now(),
-            user: "dr-smith".into(),
-            action: lattice_common::traits::AuditAction::NodeClaim,
-            details: serde_json::json!({"node": "x1000c0s0b0n0"}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry =
+            lattice_common::traits::AuditEntry::new(lattice_common::traits::lattice_audit_event(
+                lattice_common::traits::audit_actions::NODE_CLAIM,
+                "dr-smith",
+                hpc_audit::AuditScope::default(),
+                hpc_audit::AuditOutcome::Success,
+                "node claim",
+                serde_json::json!({"node": "x1000c0s0b0n0"}),
+                hpc_audit::AuditSource::LatticeQuorum,
+            ));
         audit_log.record(entry).await.unwrap();
         let nodes = create_node_batch(3, 0);
         let state = Arc::new(ApiState {
@@ -2198,6 +2250,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         });
         let app = router(state);
         let resp = app
@@ -2662,5 +2715,67 @@ mod tests {
         let usage: AccountingUsageResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(usage.tenant, "physics");
         assert!(usage.remaining_budget.is_none());
+    }
+
+    #[tokio::test]
+    async fn auth_discovery_returns_oidc_config() {
+        use crate::middleware::oidc::OidcConfig;
+        let nodes = create_node_batch(1, 0);
+        let state = Arc::new(ApiState {
+            allocations: Arc::new(MockAllocationStore::new()),
+            nodes: Arc::new(MockNodeRegistry::new().with_nodes(nodes)),
+            audit: Arc::new(MockAuditLog::new()),
+            checkpoint: Arc::new(MockCheckpointBroker::new()),
+            quorum: None,
+            events: crate::events::new_event_bus(),
+            tsdb: None,
+            storage: None,
+            accounting: None,
+            oidc: None,
+            rate_limiter: None,
+            sovra: None,
+            pty: None,
+            agent_pool: None,
+            data_dir: None,
+            oidc_config: Some(OidcConfig {
+                issuer_url: "https://auth.example.com".to_string(),
+                audience: "lattice-client".to_string(),
+                required_scopes: vec![],
+            }),
+        });
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/v1/auth/discovery")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let discovery: AuthDiscoveryResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(discovery.idp_url, "https://auth.example.com");
+        assert_eq!(discovery.client_id, "lattice-client");
+        assert_eq!(discovery.issuer, "https://auth.example.com");
+    }
+
+    #[tokio::test]
+    async fn auth_discovery_returns_503_when_not_configured() {
+        let state = test_state();
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/v1/auth/discovery")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

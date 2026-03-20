@@ -135,7 +135,7 @@ connectivity:
 
 Exposed ports are reachable from:
 1. Other allocations in the same network domain (always)
-2. The FirecREST API gateway (for external access, if configured)
+2. The lattice-api REST gateway (for external access)
 3. Not directly reachable from outside the fabric (Slingshot is not routable from Ethernet)
 
 ## Sensitive Network Domains

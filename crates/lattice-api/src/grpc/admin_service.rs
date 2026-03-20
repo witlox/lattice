@@ -1,6 +1,6 @@
 //! AdminService gRPC implementation.
 //!
-//! Implements the 6 RPCs defined in admin.proto.
+//! Implements the RPCs defined in admin.proto.
 //! Tenant and VCluster mutations are Raft-committed via the quorum
 //! when a quorum client is configured, falling back to in-memory storage.
 
@@ -401,6 +401,224 @@ impl AdminService for LatticeAdminService {
             })),
         }
     }
+
+    // ─── Tenant / VCluster Read RPCs ────────────────────────
+
+    async fn list_tenants(
+        &self,
+        _request: Request<pb::ListTenantsRequest>,
+    ) -> Result<Response<pb::ListTenantsResponse>, Status> {
+        if let Some(quorum) = self.quorum() {
+            let state = quorum.state().read().await;
+            let tenants: Vec<pb::TenantResponse> = state
+                .tenants
+                .values()
+                .map(convert::tenant_to_response)
+                .collect();
+            Ok(Response::new(pb::ListTenantsResponse {
+                tenants,
+                next_cursor: String::new(),
+            }))
+        } else {
+            let tenants = self.tenants.read().await;
+            let responses: Vec<pb::TenantResponse> =
+                tenants.iter().map(convert::tenant_to_response).collect();
+            Ok(Response::new(pb::ListTenantsResponse {
+                tenants: responses,
+                next_cursor: String::new(),
+            }))
+        }
+    }
+
+    async fn get_tenant(
+        &self,
+        request: Request<pb::GetTenantRequest>,
+    ) -> Result<Response<pb::TenantResponse>, Status> {
+        let req = request.into_inner();
+
+        if let Some(quorum) = self.quorum() {
+            let state = quorum.state().read().await;
+            let tenant = state
+                .tenants
+                .get(&req.tenant_id)
+                .ok_or_else(|| Status::not_found(format!("tenant {} not found", req.tenant_id)))?;
+            Ok(Response::new(convert::tenant_to_response(tenant)))
+        } else {
+            let tenants = self.tenants.read().await;
+            let tenant = tenants
+                .iter()
+                .find(|t| t.id == req.tenant_id)
+                .ok_or_else(|| Status::not_found(format!("tenant {} not found", req.tenant_id)))?;
+            Ok(Response::new(convert::tenant_to_response(tenant)))
+        }
+    }
+
+    async fn list_v_clusters(
+        &self,
+        _request: Request<pb::ListVClustersRequest>,
+    ) -> Result<Response<pb::ListVClustersResponse>, Status> {
+        if let Some(quorum) = self.quorum() {
+            let state = quorum.state().read().await;
+            let vclusters: Vec<pb::VClusterResponse> = state
+                .vclusters
+                .values()
+                .map(convert::vcluster_to_response)
+                .collect();
+            Ok(Response::new(pb::ListVClustersResponse {
+                vclusters,
+                next_cursor: String::new(),
+            }))
+        } else {
+            let vclusters = self.vclusters.read().await;
+            let responses: Vec<pb::VClusterResponse> = vclusters
+                .iter()
+                .map(convert::vcluster_to_response)
+                .collect();
+            Ok(Response::new(pb::ListVClustersResponse {
+                vclusters: responses,
+                next_cursor: String::new(),
+            }))
+        }
+    }
+
+    async fn get_v_cluster(
+        &self,
+        request: Request<pb::GetVClusterRequest>,
+    ) -> Result<Response<pb::VClusterResponse>, Status> {
+        let req = request.into_inner();
+
+        if let Some(quorum) = self.quorum() {
+            let state = quorum.state().read().await;
+            let vc = state.vclusters.get(&req.vcluster_id).ok_or_else(|| {
+                Status::not_found(format!("vcluster {} not found", req.vcluster_id))
+            })?;
+            Ok(Response::new(convert::vcluster_to_response(vc)))
+        } else {
+            let vclusters = self.vclusters.read().await;
+            let vc = vclusters
+                .iter()
+                .find(|v| v.id == req.vcluster_id)
+                .ok_or_else(|| {
+                    Status::not_found(format!("vcluster {} not found", req.vcluster_id))
+                })?;
+            Ok(Response::new(convert::vcluster_to_response(vc)))
+        }
+    }
+
+    async fn get_v_cluster_queue(
+        &self,
+        request: Request<pb::GetVClusterQueueRequest>,
+    ) -> Result<Response<pb::VClusterQueueResponse>, Status> {
+        let req = request.into_inner();
+
+        // Count allocations by state for this vcluster
+        let filter = lattice_common::traits::AllocationFilter {
+            vcluster: Some(req.vcluster_id.clone()),
+            ..Default::default()
+        };
+
+        let allocations = self
+            .state
+            .allocations
+            .list(&filter)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let pending = allocations
+            .iter()
+            .filter(|a| a.state == lattice_common::types::AllocationState::Pending)
+            .count() as u32;
+        let running = allocations
+            .iter()
+            .filter(|a| a.state == lattice_common::types::AllocationState::Running)
+            .count() as u32;
+
+        Ok(Response::new(pb::VClusterQueueResponse {
+            vcluster_id: req.vcluster_id,
+            pending,
+            running,
+            total: allocations.len() as u32,
+        }))
+    }
+
+    // ─── Audit / Accounting RPCs ────────────────────────────
+
+    async fn query_audit(
+        &self,
+        request: Request<pb::QueryAuditRequest>,
+    ) -> Result<Response<pb::QueryAuditResponse>, Status> {
+        let req = request.into_inner();
+
+        let filter = lattice_common::traits::AuditFilter {
+            principal: if req.user_id.is_empty() {
+                None
+            } else {
+                Some(req.user_id)
+            },
+            allocation: None,
+            action: if req.action.is_empty() {
+                None
+            } else {
+                Some(req.action)
+            },
+            since: None,
+            until: None,
+        };
+
+        let entries = self
+            .state
+            .audit
+            .query(&filter)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let proto_entries: Vec<pb::AuditEntryProto> = entries
+            .into_iter()
+            .map(|e| pb::AuditEntryProto {
+                id: e.event.id.clone(),
+                tenant_id: req.tenant_id.clone(),
+                user_id: e.event.principal.identity.clone(),
+                action: e.event.action.clone(),
+                details: e.event.detail.clone(),
+                timestamp: Some(prost_types::Timestamp {
+                    seconds: e.event.timestamp.timestamp(),
+                    nanos: e.event.timestamp.timestamp_subsec_nanos() as i32,
+                }),
+            })
+            .collect();
+
+        Ok(Response::new(pb::QueryAuditResponse {
+            entries: proto_entries,
+            next_cursor: String::new(),
+        }))
+    }
+
+    async fn get_accounting_usage(
+        &self,
+        request: Request<pb::GetAccountingUsageRequest>,
+    ) -> Result<Response<pb::AccountingUsageResponse>, Status> {
+        let req = request.into_inner();
+
+        // If accounting service is configured, delegate to it
+        if let Some(ref _accounting) = self.state.accounting {
+            // Real accounting implementation would query the accounting service
+            Ok(Response::new(pb::AccountingUsageResponse {
+                tenant_id: req.tenant_id,
+                cpu_hours: 0.0,
+                gpu_hours: 0.0,
+                storage_bytes: 0,
+                allocation_count: 0,
+            }))
+        } else {
+            Ok(Response::new(pb::AccountingUsageResponse {
+                tenant_id: req.tenant_id,
+                cpu_hours: 0.0,
+                gpu_hours: 0.0,
+                storage_bytes: 0,
+                allocation_count: 0,
+            }))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +645,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         })
     }
 
@@ -449,6 +668,7 @@ mod tests {
             pty: None,
             agent_pool: None,
             data_dir: None,
+            oidc_config: None,
         })
     }
 

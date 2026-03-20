@@ -1,6 +1,6 @@
 use cucumber::{given, then, when};
 
-use super::helpers::parse_audit_action;
+use super::helpers::parse_audit_action_str;
 use crate::LatticeWorld;
 use lattice_common::error::LatticeError;
 use lattice_common::traits::*;
@@ -82,15 +82,15 @@ fn user_claims_node(world: &mut LatticeWorld, user: String, idx: usize) {
                 world.nodes[idx].owner = rn.owner;
             }
             // Record audit entry.
-            let entry = AuditEntry {
-                id: Uuid::new_v4(),
-                timestamp: chrono::Utc::now(),
-                user: user.clone(),
-                action: AuditAction::NodeClaim,
-                details: serde_json::json!({"node": node_id, "sensitive": true}),
-                previous_hash: String::new(),
-                signature: String::new(),
-            };
+            let entry = AuditEntry::new(lattice_audit_event(
+                audit_actions::NODE_CLAIM,
+                &user,
+                hpc_audit::AuditScope::node(&node_id),
+                hpc_audit::AuditOutcome::Success,
+                "sensitive node claim",
+                serde_json::json!({"node": node_id, "sensitive": true}),
+                hpc_audit::AuditSource::LatticeQuorum,
+            ));
             world.audit.entries.lock().unwrap().push(entry);
         }
         Err(e) => {
@@ -147,19 +147,19 @@ fn allocation_reads_data(world: &mut LatticeWorld) {
         .last()
         .map(|a| a.user.clone())
         .unwrap_or_else(|| "unknown".into());
-    let entry = AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user,
-        action: AuditAction::DataAccess,
-        details: serde_json::json!({
+    let entry = AuditEntry::new(lattice_audit_event(
+        audit_actions::DATA_ACCESS,
+        &user,
+        hpc_audit::AuditScope::default(),
+        hpc_audit::AuditOutcome::Success,
+        "data access",
+        serde_json::json!({
             "path": "/mnt/sensitive/data",
             "operation": "read",
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
+        hpc_audit::AuditSource::LatticeNodeAgent,
+    ));
     world.audit.entries.lock().unwrap().push(entry);
 }
 
@@ -198,19 +198,19 @@ fn sensitive_wipe_fails(world: &mut LatticeWorld, node_id: String) {
         n.state = state;
     }
     // Record critical audit entry.
-    let entry = AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user: "system".into(),
-        action: AuditAction::NodeRelease,
-        details: serde_json::json!({
+    let entry = AuditEntry::new(lattice_audit_event(
+        audit_actions::NODE_RELEASE,
+        "system",
+        hpc_audit::AuditScope::node(&node_id),
+        hpc_audit::AuditOutcome::Failure,
+        "wipe failure quarantine",
+        serde_json::json!({
             "node": node_id,
             "event": "wipe_failure_quarantine",
             "severity": "critical",
         }),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
+        hpc_audit::AuditSource::LatticeNodeAgent,
+    ));
     world.audit.entries.lock().unwrap().push(entry);
 }
 
@@ -218,8 +218,8 @@ fn sensitive_wipe_fails(world: &mut LatticeWorld, node_id: String) {
 
 #[then(regex = r#"^an audit entry should record action "(\w+)"$"#)]
 fn audit_entry_recorded(world: &mut LatticeWorld, action_str: String) {
-    let action = parse_audit_action(&action_str);
-    let entries = world.audit.entries_for_action(&action);
+    let action = parse_audit_action_str(&action_str);
+    let entries = world.audit.entries_for_action(action);
     assert!(
         !entries.is_empty(),
         "Expected at least one audit entry for action {action_str}, found none"
@@ -289,7 +289,7 @@ fn data_operations_logged(world: &mut LatticeWorld) {
 
 #[then("an audit entry should record the data access")]
 fn audit_records_data_access(world: &mut LatticeWorld) {
-    let entries = world.audit.entries_for_action(&AuditAction::DataAccess);
+    let entries = world.audit.entries_for_action(audit_actions::DATA_ACCESS);
     assert!(
         !entries.is_empty(),
         "Expected at least one DataAccess audit entry"
@@ -298,14 +298,14 @@ fn audit_records_data_access(world: &mut LatticeWorld) {
 
 #[then("the audit entry should include the user identity and timestamp")]
 fn audit_entry_has_identity_and_timestamp(world: &mut LatticeWorld) {
-    let entries = world.audit.entries_for_action(&AuditAction::DataAccess);
+    let entries = world.audit.entries_for_action(audit_actions::DATA_ACCESS);
     let entry = entries.last().expect("Expected a DataAccess audit entry");
     assert!(
-        !entry.user.is_empty(),
+        !entry.event.principal.identity.is_empty(),
         "Audit entry should include user identity"
     );
     assert!(
-        entry.details.get("timestamp").is_some(),
+        entry.event.metadata.get("timestamp").is_some(),
         "Audit entry details should include a timestamp"
     );
 }
@@ -375,7 +375,8 @@ fn node_not_schedulable(world: &mut LatticeWorld, node_id: String) {
 fn critical_audit_entry_committed(world: &mut LatticeWorld) {
     let entries = world.audit.entries.lock().unwrap();
     let has_critical = entries.iter().any(|e| {
-        e.details
+        e.event
+            .metadata
             .get("severity")
             .and_then(|v| v.as_str())
             .map(|s| s == "critical")

@@ -137,3 +137,123 @@ Assumptions surfaced from architecture docs, ADRs, and domain analysis. Categori
 **Unknown:** Ultra Ethernet VNI semantics may differ. Migration path from Slingshot VNIs to UE VNIs is undefined.
 **If wrong:** Network domain implementation needs a hardware abstraction layer. May need software fallback.
 **Investigation needed:** Monitor Ultra Ethernet specification progress.
+
+## Deployment Assumptions
+
+### A-D1: Raft Co-location with PACT
+**Source:** Deployment architecture, PACT invariants R1/R2
+**Assumption:** When Lattice and PACT are deployed together, they share the same physical servers for their Raft quorums but run independent Raft groups. PACT is incumbent (starts first). Lattice can also run standalone without PACT.
+**If wrong:** Would need Lattice to bootstrap its own dedicated servers for Raft, increasing infrastructure requirements.
+**Critical:** No — standalone mode always works.
+
+## hpc-core Integration Assumptions
+
+### A-HC1: hpc-node Crate Available
+**Source:** ADR-015 (hpc-core shared contracts), PACT invariants WI1-WI6
+**Assumption:** The hpc-node crate (published from hpc-core workspace) is available as a crates.io dependency. It defines trait-only contracts (`CgroupManager`, `NamespaceProvider`, `NamespaceConsumer`, `MountManager`, `ReadinessGate`) with no implementations. Lattice implements these traits in lattice-node-agent.
+**If wrong:** Lattice would define its own resource isolation abstractions. No functional loss, but drift between PACT and Lattice conventions (cgroup paths, socket paths, mount points).
+**Critical:** No — Lattice works standalone without shared contracts. Value is interoperability.
+
+### A-HC2: Dual-Mode Operation (Standalone vs PACT-Managed)
+**Source:** ADR-015, PACT domain model §2f
+**Assumption:** Lattice-node-agent detects PACT presence at runtime by checking for the handoff socket (`/run/pact/handoff.sock`) and readiness file (`/run/pact/ready`). When PACT is present, lattice-node-agent acts as a `NamespaceConsumer` (requests namespaces from PACT via unix socket, receives FDs via SCM_RIGHTS). When PACT is absent, lattice-node-agent falls back to self-service mode (creates its own cgroups, namespaces, and mounts using the same hpc-node conventions).
+**If wrong:** Lattice would need explicit configuration to select mode. Worse UX but functional.
+**Critical:** No — configuration fallback exists.
+
+### A-HC3: hpc-audit Crate Available
+**Source:** ADR-015, PACT invariants O3
+**Assumption:** The hpc-audit crate provides a universal `AuditEvent` format (who/what/when/where/outcome) with well-known action constants and an `AuditSink` trait. Lattice wraps `AuditEvent` inside its existing ed25519-signed audit envelope in the Raft state machine. The Raft log provides ordering and tamper evidence; hpc-audit provides the standardized event schema.
+**If wrong:** Lattice keeps its ad-hoc audit format. Unified SIEM forwarding requires a translation layer.
+**Critical:** No — audit trail integrity is maintained by Raft regardless.
+
+### A-HC3a: Admin/User Audit Correlation Is Temporal
+**Source:** IP-12, cross-system audit design
+**Assumption:** Cross-system correlation between PACT admin actions and lattice user-visible effects relies on temporal correlation via shared `node_id` in `AuditScope`. Explicit causal references (linking a lattice event to the PACT event that triggered it) are deferred. This works because PACT admin actions and lattice reactions are tightly time-correlated (seconds).
+**If wrong:** Auditors cannot distinguish "PACT froze node → lattice requeued" from "lattice requeued independently at the same time as unrelated PACT action." Explicit causal linking would be needed.
+**Critical:** No — temporal correlation is sufficient for most regulatory queries. Causal linking is a future enhancement (requires PACT→Lattice notification channel).
+
+### A-HC4: hpc-identity Crate Available
+**Source:** ADR-015, PACT ADR-008 (node enrollment certificate lifecycle, amended 2026-03-17)
+**Assumption:** The hpc-identity crate provides `IdentityCascade` and `CertRotator` for mTLS workload identity. Both lattice-node-agent and lattice-quorum use this instead of pre-provisioned static cert files. The cascade order is:
+1. **SpireProvider** (primary) — obtains X.509 SVID from local SPIRE agent socket (`/run/spire/agent.sock`). SPIRE is standard infrastructure on HPE Cray systems (target deployment platform). Handles rotation, attestation, and trust bundle management.
+2. **SelfSignedProvider** (fallback) — agent generates keypair + CSR, lattice-quorum signs with ephemeral intermediate CA key (same pattern as pact-journal in PACT ADR-008). Used when SPIRE is not deployed (dev, CI, small clusters).
+3. **StaticProvider** (bootstrap) — reads cert/key/trust-bundle from SquashFS image or local files. Used during the boot window before SPIRE or quorum is reachable.
+Private keys are generated locally and never transmitted (INV-ID2).
+**If wrong:** Would need manual cert management or external PKI dependency on the boot path.
+**Critical:** No — static cert fallback always works, but limits rotation and automation.
+
+### A-HC4a: SPIRE Available on Target Deployments
+**Source:** PACT ADR-008 amendment, HPE Cray infrastructure
+**Assumption:** Target deployment hardware (HPE Cray with Slingshot/UE) runs SPIRE agent on every compute node. SPIRE provides workload attestation, X.509 SVID issuance, and automatic rotation. Identity acquisition is via local unix socket (no network dependency). The same SVID works on both management and HSN networks (A-NET3).
+**If wrong:** Lattice falls back to SelfSignedProvider (quorum-signed certs) or StaticProvider (bootstrap certs). All functionality works but cert rotation requires manual intervention or quorum availability.
+**Critical:** No — cascade handles SPIRE absence gracefully.
+
+### A-HC4b: Lattice-Quorum as Self-Signed CA
+**Source:** PACT ADR-008 (ephemeral CA model), adapted for lattice
+**Assumption:** When SPIRE is not available, lattice-quorum nodes can act as ephemeral intermediate CAs for signing agent CSRs (same model as pact-journal in ADR-008). The CA key is generated in-memory at quorum startup, never persisted. CSR signing is a local CPU operation (~1ms per cert). Lattice owns its own trust domain independently of PACT — even when co-deployed, lattice-quorum and pact-journal use separate CA keys and separate trust chains.
+**If wrong:** Without SPIRE and without quorum CA, only static bootstrap certs are available. No rotation until either SPIRE or quorum CA is implemented.
+**Critical:** No — bootstrap certs work for initial deployment, but production requires at least one rotation mechanism.
+
+### A-HC5: Cgroup v2 Filesystem Available
+**Source:** hpc-node `CgroupManager` trait
+**Assumption:** Target compute nodes run Linux kernels with cgroup v2 unified hierarchy (`/sys/fs/cgroup/`). The `cgroup.kill` interface (Linux 5.14+) is available for scope cleanup. Older kernels fall back to SIGKILL.
+**If wrong:** Would need cgroup v1 support or hybrid mode. Significant complexity increase.
+**Critical:** No for deployment (modern HPC kernels are 5.14+), but would block older installations.
+
+### A-HC6: Well-Known Paths Shared Between PACT and Lattice
+**Source:** hpc-node constants
+**Assumption:** Both PACT and Lattice use well-known filesystem paths defined in hpc-node:
+- Cgroup hierarchy: `workload.slice/` (lattice owns), `pact.slice/` (pact owns)
+- Handoff socket: `/run/pact/handoff.sock`
+- Readiness signal: `/run/pact/ready`
+- uenv mount base: `/run/pact/uenv/`
+- Working directory base: `/run/pact/workdir/`
+These paths prevent configuration drift between the two systems.
+**If wrong:** Misconfigured paths cause namespace handoff failure. Detection: handoff error logged, fallback to self-service.
+**Critical:** No — fallback to self-service (A-HC2).
+
+## Network Topology Assumptions
+
+### A-NET1: Lattice Traffic on HSN
+**Source:** PACT ADR-017 (Network Topology — Management Network for Pact, HSN for Lattice)
+**Assumption:** All lattice control plane traffic (Raft consensus, node-agent heartbeats, allocation lifecycle, checkpoint coordination) runs on the high-speed network (Slingshot/Ultra Ethernet, 200G+). The management network (1G Ethernet) is used by PACT for admin operations, PXE boot, and BMC access. Lattice does not use the management network.
+**If wrong:** Lattice traffic on management network would saturate 1G links at scale (10,000 nodes × 30s telemetry). Raft consensus latency would increase from sub-microsecond to milliseconds.
+**Critical:** Yes at scale — management network cannot sustain lattice traffic volume.
+
+### A-NET2: HSN Available Before Lattice Starts
+**Source:** PACT ADR-017 boot ordering, ADR-006 (pact as init)
+**Assumption:** When PACT is present, HSN is available by the time lattice-node-agent starts (PACT starts `cxi_rh` in Phase 5, lattice-node-agent starts after). In standalone mode (systemd), HSN availability is assumed (operator responsibility).
+**If wrong:** Lattice-node-agent cannot connect to quorum. Agent retries with backoff until HSN comes up. No data loss (node enters Booting → Ready once connected).
+**Critical:** No — retry with backoff handles transient HSN unavailability.
+
+### A-NET3: SPIRE Bridges Both Networks
+**Source:** PACT ADR-017
+**Assumption:** SPIRE agent runs locally on each node (unix socket `/run/spire/agent.sock`). SVIDs are X.509 certificates that authenticate identity, not network interfaces. The same SVID works on both management and HSN networks. Identity acquisition has no network dependency (local socket only).
+**If wrong:** Would need separate identity providers per network. Significant complexity increase.
+**Critical:** No — self-signed CA fallback (hpc-identity cascade) works without SPIRE.
+
+## Authentication Assumptions
+
+### A-Auth1: hpc-auth Crate Available
+**Source:** CLI authentication design
+**Assumption:** The shared hpc-auth crate (built and published from PACT workspace) is available as a crates.io dependency. Lattice consumes it as an external dependency, same pattern as raft-hpc-core and hpc-scheduler-core.
+**If wrong:** Lattice would need to implement OAuth2 flows directly. Duplication with PACT.
+**Critical:** No — could vendor the code, but defeats the purpose.
+
+### A-Auth2: lattice-api Exposes Auth Discovery
+**Source:** CLI authentication design
+**Assumption:** lattice-api exposes an unauthenticated endpoint returning the IdP URL and public client ID. The CLI uses this for auto-configuration.
+**If wrong:** Users must manually configure IdP details. Worse UX but functional.
+**Critical:** No — manual config fallback exists.
+
+### A-Auth3: FirecREST Is Not Required *(validated)*
+**Source:** CLI authentication design
+**Status:** Validated — confirmed as architectural decision. Lattice authenticates directly against the institutional IdP via hpc-auth. FirecREST, when present, is a transparent passthrough gateway for hybrid Slurm deployments. It is not part of the authentication path.
+**If wrong:** N/A — this is now a validated design decision, not an assumption.
+**Critical:** No.
+
+### A-Auth4: Waldur Is Source of Truth for vCluster Authorization
+**Source:** CLI authentication design
+**Assumption:** The JWT token identifies the user (authentication). Waldur allocation state determines which vClusters the user can access (authorization). Authorization is checked at request time, not login time.
+**If wrong:** Would need to bake vCluster permissions into JWT claims, coupling IdP configuration to Lattice vCluster topology.
+**Critical:** No — alternative model works but is operationally more complex.

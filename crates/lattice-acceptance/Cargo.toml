@@ -13,6 +13,9 @@ harness = false
 [dependencies]
 lattice-common = { path = "../lattice-common" }
 lattice-test-harness = { path = "../lattice-test-harness" }
+hpc-audit = { workspace = true }
+hpc-identity = { workspace = true }
+hpc-node = { workspace = true }
 lattice-scheduler = { path = "../lattice-scheduler" }
 lattice-checkpoint = { path = "../lattice-checkpoint" }
 lattice-api = { path = "../lattice-api" }

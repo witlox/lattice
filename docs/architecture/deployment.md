@@ -20,6 +20,33 @@ Before deploying Lattice:
 | Waldur | Optional | External accounting (feature-flagged) |
 | Sovra | Optional | Federation trust (feature-flagged) |
 
+## Network Topology
+
+Lattice runs on the high-speed network (HSN — Slingshot/Ultra Ethernet, 200G+). When co-deployed with PACT, the two systems use different networks for clean failure isolation (PACT ADR-017):
+
+| System | Network | Ports | Traffic |
+|--------|---------|-------|---------|
+| **PACT** | Management (1G) | gRPC 9443, Raft 9444 | Admin ops, boot overlay, config, shell |
+| **Lattice** | HSN (200G+) | gRPC 50051, Raft 9000, REST 8080 | Scheduling, heartbeats, telemetry, allocation lifecycle |
+
+```
+Node (dual-homed):
+├── Management NIC (1G Ethernet)
+│   └── pact-agent ←mTLS→ pact-journal:9443
+│
+├── HSN NIC (200G+ Slingshot/UE)
+│   ├── lattice-node-agent ←mTLS→ lattice-quorum:50051
+│   └── workload traffic (MPI, NCCL, storage data plane)
+│
+└── SPIRE agent socket (local, network-agnostic)
+    ├── pact-agent obtains SVID → uses on management net
+    └── lattice-node-agent obtains SVID → uses on HSN
+```
+
+**Configuration:** Set `bind_network: hsn` in quorum and node-agent config (default). This resolves to the HSN interface at startup. In standalone mode without PACT, `bind_network: any` (default `0.0.0.0`) is acceptable.
+
+**Failure isolation:** Management net down → PACT degraded, lattice unaffected. HSN down → lattice paused, PACT unaffected (admin access works). See `specs/failure-modes.md` for full matrix.
+
 ## Bootstrap Sequence
 
 ### Phase 1: Infrastructure (OpenCHAMI)

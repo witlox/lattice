@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod allocation_runner;
 pub mod attach;
+pub mod cgroup;
 pub mod checkpoint_handler;
 pub mod conformance;
 pub mod data_stage;
@@ -17,6 +18,7 @@ pub mod grpc_server;
 pub mod health;
 pub mod heartbeat;
 pub mod heartbeat_loop;
+pub mod identity;
 pub mod image_cache;
 pub mod network;
 pub mod pmi2;

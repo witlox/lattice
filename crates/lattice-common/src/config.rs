@@ -52,6 +52,10 @@ pub struct LatticeConfig {
     /// Slurm compatibility layer configuration
     #[serde(default)]
     pub compat: Option<CompatConfig>,
+
+    /// Identity cascade configuration for workload mTLS
+    #[serde(default)]
+    pub identity: Option<IdentityConfig>,
 }
 
 impl Default for LatticeConfig {
@@ -63,9 +67,11 @@ impl Default for LatticeConfig {
                 grpc_address: "0.0.0.0:50051".to_string(),
                 rest_address: Some("0.0.0.0:8080".to_string()),
                 oidc_issuer: String::new(),
+                oidc_client_id: None,
                 tls_cert: None,
                 tls_key: None,
                 tls_ca: None,
+                bind_network: BindNetwork::Any,
             },
             storage: StorageConfig {
                 vast_api_url: None,
@@ -90,6 +96,7 @@ impl Default for LatticeConfig {
             accounting: None,
             rate_limit: None,
             compat: None,
+            identity: None,
         }
     }
 }
@@ -123,10 +130,39 @@ pub struct QuorumConfig {
     /// When None, uses in-memory storage (test/dev mode).
     #[serde(default)]
     pub data_dir: Option<PathBuf>,
+    /// Network to bind to: "hsn" (high-speed, default for production),
+    /// "management" (1G admin), or "any" (0.0.0.0, for dev/standalone).
+    /// See PACT ADR-017: lattice traffic runs on HSN, PACT on management.
+    #[serde(default = "default_bind_network")]
+    pub bind_network: BindNetwork,
 }
 
 fn default_raft_listen_address() -> String {
     "0.0.0.0:9000".to_string()
+}
+
+fn default_bind_network() -> BindNetwork {
+    BindNetwork::Any
+}
+
+/// Which network interface lattice services bind to.
+///
+/// HPC infrastructure has two networks (PACT ADR-017):
+/// - Management (1G Ethernet): PXE boot, BMC, admin — PACT uses this
+/// - HSN (Slingshot/UE 200G+): workload traffic, MPI, storage — Lattice uses this
+///
+/// In production, lattice should bind to HSN. In dev/standalone mode, "any" is fine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BindNetwork {
+    /// Bind to high-speed network interface (Slingshot/Ultra Ethernet).
+    /// Production default when co-deployed with PACT.
+    Hsn,
+    /// Bind to management network interface (1G Ethernet).
+    /// Not recommended for lattice — use for diagnostics only.
+    Management,
+    /// Bind to all interfaces (0.0.0.0). Default for dev/standalone mode.
+    Any,
 }
 
 impl Default for QuorumConfig {
@@ -139,6 +175,7 @@ impl Default for QuorumConfig {
             snapshot_threshold: 10000,
             raft_listen_address: default_raft_listen_address(),
             data_dir: None,
+            bind_network: BindNetwork::Any,
         }
     }
 }
@@ -157,6 +194,9 @@ pub struct ApiConfig {
     pub rest_address: Option<String>,
     /// OIDC provider URL for token validation
     pub oidc_issuer: String,
+    /// OIDC client ID for auth discovery
+    #[serde(default)]
+    pub oidc_client_id: Option<String>,
     /// TLS certificate path (PEM)
     pub tls_cert: Option<PathBuf>,
     /// TLS private key path (PEM)
@@ -166,6 +206,9 @@ pub struct ApiConfig {
     /// signed by this CA.
     #[serde(default)]
     pub tls_ca: Option<PathBuf>,
+    /// Network to bind to (see [`BindNetwork`]).
+    #[serde(default = "default_bind_network")]
+    pub bind_network: BindNetwork,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +279,11 @@ pub struct NodeAgentConfig {
     pub grace_period_seconds: u64,
     /// Extended grace period for sensitive nodes (seconds)
     pub sensitive_grace_period_seconds: u64,
+    /// Network to bind to (see [`BindNetwork`]).
+    /// Production: "hsn" (connects to quorum on HSN).
+    /// Standalone: "any" (default).
+    #[serde(default = "default_bind_network")]
+    pub bind_network: BindNetwork,
 }
 
 impl Default for NodeAgentConfig {
@@ -245,6 +293,7 @@ impl Default for NodeAgentConfig {
             heartbeat_timeout_seconds: 30,
             grace_period_seconds: 120,
             sensitive_grace_period_seconds: 600,
+            bind_network: BindNetwork::Any,
         }
     }
 }
@@ -390,6 +439,55 @@ impl Default for CompatConfig {
     }
 }
 
+// ─── Identity ──────────────────────────────────────────────
+
+/// Identity cascade configuration for workload mTLS.
+///
+/// Configures the three identity providers tried in order:
+/// SPIRE -> SelfSigned (quorum CA) -> Bootstrap (filesystem).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityConfig {
+    /// SPIRE agent socket path. Default: /run/spire/agent.sock
+    #[serde(default = "default_spire_socket")]
+    pub spire_socket: String,
+    /// Lattice-quorum endpoint for CSR signing (SelfSignedProvider fallback).
+    #[serde(default)]
+    pub signing_endpoint: Option<String>,
+    /// Bootstrap certificate path.
+    #[serde(default)]
+    pub bootstrap_cert: Option<String>,
+    /// Bootstrap private key path.
+    #[serde(default)]
+    pub bootstrap_key: Option<String>,
+    /// Bootstrap CA trust bundle path.
+    #[serde(default)]
+    pub bootstrap_ca: Option<String>,
+    /// Certificate lifetime for self-signed certs (seconds). Default: 259200 (3 days).
+    #[serde(default = "default_cert_lifetime")]
+    pub cert_lifetime_seconds: u64,
+}
+
+fn default_spire_socket() -> String {
+    "/run/spire/agent.sock".to_string()
+}
+
+fn default_cert_lifetime() -> u64 {
+    259_200 // 3 days
+}
+
+impl Default for IdentityConfig {
+    fn default() -> Self {
+        Self {
+            spire_socket: default_spire_socket(),
+            signing_endpoint: None,
+            bootstrap_cert: None,
+            bootstrap_key: None,
+            bootstrap_ca: None,
+            cert_lifetime_seconds: default_cert_lifetime(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +550,33 @@ mod tests {
         assert!(cfg.set_slurm_env);
         assert!(cfg.partition_mapping.is_empty());
         assert!(cfg.qos_mapping.is_empty());
+    }
+
+    #[test]
+    fn identity_config_defaults() {
+        let cfg = IdentityConfig::default();
+        assert_eq!(cfg.spire_socket, "/run/spire/agent.sock");
+        assert!(cfg.signing_endpoint.is_none());
+        assert!(cfg.bootstrap_cert.is_none());
+        assert!(cfg.bootstrap_key.is_none());
+        assert!(cfg.bootstrap_ca.is_none());
+        assert_eq!(cfg.cert_lifetime_seconds, 259_200);
+    }
+
+    #[test]
+    fn identity_config_deserializes() {
+        let yaml = r#"
+spire_socket: /custom/spire.sock
+signing_endpoint: https://quorum:9443
+bootstrap_cert: /etc/lattice/cert.pem
+bootstrap_key: /etc/lattice/key.pem
+bootstrap_ca: /etc/lattice/ca.pem
+cert_lifetime_seconds: 86400
+"#;
+        let cfg: IdentityConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.spire_socket, "/custom/spire.sock");
+        assert_eq!(cfg.signing_endpoint.as_deref(), Some("https://quorum:9443"));
+        assert_eq!(cfg.cert_lifetime_seconds, 86400);
     }
 
     #[test]

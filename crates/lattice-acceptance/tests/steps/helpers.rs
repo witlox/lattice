@@ -1,6 +1,6 @@
 use chrono::Duration;
 use lattice_api::middleware::rbac::{Operation, Role};
-use lattice_common::traits::AuditAction;
+use lattice_common::traits::audit_actions;
 use lattice_common::types::*;
 
 pub fn parse_allocation_state(s: &str) -> AllocationState {
@@ -17,17 +17,17 @@ pub fn parse_allocation_state(s: &str) -> AllocationState {
     }
 }
 
-pub fn parse_audit_action(s: &str) -> AuditAction {
+pub fn parse_audit_action_str(s: &str) -> &'static str {
     match s {
-        "NodeClaim" => AuditAction::NodeClaim,
-        "NodeRelease" => AuditAction::NodeRelease,
-        "AllocationStart" => AuditAction::AllocationStart,
-        "AllocationComplete" => AuditAction::AllocationComplete,
-        "DataAccess" => AuditAction::DataAccess,
-        "AttachSession" => AuditAction::AttachSession,
-        "LogAccess" => AuditAction::LogAccess,
-        "MetricsQuery" => AuditAction::MetricsQuery,
-        "CheckpointEvent" => AuditAction::CheckpointEvent,
+        "NodeClaim" => audit_actions::NODE_CLAIM,
+        "NodeRelease" => audit_actions::NODE_RELEASE,
+        "AllocationStart" => audit_actions::ALLOCATION_START,
+        "AllocationComplete" => audit_actions::ALLOCATION_COMPLETE,
+        "DataAccess" => audit_actions::DATA_ACCESS,
+        "AttachSession" => audit_actions::ATTACH_SESSION,
+        "LogAccess" => audit_actions::LOG_ACCESS,
+        "MetricsQuery" => audit_actions::METRICS_QUERY,
+        "CheckpointEvent" => audit_actions::CHECKPOINT_TRIGGERED,
         other => panic!("Unknown audit action: {other}"),
     }
 }

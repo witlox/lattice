@@ -175,7 +175,7 @@ allocation:
 
 ### Tier 2: Compatibility API (Slurm-like)
 
-Translates familiar Slurm commands to Intent API calls. Implemented as CLI wrappers + FirecREST endpoints.
+Translates familiar Slurm commands to Intent API calls. Implemented as CLI wrappers + lattice-api REST endpoints.
 
 #### Command Mapping
 
@@ -236,16 +236,23 @@ The protobuf definitions in `proto/lattice/v1/allocations.proto` currently cover
 | AllocationService (submit, get, list, cancel, update, watch, checkpoint) | Defined | Core allocation lifecycle |
 | Observability RPCs (attach, logs, metrics, diagnostics, compare) | Defined | Part of AllocationService |
 | DAG RPCs (get, list, cancel) | Defined | Part of AllocationService |
-| NodeService (list, get, drain, undrain, disable) | Defined | `proto/lattice/v1/nodes.proto` |
-| AdminService (tenant CRUD, vCluster CRUD, Raft status, backup verify) | Defined | `proto/lattice/v1/admin.proto` |
-| AuditService (sensitive audit log queries) | Planned | Will be a separate service proto |
-| SessionService (create, terminal) | Planned | May merge into AllocationService or be separate |
-| AccountingService (usage queries) | Planned | May integrate with Waldur API directly |
+| NodeService (list, get, drain, undrain, disable, enable, health) | Defined | `proto/lattice/v1/nodes.proto` |
+| AdminService (tenant CRUD, vCluster CRUD, Raft status, backup, audit, accounting) | Defined | `proto/lattice/v1/admin.proto` |
+| Session RPCs (create, get, delete) | Defined | Part of AllocationService |
 
-Planned services will be added as the proto matures. REST endpoints for planned services are served by lattice-api with hand-written handlers until proto definitions are finalized.
+All planned services have been implemented as RPCs within the existing three services (AllocationService, NodeService, AdminService). Both gRPC and REST endpoints are available for all operations.
+
+## Client SDKs
+
+| SDK | Protocol | Location |
+|-----|----------|----------|
+| Python (`lattice-sdk`) | REST (httpx) | `sdk/python/` |
+| Rust (`lattice-client`) | gRPC (tonic) | `crates/lattice-client/` |
+
+The Rust SDK re-exports all proto types as `lattice_client::proto` — consumers do not need to depend on `lattice-common` directly.
 
 ## Authentication
 
-All API calls require OIDC bearer token. FirecREST handles the OIDC flow (institutional IdP integration). The lattice-api server validates tokens against the configured OIDC provider.
+All API calls require OIDC bearer token. The lattice CLI handles the OIDC flow via hpc-auth (institutional IdP integration). The lattice-api server validates tokens against the configured OIDC provider.
 
 Sensitive tenant tokens include additional claims for audit trail binding.

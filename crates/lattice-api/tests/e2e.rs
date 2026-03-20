@@ -47,6 +47,7 @@ fn e2e_state() -> Arc<ApiState> {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     })
 }
 
@@ -67,6 +68,7 @@ fn e2e_state_with_nodes(nodes: Vec<Node>) -> Arc<ApiState> {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     })
 }
 
@@ -368,6 +370,7 @@ async fn checkpoint_broker_via_api() {
         pty: None,
         agent_pool: None,
         data_dir: None,
+        oidc_config: None,
     });
 
     let svc = LatticeAllocationService::new(state.clone());
@@ -756,6 +759,7 @@ async fn launch_tasks_e2e_with_scheduling() {
         pty: None,
         agent_pool: Some(Arc::new(StubNodeAgentPool)),
         data_dir: None,
+        oidc_config: None,
     });
 
     let svc = LatticeAllocationService::new(state.clone());

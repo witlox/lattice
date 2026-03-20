@@ -29,6 +29,12 @@ Cross-context coordinators (stateless):
   Checkpoint Broker:  Scheduling ──reads──► decides ──acts──► Node Management
   Accounting (Waldur): Scheduling ──events──► Waldur ──quotas──► Tenant & Access
   Data Staging:        Scheduling ──declares──► Node Management ──executes──► VAST
+
+hpc-core integration (trait-based, no code coupling):
+  Node Mgmt ──hpc-node──► PACT (namespace handoff, mount sharing) OR self-service
+  Consensus ──hpc-audit──► SIEM (standardized audit events)
+  Node Mgmt ──hpc-identity──► SPIRE/self-signed/bootstrap (mTLS identity)
+  CLI ──hpc-auth──► IdP (OAuth2 token management)
 ```
 
 ## Integration Points
@@ -211,6 +217,159 @@ Cross-context coordinators (stateless):
 - Waldur slow → batch size increases naturally (more events per push).
 
 **Guarantee:** Accounting never blocks scheduling (INV-N5).
+
+## hpc-core Integration Points
+
+### IP-11: Node Management ↔ PACT (Namespace Handoff via hpc-node)
+
+**Direction:** Lattice-node-agent requests; PACT-agent provides. Unidirectional.
+
+**Contract (PACT-managed mode):**
+- Input: `NamespaceRequest` via unix socket (`/run/pact/handoff.sock`)
+  - `allocation_id`: unique allocation identifier
+  - `namespaces`: requested types (Pid, Net, Mount)
+  - `uenv_image`: optional SquashFS image to mount inside mount namespace
+- Output: `NamespaceResponse` with FD types and uenv mount path. Actual FDs passed via SCM_RIGHTS ancillary data.
+- Cleanup: `AllocationEnded` message sent when allocation completes → PACT cleans up namespaces and decrements mount refcount.
+
+**Contract (standalone mode):**
+- Same `NamespaceConsumer` trait, different implementation
+- Creates namespaces via `unshare(2)` directly
+- Mounts uenv without refcounting (one mount per allocation)
+- No socket communication
+
+**Failure modes:**
+- Socket unavailable → 1s timeout → fallback to standalone mode (INV-RI2). Audit event emitted.
+- PACT crash mid-handoff → partial FDs received → abort, fallback to standalone for this allocation.
+- Namespace FD invalid → `setns()` fails → allocation retried on different node.
+
+**Ordering:** Each handoff is independent. No ordering constraints between allocations.
+
+**Duplication:** Idempotent. Duplicate `NamespaceRequest` for same allocation_id returns cached response.
+
+---
+
+### IP-12: Consensus → External (Audit Event Forwarding via hpc-audit)
+
+**Direction:** Lattice quorum emits standardized `AuditEvent` values. External SIEM forwarder consumes.
+
+**Contract:**
+- Lattice's `AuditSink` implementation wraps `AuditEvent` in ed25519-signed envelope → proposes to Raft
+- SIEM forwarder subscribes to committed audit entries (same mechanism as existing audit log streaming)
+- `AuditSource` field distinguishes origin: `LatticeNodeAgent`, `LatticeQuorum`, `LatticeCli`
+- When PACT co-deployed: single SIEM forwarder can consume from both pact-journal AND lattice-quorum streams using the same `AuditEvent` schema
+
+**AuditEntry wrapping model:**
+
+Lattice's `AuditEntry` struct (ed25519-signed, hash-chained) wraps `hpc_audit::AuditEvent` directly. The old `AuditAction` enum and flat `user`/`action`/`details` fields are removed (clean break — lattice is not yet deployed):
+
+```
+AuditEntry {
+    event: hpc_audit::AuditEvent,    // standardized payload (who, what, when, where, outcome)
+    previous_hash: String,            // SHA-256 chain
+    signature: String,                // ed25519 signature over (event + previous_hash)
+}
+```
+
+The `event.principal.identity` replaces the old `user: UserId` field. The `event.action` (string) replaces the old `AuditAction` enum. The `event.scope` provides structured node/vCluster/allocation context (replaces embedding these in `details`).
+
+**Cross-system admin/user audit correlation:**
+
+PACT handles admin operations (node provisioning, emergency freeze, config drift remediation). Lattice handles user operations (allocation lifecycle, scheduling, data access). When admin actions interfere with user requests (e.g., PACT drains a node with running allocations), both systems emit `AuditEvent` with the same `node_id` in `AuditScope`. SIEM correlation on `(node_id, timestamp)` surfaces the admin cause alongside the user-visible effect.
+
+**Future feature:** Causal references between admin and user audit events. When lattice detects a disruption caused by an external admin action, the audit event could carry `metadata: {"caused_by": "pact", "pact_event_id": "..."}` for explicit causal linking rather than temporal correlation. Requires a notification channel from PACT to Lattice (not yet designed).
+
+**Lattice-specific action constants** (defined in `lattice-common`, using `lattice.` prefix):
+
+```
+// Node ownership (sensitive audit path)
+pub const NODE_CLAIM: &str = "lattice.node.claim";
+pub const NODE_RELEASE: &str = "lattice.node.release";
+
+// Allocation lifecycle (extends hpc-audit workload actions)
+pub const ALLOCATION_COMPLETE: &str = "lattice.allocation.complete";
+pub const ALLOCATION_FAILED: &str = "lattice.allocation.failed";
+pub const ALLOCATION_CANCELLED: &str = "lattice.allocation.cancelled";
+pub const ALLOCATION_REQUEUED: &str = "lattice.allocation.requeued";
+pub const ALLOCATION_SUSPENDED: &str = "lattice.allocation.suspended";
+
+// Sensitive workload operations
+pub const DATA_ACCESS: &str = "lattice.data.access";
+pub const ATTACH_SESSION: &str = "lattice.attach.session";
+pub const LOG_ACCESS: &str = "lattice.log.access";
+pub const METRICS_QUERY: &str = "lattice.metrics.query";
+
+// Secure wipe
+pub const WIPE_STARTED: &str = "lattice.wipe.started";
+pub const WIPE_COMPLETED: &str = "lattice.wipe.completed";
+pub const WIPE_FAILED: &str = "lattice.wipe.failed";
+
+// Scheduling
+pub const PROPOSAL_COMMITTED: &str = "lattice.scheduling.proposal_committed";
+pub const PROPOSAL_REJECTED: &str = "lattice.scheduling.proposal_rejected";
+pub const PREEMPTION_INITIATED: &str = "lattice.scheduling.preemption_initiated";
+
+// Quota
+pub const QUOTA_EXCEEDED: &str = "lattice.quota.exceeded";
+pub const QUOTA_UPDATED: &str = "lattice.quota.updated";
+
+// DAG
+pub const DAG_SUBMITTED: &str = "lattice.dag.submitted";
+pub const DAG_COMPLETED: &str = "lattice.dag.completed";
+
+// VNI / Network domain
+pub const VNI_ASSIGNED: &str = "lattice.network.vni_assigned";
+pub const VNI_RELEASED: &str = "lattice.network.vni_released";
+```
+
+These constants supplement (not replace) hpc-audit's well-known actions. Shared actions (`cgroup.create`, `namespace.handoff`, `mount.acquire`, etc.) use hpc-audit constants directly.
+
+**AuditPrincipal mapping:**
+- `AuditEntry.user` (UserId string) → `AuditPrincipal { identity: user_id, principal_type: Human, role: rbac_role }`
+- System operations → `AuditPrincipal::system("lattice-quorum")` or `AuditPrincipal::system("lattice-node-agent")`
+
+**Failure modes:**
+- SIEM forwarder down → events accumulate in Raft log (always persisted). No loss.
+- Schema mismatch between hpc-audit versions → forwarder logs parse error, buffers raw events.
+
+---
+
+### IP-13: Node Management → Identity (mTLS via hpc-identity)
+
+**Direction:** Lattice-node-agent and lattice-quorum obtain workload identity from cascade.
+
+**Contract:**
+- `IdentityCascade` tried at startup and on rotation schedule (2/3 certificate lifetime)
+- Provider priority: SPIRE agent socket → self-signed CA endpoint (quorum/journal) → static bootstrap cert
+- `WorkloadIdentity` result used to configure tonic TLS
+- `CertRotator` performs dual-channel swap for zero-downtime rotation
+
+**Failure modes:**
+- All providers fail → FM-20 (identity cascade exhaustion). Agent cannot establish new connections.
+- SPIRE unavailable but self-signed works → transparent degradation. Log warning + audit event.
+- Rotation failure → FM-23. Active cert unchanged, retry scheduled.
+
+**Ordering:** Identity must be established before any gRPC communication (heartbeats, registration, proposals).
+
+---
+
+### IP-14: CLI → AuthClient (Token Management via hpc-auth)
+
+**Direction:** Lattice CLI uses `AuthClient` for user authentication against the institutional IdP.
+
+**Contract:**
+- CLI calls `AuthClient::login()` → cascading flow selection → token stored in `~/.config/lattice/tokens.json`
+- CLI calls `AuthClient::get_token()` before every authenticated RPC → returns cached or refreshed token
+- CLI calls `AuthClient::logout()` → local cache cleared, IdP revocation attempted (best-effort)
+- Server discovery: CLI queries `lattice-api /api/v1/auth/discovery` (unauthenticated) for IdP URL and client ID
+
+**Failure modes:**
+- IdP unreachable → `AuthError::IdpUnreachable`. Login fails. User informed.
+- Token expired + refresh expired → `AuthError::TokenExpired`. User must re-login.
+- Cache corrupted → `AuthError::CacheCorrupted`. Lenient mode: warn, delete, require re-login.
+- No browser (SSH session) → Device Code or Manual Paste flow selected automatically.
+
+**Ordering:** Login must precede all authenticated commands (INV-A1).
 
 ## Cross-Context Race Conditions
 

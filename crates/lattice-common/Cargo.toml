@@ -3,7 +3,9 @@ name = "lattice-common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Shared types, configuration, and error handling for Lattice scheduler"
+include = ["src/**/*", "build.rs", "proto/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
 [features]
 default = []
@@ -27,6 +29,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 hpc-scheduler-core = { workspace = true, optional = true }
+hpc-audit = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

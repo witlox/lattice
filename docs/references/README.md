@@ -15,7 +15,7 @@
 - **What:** RESTful API gateway for HPC systems
 - **Repo:** https://github.com/eth-cscs/firecrest
 - **Docs:** https://firecrest.readthedocs.io
-- **Our integration:** User plane — sits in front of lattice-api, handles OIDC authentication, provides WebSocket terminal for interactive sessions, file management
+- **Our integration:** Optional — lattice authenticates directly via hpc-auth. FirecREST is only needed for hybrid Slurm deployments where it serves as a passthrough compatibility gateway.
 
 ### uenv
 - **What:** User environment tool for mounting SquashFS software stacks

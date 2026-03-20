@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use crate::data_stage::DataStageExecutor;
 use crate::image_cache::ImageCache;
 use crate::runtime::{PrepareConfig, Runtime, RuntimeError};
+use hpc_node::{CgroupHandle, CgroupManager};
 use lattice_common::types::{AllocId, MemoryPolicy};
 
 /// Reports prologue progress (for telemetry / event bus).
@@ -45,12 +46,14 @@ impl Default for PrologueConfig {
 }
 
 /// Result of running the prologue.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PrologueResult {
     /// Whether the image was already cached (skip pull).
     pub cache_hit: bool,
     /// Whether data staging was performed.
     pub data_staged: bool,
+    /// Cgroup handle for the allocation scope (if resource limits were set).
+    pub cgroup_handle: Option<CgroupHandle>,
 }
 
 /// Runs the prologue pipeline for an allocation.
@@ -67,8 +70,10 @@ impl ProloguePipeline {
     ///
     /// 1. Check image cache
     /// 2. If miss: record in cache (pull is handled by runtime.prepare())
-    /// 3. Call runtime.prepare()
-    /// 4. Pre-stage data mounts via DataStageExecutor
+    /// 3. Create cgroup scope (if resource limits are set)
+    /// 4. Call runtime.prepare()
+    /// 5. Configure memory policy
+    /// 6. Pre-stage data mounts via DataStageExecutor
     #[allow(clippy::too_many_arguments)]
     pub async fn execute(
         &self,
@@ -77,6 +82,7 @@ impl ProloguePipeline {
         runtime: &dyn Runtime,
         cache: &mut ImageCache,
         data_stager: &dyn DataStageExecutor,
+        cgroup_mgr: &dyn CgroupManager,
         reporter: &dyn PrologueReporter,
     ) -> Result<PrologueResult, RuntimeError> {
         let image_ref = prepare_config
@@ -99,7 +105,48 @@ impl ProloguePipeline {
             cache.insert(image_ref.to_string(), self.config.default_image_size_bytes);
         }
 
-        // Step 2: Prepare runtime (pull + mount)
+        // Step 2: Create cgroup scope (if resource limits are set)
+        let cgroup_handle = if let Some(ref limits) = prepare_config.resource_limits {
+            reporter
+                .report_step(alloc_id, "cgroup_create", "started")
+                .await;
+            let scope_name = format!("alloc-{alloc_id}");
+            match cgroup_mgr.create_scope(
+                hpc_node::cgroup::slices::WORKLOAD_ROOT,
+                &scope_name,
+                limits,
+            ) {
+                Ok(handle) => {
+                    tracing::info!(
+                        alloc_id = %alloc_id,
+                        path = %handle.path,
+                        "cgroup scope created"
+                    );
+                    reporter
+                        .report_step(alloc_id, "cgroup_create", "completed")
+                        .await;
+                    Some(handle)
+                }
+                Err(e) => {
+                    tracing::error!(
+                        alloc_id = %alloc_id,
+                        error = %e,
+                        "prologue: cgroup creation failed"
+                    );
+                    reporter
+                        .report_step(alloc_id, "cgroup_create", "failed")
+                        .await;
+                    return Err(RuntimeError::PrepareFailed {
+                        alloc_id,
+                        reason: format!("cgroup creation failed: {e}"),
+                    });
+                }
+            }
+        } else {
+            None
+        };
+
+        // Step 3: Prepare runtime (pull + mount)
         reporter
             .report_step(alloc_id, "runtime_prepare", "started")
             .await;
@@ -111,7 +158,7 @@ impl ProloguePipeline {
             .report_step(alloc_id, "runtime_prepare", "completed")
             .await;
 
-        // Step 3: Configure memory policy (numactl)
+        // Step 4: Configure memory policy (numactl)
         if let Some(ref policy) = prepare_config.memory_policy {
             reporter
                 .report_step(alloc_id, "memory_policy", "started")
@@ -137,7 +184,7 @@ impl ProloguePipeline {
             }
         }
 
-        // Step 4: Data staging
+        // Step 5: Data staging
         let data_staged = if !prepare_config.data_mounts.is_empty() {
             reporter
                 .report_step(alloc_id, "data_staging", "started")
@@ -178,6 +225,7 @@ impl ProloguePipeline {
         Ok(PrologueResult {
             cache_hit,
             data_staged,
+            cgroup_handle,
         })
     }
 }
@@ -201,6 +249,7 @@ impl Default for ProloguePipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cgroup::StubCgroupManager;
     use crate::data_stage::NoopDataStageExecutor;
     use crate::runtime::MockRuntime;
     use std::sync::Arc;
@@ -253,6 +302,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         // First run: cache miss
@@ -263,6 +313,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &NoopDataStageExecutor,
+                &StubCgroupManager,
                 &NoopReporter,
             )
             .await
@@ -286,6 +337,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
         let result2 = pipeline
             .execute(
@@ -294,6 +346,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &NoopDataStageExecutor,
+                &StubCgroupManager,
                 &NoopReporter,
             )
             .await
@@ -320,6 +373,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         pipeline
@@ -329,6 +383,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &NoopDataStageExecutor,
+                &StubCgroupManager,
                 &reporter,
             )
             .await
@@ -363,6 +418,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         let result = pipeline
@@ -372,6 +428,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &NoopDataStageExecutor,
+                &StubCgroupManager,
                 &NoopReporter,
             )
             .await;
@@ -397,6 +454,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         let result = pipeline
@@ -406,6 +464,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &NoopDataStageExecutor,
+                &StubCgroupManager,
                 &NoopReporter,
             )
             .await
@@ -459,6 +518,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         pipeline
@@ -468,6 +528,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &NoopDataStageExecutor,
+                &StubCgroupManager,
                 &reporter,
             )
             .await
@@ -498,6 +559,7 @@ mod tests {
             is_unified_memory: true,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         pipeline
@@ -507,6 +569,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &NoopDataStageExecutor,
+                &StubCgroupManager,
                 &reporter,
             )
             .await
@@ -546,10 +609,19 @@ mod tests {
                 tier_hint: Some(StorageTier::Hot),
             }],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         let result = pipeline
-            .execute(alloc_id, &config, &runtime, &mut cache, &stager, &reporter)
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &stager,
+                &StubCgroupManager,
+                &reporter,
+            )
             .await
             .unwrap();
         assert!(result.data_staged);
@@ -587,6 +659,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         let result = pipeline
@@ -596,6 +669,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &NoopDataStageExecutor,
+                &StubCgroupManager,
                 &NoopReporter,
             )
             .await
@@ -630,6 +704,7 @@ mod tests {
                 tier_hint: Some(StorageTier::Hot),
             }],
             scratch_per_node: None,
+            resource_limits: None,
         };
 
         let result = pipeline
@@ -639,6 +714,7 @@ mod tests {
                 &runtime,
                 &mut cache,
                 &stager,
+                &StubCgroupManager,
                 &NoopReporter,
             )
             .await;
@@ -647,5 +723,97 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("data staging failed"));
+    }
+
+    #[tokio::test]
+    async fn prologue_creates_cgroup_scope_with_limits() {
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+        let (reporter, steps) = RecordingReporter::new();
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("test-image".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
+            resource_limits: Some(hpc_node::ResourceLimits {
+                memory_max: Some(4 * 1024 * 1024 * 1024),
+                cpu_weight: Some(200),
+                io_max: None,
+            }),
+        };
+
+        let result = pipeline
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &StubCgroupManager,
+                &reporter,
+            )
+            .await
+            .unwrap();
+
+        // cgroup handle should be present
+        assert!(result.cgroup_handle.is_some());
+        let handle = result.cgroup_handle.unwrap();
+        assert!(handle.path.contains("workload.slice"));
+        assert!(handle.path.contains(&format!("alloc-{alloc_id}")));
+
+        // Verify cgroup_create step was reported
+        let steps = steps.lock().await;
+        assert!(steps
+            .iter()
+            .any(|(_, step, status)| step == "cgroup_create" && status == "started"));
+        assert!(steps
+            .iter()
+            .any(|(_, step, status)| step == "cgroup_create" && status == "completed"));
+    }
+
+    #[tokio::test]
+    async fn prologue_no_cgroup_without_limits() {
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("test-image".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
+            resource_limits: None,
+        };
+
+        let result = pipeline
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &StubCgroupManager,
+                &NoopReporter,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.cgroup_handle.is_none());
     }
 }

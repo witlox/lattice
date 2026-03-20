@@ -30,7 +30,78 @@ use lattice_common::error::LatticeError;
 use lattice_common::types::*;
 use lattice_test_harness::mocks::*;
 
+use hpc_identity::WorkloadIdentity;
+use hpc_node::{CgroupHandle, CgroupManager, CgroupMetrics};
 use lattice_api::events::{AllocationEvent, EventBus};
+use lattice_node_agent::cgroup::StubCgroupManager;
+use lattice_node_agent::identity::LatticeRotator;
+
+/// Debug wrapper for `LatticeRotator` (which does not derive Debug).
+pub struct IdentityRotatorWrapper(LatticeRotator);
+
+impl std::fmt::Debug for IdentityRotatorWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LatticeRotator").finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for IdentityRotatorWrapper {
+    type Target = LatticeRotator;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<LatticeRotator> for IdentityRotatorWrapper {
+    fn from(r: LatticeRotator) -> Self {
+        Self(r)
+    }
+}
+
+/// Debug wrapper for `StubCgroupManager` (which does not derive Debug).
+pub struct CgroupManagerWrapper(StubCgroupManager);
+
+impl std::fmt::Debug for CgroupManagerWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StubCgroupManager").finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for CgroupManagerWrapper {
+    type Target = StubCgroupManager;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl CgroupManager for CgroupManagerWrapper {
+    fn create_hierarchy(&self) -> Result<(), hpc_node::CgroupError> {
+        self.0.create_hierarchy()
+    }
+    fn create_scope(
+        &self,
+        parent_slice: &str,
+        name: &str,
+        limits: &hpc_node::ResourceLimits,
+    ) -> Result<CgroupHandle, hpc_node::CgroupError> {
+        self.0.create_scope(parent_slice, name, limits)
+    }
+    fn destroy_scope(&self, handle: &CgroupHandle) -> Result<(), hpc_node::CgroupError> {
+        self.0.destroy_scope(handle)
+    }
+    fn read_metrics(&self, path: &str) -> Result<CgroupMetrics, hpc_node::CgroupError> {
+        self.0.read_metrics(path)
+    }
+    fn is_scope_empty(&self, handle: &CgroupHandle) -> Result<bool, hpc_node::CgroupError> {
+        self.0.is_scope_empty(handle)
+    }
+}
+
+impl From<StubCgroupManager> for CgroupManagerWrapper {
+    fn from(m: StubCgroupManager) -> Self {
+        Self(m)
+    }
+}
 use lattice_api::middleware::rbac::Role;
 use lattice_node_agent::agent::NodeAgent;
 use lattice_node_agent::epilogue::EpilogueResult;
@@ -195,6 +266,25 @@ pub struct LatticeWorld {
     pub mpi_num_nodes_cfg: u32,
     pub fence_coordinator: Option<FenceCoordinator>,
     pub fence_contributions: Vec<(u32, HashMap<String, String>)>,
+    // Identity cascade
+    pub identity_spire_available: bool,
+    pub identity_self_signed_cached: bool,
+    pub identity_bootstrap_exists: bool,
+    pub identity_cascade_empty: bool,
+    pub identity_result: Option<Result<WorkloadIdentity, String>>,
+    pub identity_issued_at: Option<chrono::DateTime<Utc>>,
+    pub identity_tls_config_ok: Option<bool>,
+    #[allow(dead_code)]
+    pub identity_rotator: Option<IdentityRotatorWrapper>,
+    pub identity_rotation_failed: bool,
+    pub _identity_tempdir: Option<tempfile::TempDir>,
+    // Cgroup isolation
+    #[allow(dead_code)]
+    pub cgroup_manager: Option<CgroupManagerWrapper>,
+    pub cgroup_handle: Option<CgroupHandle>,
+    pub cgroup_metrics: Option<CgroupMetrics>,
+    pub cgroup_result_ok: Option<bool>,
+    pub cgroup_is_empty: Option<bool>,
 }
 
 impl LatticeWorld {
@@ -309,6 +399,23 @@ impl LatticeWorld {
             mpi_num_nodes_cfg: 0,
             fence_coordinator: None,
             fence_contributions: Vec::new(),
+            // Identity cascade
+            identity_spire_available: false,
+            identity_self_signed_cached: false,
+            identity_bootstrap_exists: false,
+            identity_cascade_empty: false,
+            identity_result: None,
+            identity_issued_at: None,
+            identity_tls_config_ok: None,
+            identity_rotator: None,
+            identity_rotation_failed: false,
+            _identity_tempdir: None,
+            // Cgroup isolation
+            cgroup_manager: None,
+            cgroup_handle: None,
+            cgroup_metrics: None,
+            cgroup_result_ok: None,
+            cgroup_is_empty: None,
         }
     }
 

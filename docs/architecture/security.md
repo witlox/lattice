@@ -7,7 +7,7 @@ Defense in depth with zero-trust internal communication. Every component authent
 ## Trust Boundaries
 
 ```
-User ──OIDC──→ FirecREST ──mTLS──→ lattice-api ──mTLS──→ quorum
+User ──OIDC──→ lattice-api (direct, via hpc-auth) ──mTLS──→ quorum
                                         │                    │
                                         │ mTLS               │ mTLS
                                         ▼                    ▼
@@ -27,8 +27,7 @@ Federation (optional):
 
 | Boundary | Attack | Mitigation |
 |----------|--------|------------|
-| User → FirecREST | Stolen OIDC token | Short-lived tokens (5 min), token binding to client cert, MFA enforcement at IdP |
-| FirecREST → lattice-api | Forged FirecREST request | mTLS: lattice-api validates FirecREST's client certificate against PKI |
+| User → lattice-api | Stolen OIDC token | Short-lived tokens (5 min), token binding to client cert, MFA enforcement at IdP |
 | Internal services | Rogue node agent | mTLS with site PKI (OpenCHAMI OPAAL-issued certificates). Node agents receive certs during boot via cloud-init. Cert CN must match node identity in quorum. |
 | Federation | Rogue remote site | Sovra workspace-scoped certificates. Each site's identity is cryptographically bound to its Sovra workspace. Revocable. |
 
@@ -63,7 +62,7 @@ Federation (optional):
 
 | Boundary | Attack | Mitigation |
 |----------|--------|------------|
-| User → API | API flooding | Rate limiting per tenant (token bucket). Admission control: reject requests that exceed tenant's request quota. FirecREST provides first-layer rate limiting. |
+| User → API | API flooding | Rate limiting per tenant (token bucket). Admission control: reject requests that exceed tenant's request quota. lattice-api provides rate limiting via Tower middleware. |
 | Node → quorum | Heartbeat storm | Heartbeat coalescing: node agents batch heartbeats. Quorum-side rate limiting per node (max 1 heartbeat per interval). |
 | Scheduling | Malicious allocation specs | Validation at API layer: max resource requests bounded, max array size bounded, DAG cycle detection. Reject before reaching scheduler. |
 | Storage | Storage exhaustion | Per-tenant storage quotas enforced by VAST. Checkpoint storage bounded per allocation. |
@@ -102,7 +101,7 @@ Sensitive values are never stored in configuration files:
 | Waldur API token | Secrets manager (HashiCorp Vault or equivalent) | Referenced by path: `vault://lattice/waldur-token` |
 | VAST API credentials | Secrets manager | Referenced by path |
 | TLS private keys | Local filesystem (mode 0600) or TPM | Loaded at startup |
-| OIDC client secret | Secrets manager | Used by FirecREST only |
+| OIDC client secret | Secrets manager | Used by hpc-auth (CLI) or lattice-api (server-side validation) |
 | Sovra workspace key | Sovra key store (HSM-backed) | Used by federation broker |
 
 Configuration files reference secrets by path, never by value:

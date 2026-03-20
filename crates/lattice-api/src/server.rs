@@ -405,6 +405,8 @@ mod tests {
             tls_cert: Some(PathBuf::from("/etc/lattice/tls/server.crt")),
             tls_key: Some(PathBuf::from("/etc/lattice/tls/server.key")),
             tls_ca: Some(PathBuf::from("/etc/lattice/tls/ca.crt")),
+            oidc_client_id: None,
+            bind_network: lattice_common::config::BindNetwork::Any,
         };
 
         let tls = tls_config_from_api(&api).expect("should produce TlsConfig");
@@ -443,9 +445,11 @@ mod tests {
             grpc_address: "0.0.0.0:50051".to_string(),
             rest_address: None,
             oidc_issuer: "https://auth.example.com".to_string(),
+            oidc_client_id: None,
             tls_cert: None,
             tls_key: None,
             tls_ca: None,
+            bind_network: lattice_common::config::BindNetwork::Any,
         };
 
         let tls = tls_config_from_api(&api);
@@ -586,9 +590,11 @@ mod tests {
             grpc_address: "127.0.0.1:9090".to_string(),
             rest_address: Some("127.0.0.1:8888".to_string()),
             oidc_issuer: "https://auth.test.com".to_string(),
+            oidc_client_id: None,
             tls_cert: Some(PathBuf::from("/tls/cert.pem")),
             tls_key: Some(PathBuf::from("/tls/key.pem")),
             tls_ca: Some(PathBuf::from("/tls/ca.pem")),
+            bind_network: lattice_common::config::BindNetwork::Any,
         };
 
         let cfg = ServerConfig::from_api_config(&api).unwrap();

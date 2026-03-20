@@ -164,6 +164,74 @@ Fail-safe defaults. Running allocations survive component failures. No silent fa
 | **Data loss** | Metrics during outage lost (ring buffer covers live access). |
 | **Unacceptable** | Scheduling crash due to missing metrics. Autoscaling without metrics (blind scaling). |
 
+## hpc-core Integration Failures
+
+### FM-19: PACT Handoff Socket Unavailable
+
+| Aspect | Detail |
+|---|---|
+| **Detection** | Socket connection timeout (1s) on `/run/pact/handoff.sock` |
+| **Blast radius** | None — transparent fallback to self-service mode. |
+| **Degradation** | Lattice-node-agent creates namespaces via `unshare(2)` directly. No shared mount cache (each allocation mounts independently). Audit event emitted: `namespace.handoff_failed`. |
+| **Recovery** | If PACT restarts: next allocation uses handoff. Already-running allocations unaffected (namespaces are per-process). |
+| **Data loss** | None. |
+| **Unacceptable** | Allocation startup blocked waiting for PACT. Must fail fast (1s timeout). |
+
+### FM-20: Identity Cascade Exhaustion
+
+| Aspect | Detail |
+|---|---|
+| **Detection** | All `IdentityProvider` implementations return errors |
+| **Blast radius** | Node agent or quorum member cannot establish mTLS connections. Cannot register, heartbeat, or serve RPCs. |
+| **Degradation** | SPIRE unavailable (socket missing or agent down) → SelfSignedProvider fails (quorum unreachable) → StaticProvider fails (bootstrap cert expired or files missing) → **no valid identity**. Agent enters degraded state. Existing connections continue until cert expires. |
+| **Recovery** | Fix underlying provider: restart SPIRE agent (primary path on HPE Cray), restore quorum for self-signed CA, or provision new bootstrap certs. Agent automatically retries cascade on next rotation cycle. |
+| **Data loss** | None. Running allocations continue (existing TLS sessions remain valid). |
+| **Unacceptable** | Silent operation without mTLS. Must refuse to serve RPCs without valid identity. |
+
+### FM-21: Audit Sink Buffer Overflow
+
+| Aspect | Detail |
+|---|---|
+| **Detection** | Internal buffer full, `emit()` can no longer accept events |
+| **Blast radius** | Non-sensitive audit events dropped (with counter metric). Sensitive audit events are never dropped — they block on Raft commit (INV-S3). |
+| **Degradation** | Audit gap for non-sensitive operations. Counter metric `lattice_audit_events_dropped_total` tracks loss. |
+| **Recovery** | Quorum reconnection → buffer drains → counter stops increasing. |
+| **Data loss** | Dropped non-sensitive audit events. Reconstructable from Raft log (committed state changes are authoritative). |
+| **Unacceptable** | Sensitive audit events dropped. Blocking non-sensitive operations waiting for audit. |
+
+### FM-22: Readiness Gate Timeout
+
+| Aspect | Detail |
+|---|---|
+| **Detection** | `/run/pact/ready` not present after `readiness_timeout` (default 30s) |
+| **Blast radius** | None — agent proceeds as ready. |
+| **Degradation** | Agent starts accepting allocations before PACT confirms all infrastructure services are up. Risk: chronyd not yet synced (time skew), GPU daemon not started (GPU unavailable). |
+| **Recovery** | PACT eventually starts infrastructure services. GPU/time issues resolve. Running allocations may see brief degradation. |
+| **Data loss** | None. |
+| **Unacceptable** | Agent blocked indefinitely (INV-RI4). |
+
+### FM-23: Certificate Rotation Failure
+
+| Aspect | Detail |
+|---|---|
+| **Detection** | `CertRotator::rotate()` returns `RotationFailed` |
+| **Blast radius** | Active TLS channel unchanged (safe). Next rotation retry at scheduled interval. |
+| **Degradation** | Current cert continues serving. If cert expires before next successful rotation: connections fail (FM-20 cascade). |
+| **Recovery** | Fix signing endpoint or SPIRE. Rotation succeeds on next attempt. |
+| **Data loss** | None. |
+| **Unacceptable** | Rotation dropping in-flight connections (INV-ID3). |
+
+### FM-24: Cgroup Scope Cleanup Failure
+
+| Aspect | Detail |
+|---|---|
+| **Detection** | `destroy_scope()` returns `KillFailed` — processes stuck in D-state |
+| **Blast radius** | Single allocation. Cgroup scope orphaned with zombie processes. |
+| **Degradation** | Node remains in Ready state but has reduced effective capacity (orphaned scope consumes resources). Alert raised. |
+| **Recovery** | Operator intervention: reboot node or resolve stuck processes. OpenCHAMI reimage as last resort. |
+| **Data loss** | None (allocation already completed/failed). |
+| **Unacceptable** | Silently ignoring orphaned scope. Must be tracked and alerted. |
+
 ## Allocation-Level Failures
 
 ### FM-15: Prologue Failure
@@ -227,3 +295,9 @@ Fail-safe defaults. Running allocations survive component failures. No silent fa
 | OpenCHAMI down | Seconds (API) | Variable | None | Provisioning paused |
 | Waldur down | Seconds (API) | Variable | Billing data if buffer full | None |
 | TSDB down | Seconds (query) | Variable | Metric gap | Stale scores, no autoscaling |
+| PACT handoff down | 1s (timeout) | Seconds (fallback) | None | None (self-service) |
+| Identity cascade exhausted | Immediate | Variable | None | New connections fail |
+| Audit sink overflow | Immediate | On reconnect | Non-sensitive events | None |
+| Readiness gate timeout | 30s | Immediate (proceed) | None | Possible early-start issues |
+| Cert rotation failure | Immediate | Next retry | None | None (current cert serves) |
+| Cgroup cleanup failure | Immediate | Manual | None | Reduced node capacity |

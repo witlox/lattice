@@ -7,7 +7,7 @@ Lattice schedules both finite jobs (batch training, simulations) and infinite jo
 ## Architecture at a Glance
 
 ```
-User Plane         FirecREST API Gateway (OIDC/SAML)
+User Plane         lattice-cli + lattice-api (OIDC via hpc-auth)
 Software Plane     uenv (SquashFS) + Sarus (OCI) + Registry
 Scheduling Plane   Raft Quorum + vCluster Schedulers (knapsack)
 Data Plane         VAST (NFS/S3) tiered storage + data mover

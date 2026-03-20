@@ -6,13 +6,13 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 
 ```
 ┌─ User Plane ───────────────────────────────────────────────────┐
-│  FirecREST API Gateway (OIDC/SAML)                             │
+│  lattice-cli + lattice-api (OIDC via hpc-auth)                 │
 │  ├── Job lifecycle (submit, monitor, cancel)                   │
 │  ├── Interactive sessions (WebSocket terminal)                 │
 │  ├── Data management (stage, browse, transfer)                 │
 │  ├── uenv management (list, pull, test)                        │
 │  ├── Observability (attach, logs, metrics, diagnostics)        │
-│  └── Sensitive: user-level node claim/release                    │
+│  └── Sensitive: user-level node claim/release                  │
 └───────────────────────────┬────────────────────────────────────┘
                             │
 ┌─ Software Plane ──────────┴────────────────────────────────────┐
@@ -20,18 +20,18 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  Optional: OCI/Sarus (isolation, third-party images)           │
 │  Registry: JFrog/Nexus → S3 backing (VAST hot tier)            │
 │  Node-local NVMe image cache (optional)                        │
-│  Sensitive: signed images only, vulnerability-scanned            │
+│  Sensitive: signed images only, vulnerability-scanned          │
 └───────────────────────────┬────────────────────────────────────┘
                             │
 ┌─ Scheduling Plane ────────┴────────────────────────────────────┐
 │  Quorum (Raft, 3-5 replicas)                                   │
-│  Strong: (1) node ownership  (2) sensitive audit log             │
+│  Strong: (1) node ownership  (2) sensitive audit log           │
 │  Eventual: job queues, telemetry, quotas                       │
 │                                                                │
 │  vCluster Schedulers:                                          │
 │  ├── HPC: backfill + dragonfly group packing                   │
 │  ├── Service: bin-pack + autoscale                             │
-│  ├── Sensitive: user-claim reservation, dedicated nodes          │
+│  ├── Sensitive: user-claim reservation, dedicated nodes        │
 │  └── Interactive: FIFO, short-lived, node-sharing via Sarus    │
 └───────────────────────────┬────────────────────────────────────┘
                             │
@@ -40,7 +40,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │    ├── Home dirs, scratch, active datasets (NFS)               │
 │    ├── Checkpoints, image cache, objects (S3)                  │
 │    ├── Scheduler integration: QoS, pre-staging, snapshots      │
-│    └── Sensitive: encrypted view, audit-logged, dedicated pool   │
+│    └── Sensitive: encrypted view, audit-logged, dedicated pool │
 │  Warm: Capacity store (S3-compat, cost-optimized)              │
 │  Cold: Tape archive (S3-compat, regulatory retention)          │
 │  Data mover: pre-stages during queue wait, policy-driven       │
@@ -52,7 +52,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 │  ├── VNI-based network domains (job isolation)                 │
 │  ├── Traffic classes: compute | management | telemetry         │
 │  ├── CSIG for in-band congestion telemetry                     │
-│  └── Sensitive: encrypted RDMA, dedicated VNI                    │
+│  └── Sensitive: encrypted RDMA, dedicated VNI                  │
 └───────────────────────────┬────────────────────────────────────┘
                             │
 ┌─ Node Plane ──────────────┴────────────────────────────────────┐
@@ -81,7 +81,7 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 ### Allocation Lifecycle
 
 ```
-1. User/Agent → FirecREST → lattice-api (Intent API or Compat API)
+1. User/Agent → lattice-cli → lattice-api (Intent API or Compat API)
 2. lattice-api validates request, resolves uenv, creates Allocation object
 3. Allocation placed in vCluster scheduler's queue (eventually consistent)
 4. vCluster scheduler runs scheduling cycle:

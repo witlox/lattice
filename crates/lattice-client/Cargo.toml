@@ -1,0 +1,20 @@
+[package]
+name = "lattice-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust gRPC client SDK for the Lattice distributed workload scheduler"
+repository.workspace = true
+
+[dependencies]
+lattice-common = { path = "../lattice-common", version = "2026.1" }
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

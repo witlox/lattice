@@ -1,16 +1,14 @@
-//! gRPC client wrapper — connects to the lattice-api server.
+//! gRPC client wrapper — delegates to lattice-client SDK.
 
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tonic::transport::Channel;
 
-use lattice_common::proto::lattice::v1 as pb;
-use pb::admin_service_client::AdminServiceClient;
-use pb::allocation_service_client::AllocationServiceClient;
-use pb::node_service_client::NodeServiceClient;
+use lattice_client::proto as pb;
+pub use lattice_client::LatticeClientError;
 
-/// Client configuration.
+/// CLI-specific configuration. Extends the SDK [`lattice_client::ClientConfig`]
+/// with user/tenant/vcluster metadata needed for the CLI workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     pub api_endpoint: String,
@@ -18,6 +16,9 @@ pub struct ClientConfig {
     pub user: String,
     pub tenant: Option<String>,
     pub vcluster: Option<String>,
+    /// Bearer token for authenticated gRPC requests.
+    #[serde(skip)]
+    pub token: Option<String>,
 }
 
 impl Default for ClientConfig {
@@ -28,6 +29,7 @@ impl Default for ClientConfig {
             user: whoami().unwrap_or_else(|| "anonymous".to_string()),
             tenant: None,
             vcluster: None,
+            token: None,
         }
     }
 }
@@ -35,6 +37,14 @@ impl Default for ClientConfig {
 impl ClientConfig {
     pub fn timeout(&self) -> Duration {
         Duration::from_secs(self.timeout_secs)
+    }
+
+    fn to_sdk_config(&self) -> lattice_client::ClientConfig {
+        lattice_client::ClientConfig {
+            endpoint: self.api_endpoint.clone(),
+            timeout_secs: self.timeout_secs,
+            token: self.token.clone(),
+        }
     }
 }
 
@@ -44,240 +54,212 @@ fn whoami() -> Option<String> {
         .ok()
 }
 
-/// gRPC client that wraps all three Lattice services.
+/// gRPC client that wraps the lattice-client SDK.
 pub struct LatticeGrpcClient {
-    pub(crate) allocations: AllocationServiceClient<Channel>,
-    nodes: NodeServiceClient<Channel>,
-    admin: AdminServiceClient<Channel>,
+    inner: lattice_client::LatticeClient,
 }
 
 impl LatticeGrpcClient {
     /// Connect to the lattice-api server using the given configuration.
     pub async fn connect(config: &ClientConfig) -> Result<Self, anyhow::Error> {
-        let channel = Channel::from_shared(config.api_endpoint.clone())?
-            .timeout(config.timeout())
-            .connect()
-            .await?;
-        Ok(Self {
-            allocations: AllocationServiceClient::new(channel.clone()),
-            nodes: NodeServiceClient::new(channel.clone()),
-            admin: AdminServiceClient::new(channel),
-        })
+        let inner = lattice_client::LatticeClient::connect(config.to_sdk_config()).await?;
+        Ok(Self { inner })
     }
 
-    /// Submit an allocation, DAG, or task group.
+    // ─── Allocation Operations ──────────────────────────────
+
     pub async fn submit(
         &mut self,
         req: pb::SubmitRequest,
     ) -> Result<pb::SubmitResponse, tonic::Status> {
-        let resp = self.allocations.submit(req).await?;
-        Ok(resp.into_inner())
+        self.inner.submit(req).await.map_err(to_status)
     }
 
-    /// Get a single allocation's status.
     pub async fn get_allocation(
         &mut self,
         allocation_id: &str,
     ) -> Result<pb::AllocationStatus, tonic::Status> {
-        let req = pb::GetAllocationRequest {
-            allocation_id: allocation_id.to_string(),
-        };
-        let resp = self.allocations.get(req).await?;
-        Ok(resp.into_inner())
+        self.inner
+            .get_allocation(allocation_id)
+            .await
+            .map_err(to_status)
     }
 
-    /// List allocations with filters.
     pub async fn list_allocations(
         &mut self,
         req: pb::ListAllocationsRequest,
     ) -> Result<pb::ListAllocationsResponse, tonic::Status> {
-        let resp = self.allocations.list(req).await?;
-        Ok(resp.into_inner())
+        self.inner.list_allocations(req).await.map_err(to_status)
     }
 
-    /// Cancel a single allocation.
     pub async fn cancel(
         &mut self,
         allocation_id: &str,
     ) -> Result<pb::CancelResponse, tonic::Status> {
-        let req = pb::CancelRequest {
-            allocation_id: allocation_id.to_string(),
-        };
-        let resp = self.allocations.cancel(req).await?;
-        Ok(resp.into_inner())
+        self.inner.cancel(allocation_id).await.map_err(to_status)
     }
 
-    /// Watch allocation events (server-streaming).
     pub async fn watch(
         &mut self,
         req: pb::WatchRequest,
     ) -> Result<tonic::Streaming<pb::AllocationEvent>, tonic::Status> {
-        let resp = self.allocations.watch(req).await?;
-        Ok(resp.into_inner())
+        self.inner.watch(req).await.map_err(to_status)
     }
 
-    /// Stream logs from an allocation (server-streaming).
     pub async fn stream_logs(
         &mut self,
         req: pb::LogStreamRequest,
     ) -> Result<tonic::Streaming<pb::LogEntry>, tonic::Status> {
-        let resp = self.allocations.stream_logs(req).await?;
-        Ok(resp.into_inner())
+        self.inner.stream_logs(req).await.map_err(to_status)
     }
 
-    /// Query a metrics snapshot for an allocation.
     pub async fn query_metrics(
         &mut self,
         req: pb::QueryMetricsRequest,
     ) -> Result<pb::MetricsSnapshot, tonic::Status> {
-        let resp = self.allocations.query_metrics(req).await?;
-        Ok(resp.into_inner())
+        self.inner.query_metrics(req).await.map_err(to_status)
     }
 
-    /// Stream live metrics from an allocation (server-streaming).
     pub async fn stream_metrics(
         &mut self,
         req: pb::StreamMetricsRequest,
     ) -> Result<tonic::Streaming<pb::MetricsEvent>, tonic::Status> {
-        let resp = self.allocations.stream_metrics(req).await?;
-        Ok(resp.into_inner())
+        self.inner.stream_metrics(req).await.map_err(to_status)
     }
 
-    /// Get diagnostics for a running allocation.
     pub async fn get_diagnostics(
         &mut self,
         req: pb::DiagnosticsRequest,
     ) -> Result<pb::DiagnosticsResponse, tonic::Status> {
-        let resp = self.allocations.get_diagnostics(req).await?;
-        Ok(resp.into_inner())
+        self.inner.get_diagnostics(req).await.map_err(to_status)
     }
 
-    /// Request a checkpoint of a running allocation.
     pub async fn checkpoint(
         &mut self,
         allocation_id: &str,
     ) -> Result<pb::CheckpointResponse, tonic::Status> {
-        let req = pb::CheckpointRequest {
-            allocation_id: allocation_id.to_string(),
-        };
-        let resp = self.allocations.checkpoint(req).await?;
-        Ok(resp.into_inner())
+        self.inner
+            .checkpoint(allocation_id)
+            .await
+            .map_err(to_status)
     }
 
-    /// Get DAG status.
+    pub async fn attach(
+        &mut self,
+        input: impl tokio_stream::Stream<Item = pb::AttachInput> + Send + 'static,
+    ) -> Result<tonic::Streaming<pb::AttachOutput>, tonic::Status> {
+        self.inner.attach(input).await.map_err(to_status)
+    }
+
+    // ─── DAG Operations ─────────────────────────────────────
+
     pub async fn get_dag(&mut self, dag_id: &str) -> Result<pb::DagStatus, tonic::Status> {
-        let req = pb::GetDagRequest {
-            dag_id: dag_id.to_string(),
-        };
-        let resp = self.allocations.get_dag(req).await?;
-        Ok(resp.into_inner())
+        self.inner.get_dag(dag_id).await.map_err(to_status)
     }
 
-    /// List DAGs with filters.
     pub async fn list_dags(
         &mut self,
         req: pb::ListDagsRequest,
     ) -> Result<pb::ListDagsResponse, tonic::Status> {
-        let resp = self.allocations.list_dags(req).await?;
-        Ok(resp.into_inner())
+        self.inner.list_dags(req).await.map_err(to_status)
     }
 
-    /// Cancel a DAG workflow.
     pub async fn cancel_dag(
         &mut self,
         dag_id: &str,
     ) -> Result<pb::CancelDagResponse, tonic::Status> {
-        let req = pb::CancelDagRequest {
-            dag_id: dag_id.to_string(),
-        };
-        let resp = self.allocations.cancel_dag(req).await?;
-        Ok(resp.into_inner())
+        self.inner.cancel_dag(dag_id).await.map_err(to_status)
     }
 
-    /// List nodes with filters.
+    // ─── Node Operations ────────────────────────────────────
+
     pub async fn list_nodes(
         &mut self,
         req: pb::ListNodesRequest,
     ) -> Result<pb::ListNodesResponse, tonic::Status> {
-        let resp = self.nodes.list_nodes(req).await?;
-        Ok(resp.into_inner())
+        self.inner.list_nodes(req).await.map_err(to_status)
     }
 
-    /// Get a single node by ID.
     pub async fn get_node(&mut self, node_id: &str) -> Result<pb::NodeStatus, tonic::Status> {
-        let req = pb::GetNodeRequest {
-            node_id: node_id.to_string(),
-        };
-        let resp = self.nodes.get_node(req).await?;
-        Ok(resp.into_inner())
+        self.inner.get_node(node_id).await.map_err(to_status)
     }
 
-    /// Drain a node.
     pub async fn drain_node(
         &mut self,
         node_id: &str,
         reason: &str,
     ) -> Result<pb::DrainNodeResponse, tonic::Status> {
-        let req = pb::DrainNodeRequest {
-            node_id: node_id.to_string(),
-            reason: reason.to_string(),
-        };
-        let resp = self.nodes.drain_node(req).await?;
-        Ok(resp.into_inner())
+        self.inner
+            .drain_node(node_id, reason)
+            .await
+            .map_err(to_status)
     }
 
-    /// Undrain a node.
     pub async fn undrain_node(
         &mut self,
         node_id: &str,
     ) -> Result<pb::UndrainNodeResponse, tonic::Status> {
-        let req = pb::UndrainNodeRequest {
-            node_id: node_id.to_string(),
-        };
-        let resp = self.nodes.undrain_node(req).await?;
-        Ok(resp.into_inner())
+        self.inner.undrain_node(node_id).await.map_err(to_status)
     }
 
-    /// Disable a node.
     pub async fn disable_node(
         &mut self,
         node_id: &str,
         reason: &str,
     ) -> Result<pb::DisableNodeResponse, tonic::Status> {
-        let req = pb::DisableNodeRequest {
-            node_id: node_id.to_string(),
-            reason: reason.to_string(),
-        };
-        let resp = self.nodes.disable_node(req).await?;
-        Ok(resp.into_inner())
+        self.inner
+            .disable_node(node_id, reason)
+            .await
+            .map_err(to_status)
     }
 
-    /// Create a tenant.
+    pub async fn enable_node(
+        &mut self,
+        node_id: &str,
+    ) -> Result<pb::EnableNodeResponse, tonic::Status> {
+        self.inner.enable_node(node_id).await.map_err(to_status)
+    }
+
+    // ─── Admin Operations ───────────────────────────────────
+
     pub async fn create_tenant(
         &mut self,
         req: pb::CreateTenantRequest,
     ) -> Result<pb::TenantResponse, tonic::Status> {
-        let resp = self.admin.create_tenant(req).await?;
-        Ok(resp.into_inner())
+        self.inner.create_tenant(req).await.map_err(to_status)
     }
 
-    /// Get Raft cluster status.
     pub async fn get_raft_status(&mut self) -> Result<pb::RaftStatusResponse, tonic::Status> {
-        let req = pb::GetRaftStatusRequest {};
-        let resp = self.admin.get_raft_status(req).await?;
-        Ok(resp.into_inner())
+        self.inner.raft_status().await.map_err(to_status)
     }
 
-    /// Verify a backup.
     pub async fn backup_verify(
         &mut self,
         backup_path: &str,
     ) -> Result<pb::BackupVerifyResponse, tonic::Status> {
-        let req = pb::BackupVerifyRequest {
-            backup_path: backup_path.to_string(),
-        };
-        let resp = self.admin.backup_verify(req).await?;
-        Ok(resp.into_inner())
+        self.inner
+            .verify_backup(backup_path)
+            .await
+            .map_err(to_status)
+    }
+}
+
+/// Convert [`LatticeClientError`] back to [`tonic::Status`] for CLI backward
+/// compatibility (existing command handlers expect `tonic::Status`).
+fn to_status(err: lattice_client::LatticeClientError) -> tonic::Status {
+    match err {
+        lattice_client::LatticeClientError::Transport(e) => {
+            tonic::Status::unavailable(e.to_string())
+        }
+        lattice_client::LatticeClientError::NotFound(msg) => tonic::Status::not_found(msg),
+        lattice_client::LatticeClientError::Auth(msg) => tonic::Status::unauthenticated(msg),
+        lattice_client::LatticeClientError::PermissionDenied(msg) => {
+            tonic::Status::permission_denied(msg)
+        }
+        lattice_client::LatticeClientError::InvalidArgument(msg) => {
+            tonic::Status::invalid_argument(msg)
+        }
+        lattice_client::LatticeClientError::Internal(msg) => tonic::Status::internal(msg),
     }
 }
 
@@ -311,5 +293,25 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(LatticeGrpcClient::connect(&config));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_config_has_no_token() {
+        let config = ClientConfig::default();
+        assert!(config.token.is_none());
+    }
+
+    #[test]
+    fn to_sdk_config_maps_fields() {
+        let config = ClientConfig {
+            api_endpoint: "http://example:50051".to_string(),
+            timeout_secs: 45,
+            token: Some("tok".to_string()),
+            ..Default::default()
+        };
+        let sdk = config.to_sdk_config();
+        assert_eq!(sdk.endpoint, "http://example:50051");
+        assert_eq!(sdk.timeout_secs, 45);
+        assert_eq!(sdk.token.as_deref(), Some("tok"));
     }
 }

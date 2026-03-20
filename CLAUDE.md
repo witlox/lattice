@@ -104,6 +104,7 @@ All performance-critical components. Shared protobuf types generated into lattic
 - `lattice-node-agent`: Per-node daemon, Sarus/uenv lifecycle, eBPF telemetry loading, health reporting, checkpoint signal forwarding
 - `lattice-api`: gRPC server (tonic) + REST gateway, Intent API + Compatibility API endpoints
 - `lattice-cli`: `lattice` CLI binary, subcommands for submit/status/cancel/session/telemetry, Slurm compat aliases
+- `lattice-client`: Rust gRPC client SDK (42 methods, full API parity with Python SDK), publishable to crates.io
 - `lattice-checkpoint`: Checkpoint broker, cost function evaluator, application protocol (signal/shmem/gRPC)
 
 ### Proto (proto/)
@@ -153,7 +154,7 @@ Detailed design documents: system-architecture, api-design, scheduling-algorithm
 |---|---|---|
 | OpenCHAMI | Infrastructure management | Go, separate deployment, API integration |
 | Sovra | Federation trust | Go, optional, pluggable |
-| FirecREST | User API gateway | Sits in front of lattice-api |
+| FirecREST | Optional compatibility gateway | Passthrough for hybrid Slurm deployments, not required |
 | uenv/squashfs-mount | Software delivery | C, existing binary, integrated by node agent |
 | Sarus | OCI container runtime | C++, existing, used by node agent |
 | libfabric | Network abstraction | C, Slingshot/UE interface |

@@ -433,12 +433,12 @@ impl MockAuditLog {
         self.entries.lock().unwrap().len()
     }
 
-    pub fn entries_for_action(&self, action: &AuditAction) -> Vec<AuditEntry> {
+    pub fn entries_for_action(&self, action: &str) -> Vec<AuditEntry> {
         self.entries
             .lock()
             .unwrap()
             .iter()
-            .filter(|e| e.action == *action)
+            .filter(|e| e.event.action == action)
             .cloned()
             .collect()
     }
@@ -449,7 +449,7 @@ impl AuditLog for MockAuditLog {
     async fn record(&self, entry: AuditEntry) -> Result<(), LatticeError> {
         self.calls.lock().unwrap().push(MockCall {
             method: "record".into(),
-            args: vec![format!("{:?}", entry.action)],
+            args: vec![entry.event.action.clone()],
         });
         self.entries.lock().unwrap().push(entry);
         Ok(())
@@ -464,18 +464,18 @@ impl AuditLog for MockAuditLog {
         let result: Vec<AuditEntry> = entries
             .iter()
             .filter(|e| {
-                if let Some(ref user) = filter.user {
-                    if e.user != *user {
+                if let Some(ref principal) = filter.principal {
+                    if e.event.principal.identity != *principal {
                         return false;
                     }
                 }
                 if let Some(ref since) = filter.since {
-                    if e.timestamp < *since {
+                    if e.event.timestamp < *since {
                         return false;
                     }
                 }
                 if let Some(ref until) = filter.until {
-                    if e.timestamp > *until {
+                    if e.event.timestamp > *until {
                         return false;
                     }
                 }
@@ -539,7 +539,6 @@ impl CheckpointBroker for MockCheckpointBroker {
 mod tests {
     use super::*;
     use crate::fixtures::*;
-    use chrono::Utc;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -600,20 +599,22 @@ mod tests {
 
     #[tokio::test]
     async fn mock_audit_log_records_entries() {
+        use lattice_common::traits::{audit_actions, lattice_audit_event};
+
         let log = MockAuditLog::new();
-        let entry = AuditEntry {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            user: "test-user".into(),
-            action: AuditAction::NodeClaim,
-            details: serde_json::json!({"node": "x1000c0s0b0n0"}),
-            previous_hash: String::new(),
-            signature: String::new(),
-        };
+        let entry = AuditEntry::new(lattice_audit_event(
+            audit_actions::NODE_CLAIM,
+            "test-user",
+            hpc_audit::AuditScope::default(),
+            hpc_audit::AuditOutcome::Success,
+            "node claim",
+            serde_json::json!({"node": "x1000c0s0b0n0"}),
+            hpc_audit::AuditSource::LatticeQuorum,
+        ));
         log.record(entry).await.unwrap();
 
         assert_eq!(log.entry_count(), 1);
-        let claims = log.entries_for_action(&AuditAction::NodeClaim);
+        let claims = log.entries_for_action(audit_actions::NODE_CLAIM);
         assert_eq!(claims.len(), 1);
     }
 

@@ -196,6 +196,7 @@ If the OpenCHAMI secure wipe fails or times out during sensitive node release:
 | `lattice node drain <id> --urgent` | Drain with checkpoint trigger | Yes (allocations will be checkpointed) |
 | `lattice node undrain <id>` | Re-enable scheduling | No |
 | `lattice node disable <id>` | Transition to Down immediately | Yes (allocations will be requeued/failed) |
+| `lattice node enable <id>` | Re-enable a disabled node (Down → Ready) | No |
 | `lattice node status <id>` | Show current state, allocations, health | No |
 | `lattice node list --state=degraded` | List nodes in specific state | No |
 

@@ -46,6 +46,7 @@ serde_yaml = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+hpc-audit = { workspace = true }
 lattice-test-harness = { path = "../lattice-test-harness" }
 lattice-scheduler = { path = "../lattice-scheduler" }
 lattice-checkpoint = { path = "../lattice-checkpoint" }

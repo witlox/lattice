@@ -18,7 +18,7 @@ Unlike other vClusters where the scheduler assigns nodes, **sensitive nodes are 
 
 ```
 Dr. X authenticates via OIDC (institutional IdP)
-  → Requests 4 nodes via FirecREST: POST /v1/allocations (sensitive vCluster)
+  → Requests 4 nodes via lattice CLI: lattice submit --sensitive
   → Quorum records: nodes N1-N4 owned by user:dr-x, tenant:hospital-a
   → Strong consistency: Raft commit before any workload starts
   → OpenCHAMI boots N1-N4 with hardened sensitive image (if not already)
@@ -109,7 +109,7 @@ With Ultra Ethernet: network-level encryption (UET built-in) provides an additio
 - Node release: user identity, timestamp, wipe confirmation
 - Allocation start/stop: what ran, which uenv image (with hash), which data paths
 - Data access: every file open/read/write (from eBPF audit telemetry)
-- API calls: every FirecREST/lattice-api call related to sensitive allocations
+- API calls: every lattice-api call related to sensitive allocations
 - Checkpoint events: when, where, what was written
 - Attach sessions: user identity, start/end timestamps, target node, session recording reference
 - Log access events: who accessed logs, when, which allocation

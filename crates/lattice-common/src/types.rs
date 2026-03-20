@@ -854,6 +854,7 @@ impl NodeState {
                 | (NodeState::Degraded { .. }, NodeState::Ready)
                 | (NodeState::Degraded { .. }, NodeState::Down { .. })
                 | (NodeState::Degraded { .. }, NodeState::Draining)
+                | (NodeState::Down { .. }, NodeState::Ready)
                 | (NodeState::Down { .. }, NodeState::Booting)
                 | (NodeState::Down { .. }, NodeState::Failed { .. })
                 | (NodeState::Draining, NodeState::Drained)
@@ -1198,6 +1199,14 @@ mod tests {
             reason: "draining".into()
         }
         .can_transition_to(&NodeState::Draining));
+    }
+
+    #[test]
+    fn down_can_transition_to_ready() {
+        assert!(NodeState::Down {
+            reason: "operator disabled".into()
+        }
+        .can_transition_to(&NodeState::Ready));
     }
 
     #[test]

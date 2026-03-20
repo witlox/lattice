@@ -36,12 +36,12 @@ All three support PMI-2. PMIx is preferred by OpenMPI but not required.
 ┌─────────────────────────────────────────────────────────┐
 │  Default: Native PMI-2 Server (built into node agent)   │
 │  Simple, no external dependencies, covers 95%+ of MPI   │
-│  workloads. ~8 wire commands over Unix domain socket.    │
+│  workloads. ~8 wire commands over Unix domain socket.   │
 ├─────────────────────────────────────────────────────────┤
 │  Optional: OpenPMIx Sidecar (feature-flagged)           │
 │  Full PMIx v4/v5 support for workloads that require     │
 │  PMIx-specific features (spawn, tools API, events).     │
-│  Node agent manages OpenPMIx server lifecycle.           │
+│  Node agent manages OpenPMIx server lifecycle.          │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -68,10 +68,10 @@ Node Agent 0                 Node Agent 1                 Node Agent N-1
   │  (Unix domain socket)      │  (Unix domain socket)      │
   │                            │                            │
   ├─ Spawns local ranks        ├─ Spawns local ranks        │
-  │  rank 0: ./my_mpi_app     │  rank 4: ./my_mpi_app     │
-  │  rank 1: ./my_mpi_app     │  rank 5: ./my_mpi_app     │
-  │  rank 2: ./my_mpi_app     │  rank 6: ./my_mpi_app     │
-  │  rank 3: ./my_mpi_app     │  rank 7: ./my_mpi_app     │
+  │  rank 0: ./my_mpi_app      │  rank 4: ./my_mpi_app      │
+  │  rank 1: ./my_mpi_app      │  rank 5: ./my_mpi_app      │
+  │  rank 2: ./my_mpi_app      │  rank 6: ./my_mpi_app      │
+  │  rank 3: ./my_mpi_app      │  rank 7: ./my_mpi_app      │
   │                            │                            │
   │  Each rank inherits:       │                            │
   │  - PMI_FD (socket fd)      │                            │
@@ -118,16 +118,16 @@ Phase 1: Local collection
 
 Phase 2: Exchange (star topology via designated head node)
   ┌─────────────┐
-  │ Head Agent   │ ◄──── gRPC PmiFence(local_kvs) ──── Agent 1
+  │ Head Agent  │ ◄──── gRPC PmiFence(local_kvs) ──── Agent 1
   │ (rank 0's   │ ◄──── gRPC PmiFence(local_kvs) ──── Agent 2
-  │  node)       │ ◄──── gRPC PmiFence(local_kvs) ──── Agent N-1
-  │              │
-  │ Merges all   │
-  │ KVS entries  │
-  │              │
-  │ Broadcasts   │ ────► gRPC PmiFenceComplete(merged_kvs) ──► Agent 1
-  │ merged KVS   │ ────► gRPC PmiFenceComplete(merged_kvs) ──► Agent 2
-  │              │ ────► gRPC PmiFenceComplete(merged_kvs) ──► Agent N-1
+  │  node)      │ ◄──── gRPC PmiFence(local_kvs) ──── Agent N-1
+  │             │
+  │ Merges all  │
+  │ KVS entries │
+  │             │
+  │ Broadcasts  │ ────► gRPC PmiFenceComplete(merged_kvs) ──► Agent 1
+  │ merged KVS  │ ────► gRPC PmiFenceComplete(merged_kvs) ──► Agent 2
+  │             │ ────► gRPC PmiFenceComplete(merged_kvs) ──► Agent N-1
   └─────────────┘
 
 Phase 3: Local completion

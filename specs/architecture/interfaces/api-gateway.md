@@ -27,7 +27,7 @@ ApiState
 
 ## gRPC Services
 
-### AllocationService (18 RPCs)
+### AllocationService (21 RPCs)
 
 | RPC | Request | Response | Streaming | Key Invariants |
 |---|---|---|---|---|
@@ -49,26 +49,43 @@ ApiState
 | ListDags | ListDagsRequest | ListDagsResponse | - | RBAC: tenant-scoped |
 | CancelDag | CancelDagRequest | CancelDagResponse | - | Cancels all allocations |
 
-### NodeService (7 RPCs)
+### AllocationService — Session RPCs (3 RPCs)
+
+| RPC | Request | Response | Key Invariants |
+|---|---|---|---|
+| CreateSession | CreateSessionRequest | SessionResponse | RBAC: user (own allocation) |
+| GetSession | GetSessionRequest | SessionResponse | RBAC: user |
+| DeleteSession | DeleteSessionRequest | DeleteSessionResponse | RBAC: user (own session) |
+
+### NodeService (9 RPCs)
 
 | RPC | Request | Response | Key Invariants |
 |---|---|---|---|
 | ListNodes | ListNodesRequest | ListNodesResponse | RBAC: filtered by role |
 | GetNode | GetNodeRequest | NodeStatus | - |
-| DrainNode | DrainNodeRequest | DrainNodeResponse | RBAC: system-admin |
-| UndrainNode | UndrainNodeRequest | UndrainNodeResponse | RBAC: system-admin |
-| DisableNode | DisableNodeRequest | DisableNodeResponse | RBAC: system-admin |
+| DrainNode | DrainNodeRequest | DrainNodeResponse | RBAC: operator+ |
+| UndrainNode | UndrainNodeRequest | UndrainNodeResponse | RBAC: operator+ |
+| DisableNode | DisableNodeRequest | DisableNodeResponse | RBAC: operator+ |
+| EnableNode | EnableNodeRequest | EnableNodeResponse | RBAC: operator+ (Down → Ready) |
 | RegisterNode | RegisterNodeRequest | RegisterNodeResponse | Raft-committed (IP-03) |
 | Heartbeat | HeartbeatRequest | HeartbeatResponse | Sequence check, Raft-committed for state changes |
+| Health | HealthRequest | HealthResponse | Unauthenticated (health check) |
 
-### AdminService (8 RPCs)
+### AdminService (15 RPCs)
 
 | RPC | Request | Response | Key Invariants |
 |---|---|---|---|
 | CreateTenant | CreateTenantRequest | TenantResponse | RBAC: system-admin |
 | UpdateTenant | UpdateTenantRequest | TenantResponse | INV-S2 (quota update) |
+| ListTenants | ListTenantsRequest | ListTenantsResponse | RBAC: user |
+| GetTenant | GetTenantRequest | TenantResponse | RBAC: user |
 | CreateVCluster | CreateVClusterRequest | VClusterResponse | RBAC: tenant-admin+ |
 | UpdateVCluster | UpdateVClusterRequest | VClusterResponse | RBAC: tenant-admin+ |
+| ListVClusters | ListVClustersRequest | ListVClustersResponse | RBAC: user |
+| GetVCluster | GetVClusterRequest | VClusterResponse | RBAC: user |
+| GetVClusterQueue | GetVClusterQueueRequest | VClusterQueueResponse | RBAC: user |
+| QueryAudit | QueryAuditRequest | QueryAuditResponse | RBAC: tenant-admin+ |
+| GetAccountingUsage | GetAccountingUsageRequest | AccountingUsageResponse | RBAC: user |
 | GetRaftStatus | GetRaftStatusRequest | RaftStatusResponse | RBAC: system-admin |
 | BackupVerify | BackupVerifyRequest | BackupVerifyResponse | RBAC: system-admin |
 | CreateBackup | CreateBackupRequest | CreateBackupResponse | RBAC: system-admin |
@@ -90,9 +107,9 @@ Incoming request
   │       401 Unauthorized on invalid/expired token.
   │
   ├─3─► RBAC Enforcer (follows OIDC)
-  │       Claims → role derivation → permission check (27 operations).
+  │       Claims → role derivation → permission check (38 operations).
   │       403 Forbidden on insufficient role.
-  │       Roles: user, tenant-admin, system-admin, claiming-user.
+  │       Roles: user, tenant-admin, system-admin, claiming-user, operator, read-only.
   │
   └─4─► Handler
           Business logic delegation to trait objects.
@@ -102,7 +119,7 @@ Incoming request
 
 ## REST Routes
 
-30+ routes mirroring gRPC surface via axum:
+35+ routes mirroring gRPC surface via axum:
 
 ```
 POST   /api/v1/allocations           → Submit
@@ -114,9 +131,9 @@ POST   /api/v1/allocations/:id/checkpoint → Checkpoint
 GET    /api/v1/allocations/:id/logs       → StreamLogs
 GET    /api/v1/allocations/:id/metrics    → QueryMetrics
 GET    /api/v1/allocations/:id/watch      → Watch (SSE)
-POST   /api/v1/sessions              → Attach (WebSocket)
-GET    /api/v1/sessions              → List sessions
-DELETE /api/v1/sessions/:id          → Detach
+POST   /api/v1/sessions              → Create session
+GET    /api/v1/sessions/:id          → Get session
+DELETE /api/v1/sessions/:id          → Delete session
 POST   /api/v1/dags                  → Submit DAG
 GET    /api/v1/dags                  → List DAGs
 GET    /api/v1/dags/:id              → Get DAG
@@ -124,14 +141,22 @@ POST   /api/v1/dags/:id/cancel       → Cancel DAG
 GET    /api/v1/audit                 → Query audit log
 POST   /api/v1/tenants              → Create tenant
 GET    /api/v1/tenants              → List tenants
+GET    /api/v1/tenants/:id          → Get tenant
+PUT    /api/v1/tenants/:id          → Update tenant
 POST   /api/v1/vclusters            → Create vCluster
 GET    /api/v1/vclusters            → List vClusters
+GET    /api/v1/vclusters/:id        → Get vCluster
+GET    /api/v1/vclusters/:id/queue  → Get vCluster queue
+GET    /api/v1/accounting/usage     → Accounting usage
 GET    /api/v1/nodes                → List nodes
 GET    /api/v1/nodes/:id            → Get node
 POST   /api/v1/nodes/:id/drain      → Drain
 POST   /api/v1/nodes/:id/undrain    → Undrain
+POST   /api/v1/nodes/:id/enable     → Enable (re-enable disabled node)
 GET    /api/v1/diagnostics/:id      → Get diagnostics
 POST   /api/v1/admin/backup         → Create backup
+POST   /api/v1/admin/backup/verify  → Verify backup
+POST   /api/v1/admin/backup/restore → Restore backup
 GET    /api/v1/raft/status          → Raft status
 GET    /healthz                     → Health check
 GET    /metrics                     → Prometheus metrics

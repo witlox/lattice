@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use crate::data_stage::DataStageExecutor;
 use crate::runtime::{ExitStatus, Runtime, RuntimeError};
 use crate::telemetry::log_buffer::{LogRingBuffer, S3Sink};
+use hpc_node::{CgroupHandle, CgroupManager};
 use lattice_common::types::{AllocId, DataMount};
 
 /// Reports epilogue progress.
@@ -58,6 +59,8 @@ pub struct EpilogueResult {
     pub sensitive_wiped: bool,
     /// Whether runtime cleanup succeeded.
     pub cleaned_up: bool,
+    /// Whether cgroup scope was destroyed.
+    pub cgroup_destroyed: bool,
     /// The process exit status.
     pub exit_status: ExitStatus,
 }
@@ -211,6 +214,8 @@ impl EpiloguePipeline {
         s3_sink: Option<&dyn S3Sink>,
         data_stager: &dyn DataStageExecutor,
         data_mounts: &[DataMount],
+        cgroup_mgr: &dyn CgroupManager,
+        cgroup_handle: Option<&CgroupHandle>,
         sensitive_wiper: &dyn SensitiveWiper,
         reporter: &dyn EpilogueReporter,
     ) -> Result<EpilogueResult, RuntimeError> {
@@ -218,6 +223,7 @@ impl EpiloguePipeline {
         let mut data_cleaned = false;
         let mut sensitive_wiped = false;
         let mut cleaned_up = false;
+        let mut cgroup_destroyed = false;
 
         // Step 1: Flush logs to S3
         if let Some(sink) = s3_sink {
@@ -268,7 +274,33 @@ impl EpiloguePipeline {
             }
         }
 
-        // Step 3: Data mount cleanup (non-fatal)
+        // Step 3: Destroy cgroup scope (non-fatal for non-sensitive)
+        if let Some(handle) = cgroup_handle {
+            reporter
+                .report_step(alloc_id, "cgroup_destroy", "started")
+                .await;
+            match cgroup_mgr.destroy_scope(handle) {
+                Ok(()) => {
+                    cgroup_destroyed = true;
+                    reporter
+                        .report_step(alloc_id, "cgroup_destroy", "completed")
+                        .await;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        alloc_id = %alloc_id,
+                        error = %e,
+                        "epilogue: cgroup destroy failed"
+                    );
+                    reporter
+                        .report_step(alloc_id, "cgroup_destroy", "failed")
+                        .await;
+                    // Non-fatal: continue with data cleanup and sensitive wipe
+                }
+            }
+        }
+
+        // Step 4: Data mount cleanup (non-fatal)
         if !data_mounts.is_empty() {
             reporter
                 .report_step(alloc_id, "data_cleanup", "started")
@@ -293,7 +325,7 @@ impl EpiloguePipeline {
             }
         }
 
-        // Step 4: Sensitive wipe if required
+        // Step 5: Sensitive wipe if required
         if self.config.sensitive_wipe {
             reporter
                 .report_step(alloc_id, "sensitive_wipe", "started")
@@ -323,6 +355,7 @@ impl EpiloguePipeline {
             data_cleaned,
             sensitive_wiped,
             cleaned_up,
+            cgroup_destroyed,
             exit_status,
         })
     }
@@ -337,6 +370,7 @@ impl Default for EpiloguePipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cgroup::StubCgroupManager;
     use crate::data_stage::NoopDataStageExecutor;
     use crate::runtime::MockRuntime;
     use std::sync::Arc;
@@ -419,6 +453,7 @@ mod tests {
             is_unified_memory: false,
             data_mounts: vec![],
             scratch_per_node: None,
+            resource_limits: None,
         };
         rt.prepare(&config).await.unwrap();
         rt
@@ -443,6 +478,8 @@ mod tests {
                 Some(&s3),
                 &NoopDataStageExecutor,
                 &[],
+                &StubCgroupManager,
+                None,
                 &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
@@ -476,6 +513,8 @@ mod tests {
                 None,
                 &NoopDataStageExecutor,
                 &[],
+                &StubCgroupManager,
+                None,
                 &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
@@ -504,6 +543,8 @@ mod tests {
                 Some(&FailingS3),
                 &NoopDataStageExecutor,
                 &[],
+                &StubCgroupManager,
+                None,
                 &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
@@ -535,6 +576,8 @@ mod tests {
                 None,
                 &NoopDataStageExecutor,
                 &[],
+                &StubCgroupManager,
+                None,
                 &wiper,
                 &NoopEpilogueReporter,
             )
@@ -565,6 +608,8 @@ mod tests {
                 None,
                 &NoopDataStageExecutor,
                 &[],
+                &StubCgroupManager,
+                None,
                 &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
@@ -599,6 +644,8 @@ mod tests {
                 None,
                 &NoopDataStageExecutor,
                 &[],
+                &StubCgroupManager,
+                None,
                 &NoopSensitiveWiper,
                 &NoopEpilogueReporter,
             )
@@ -606,5 +653,64 @@ mod tests {
             .unwrap();
 
         assert!(!result.cleaned_up);
+    }
+
+    #[tokio::test]
+    async fn epilogue_destroys_cgroup_scope() {
+        let alloc_id = uuid::Uuid::new_v4();
+        let runtime = setup_runtime(alloc_id).await;
+        let log_buf = LogRingBuffer::with_capacity(1024);
+
+        let cgroup_handle = CgroupHandle {
+            path: "/sys/fs/cgroup/workload.slice/alloc-test.scope".to_string(),
+        };
+
+        let pipeline = EpiloguePipeline::default();
+        let result = pipeline
+            .execute(
+                alloc_id,
+                ExitStatus::Code(0),
+                &runtime,
+                &log_buf,
+                None,
+                &NoopDataStageExecutor,
+                &[],
+                &StubCgroupManager,
+                Some(&cgroup_handle),
+                &NoopSensitiveWiper,
+                &NoopEpilogueReporter,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.cgroup_destroyed);
+        assert!(result.cleaned_up);
+    }
+
+    #[tokio::test]
+    async fn epilogue_no_cgroup_without_handle() {
+        let alloc_id = uuid::Uuid::new_v4();
+        let runtime = setup_runtime(alloc_id).await;
+        let log_buf = LogRingBuffer::with_capacity(1024);
+
+        let pipeline = EpiloguePipeline::default();
+        let result = pipeline
+            .execute(
+                alloc_id,
+                ExitStatus::Code(0),
+                &runtime,
+                &log_buf,
+                None,
+                &NoopDataStageExecutor,
+                &[],
+                &StubCgroupManager,
+                None,
+                &NoopSensitiveWiper,
+                &NoopEpilogueReporter,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.cgroup_destroyed);
     }
 }

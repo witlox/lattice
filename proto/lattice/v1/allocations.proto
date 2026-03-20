@@ -64,14 +64,18 @@ service AllocationService {
 
   // Cancel all allocations in a DAG
   rpc CancelDag(CancelDagRequest) returns (CancelDagResponse);
-}
 
-// ─── Planned Services (not yet defined as proto) ────────────
-//
-// NodeService — Node lifecycle management (list, drain, undrain, disable)
-// TenantService — Tenant CRUD, quota management
-// AuditService — Sensitive audit log queries, compliance reporting
-// SessionService — Interactive session creation and terminal management
+  // ─── Session RPCs ────────────────────────────────────────────
+
+  // Create an interactive session attached to an allocation
+  rpc CreateSession(CreateSessionRequest) returns (SessionResponse);
+
+  // Get session details
+  rpc GetSession(GetSessionRequest) returns (SessionResponse);
+
+  // Delete (terminate) a session
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+}
 
 // ─── Submit ─────────────────────────────────────────────────
 
@@ -582,4 +586,31 @@ message AllocationMetricsSeries {
 message MetricsDataPoint {
   google.protobuf.Duration relative_time = 1;  // offset from allocation start
   map<string, double> values = 2;               // metric_name → value
+}
+
+// ─── Session Management ─────────────────────────────────────
+
+message CreateSessionRequest {
+  string allocation_id = 1;
+  string user_id = 2;
+}
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message DeleteSessionRequest {
+  string session_id = 1;
+}
+
+message SessionResponse {
+  string session_id = 1;
+  string allocation_id = 2;
+  string user_id = 3;
+  string state = 4;                // active, terminated
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message DeleteSessionResponse {
+  bool success = 1;
 }

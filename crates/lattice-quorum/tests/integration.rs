@@ -215,34 +215,36 @@ async fn concurrent_writes() {
 async fn audit_log_append_and_query() {
     let client = create_test_quorum().await.unwrap();
 
+    use lattice_common::traits::{audit_actions, lattice_audit_event};
+
     // Record 3 entries
-    let entry1 = AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user: "dr-smith".into(),
-        action: AuditAction::NodeClaim,
-        details: serde_json::json!({"node": "x1000c0s0b0n0"}),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
-    let entry2 = AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user: "dr-jones".into(),
-        action: AuditAction::NodeRelease,
-        details: serde_json::json!({"node": "x1000c0s0b0n1"}),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
-    let entry3 = AuditEntry {
-        id: Uuid::new_v4(),
-        timestamp: chrono::Utc::now(),
-        user: "dr-smith".into(),
-        action: AuditAction::NodeRelease,
-        details: serde_json::json!({"node": "x1000c0s0b0n0"}),
-        previous_hash: String::new(),
-        signature: String::new(),
-    };
+    let entry1 = AuditEntry::new(lattice_audit_event(
+        audit_actions::NODE_CLAIM,
+        "dr-smith",
+        hpc_audit::AuditScope::default(),
+        hpc_audit::AuditOutcome::Success,
+        "node claim",
+        serde_json::json!({"node": "x1000c0s0b0n0"}),
+        hpc_audit::AuditSource::LatticeQuorum,
+    ));
+    let entry2 = AuditEntry::new(lattice_audit_event(
+        audit_actions::NODE_RELEASE,
+        "dr-jones",
+        hpc_audit::AuditScope::default(),
+        hpc_audit::AuditOutcome::Success,
+        "node release",
+        serde_json::json!({"node": "x1000c0s0b0n1"}),
+        hpc_audit::AuditSource::LatticeQuorum,
+    ));
+    let entry3 = AuditEntry::new(lattice_audit_event(
+        audit_actions::NODE_RELEASE,
+        "dr-smith",
+        hpc_audit::AuditScope::default(),
+        hpc_audit::AuditOutcome::Success,
+        "node release",
+        serde_json::json!({"node": "x1000c0s0b0n0"}),
+        hpc_audit::AuditSource::LatticeQuorum,
+    ));
 
     client.record(entry1).await.unwrap();
     client.record(entry2).await.unwrap();
@@ -251,7 +253,7 @@ async fn audit_log_append_and_query() {
     // Query for dr-smith only
     let smith_entries = client
         .query(&AuditFilter {
-            user: Some("dr-smith".into()),
+            principal: Some("dr-smith".into()),
             ..Default::default()
         })
         .await
@@ -265,13 +267,13 @@ async fn audit_log_append_and_query() {
     // Query for dr-jones
     let jones_entries = client
         .query(&AuditFilter {
-            user: Some("dr-jones".into()),
+            principal: Some("dr-jones".into()),
             ..Default::default()
         })
         .await
         .unwrap();
     assert_eq!(jones_entries.len(), 1);
-    assert_eq!(jones_entries[0].action, AuditAction::NodeRelease);
+    assert_eq!(jones_entries[0].event.action, audit_actions::NODE_RELEASE);
 }
 
 // ─── Test 7: Quota enforcement ───────────────────────────────

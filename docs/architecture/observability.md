@@ -45,7 +45,7 @@ All observability data flows through existing pipelines — no new collection in
 The attach mechanism provides an interactive terminal session inside a running allocation's execution environment. The node agent uses `nsenter` to enter the allocation's mount and network namespaces — this is **not** a new allocation, just a terminal session in the existing one.
 
 ```
-User → FirecREST → lattice-api → gRPC bidir stream → node agent
+User → lattice-cli → lattice-api → gRPC bidir stream → node agent
                                                          │
                                                     nsenter into
                                                     mount/net ns
