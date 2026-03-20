@@ -1,13 +1,13 @@
 # Fidelity Index
 
-Last checkpoint: none (sweep in progress)
-Last scan: 2026-03-20 (chunk 1 of 11)
+Last checkpoint: 2026-03-20
+Last scan: 2026-03-20 (all 11 chunks complete)
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Spec files scanned | 3 / 31 |
+| Spec files scanned | 31 / 31 |
 | Total scenarios | 321 |
 | THOROUGH+ | ~155 (27%) |
 | MODERATE | ~278 (49%) |
@@ -139,3 +139,13 @@ See `gaps.md` (populated after sweep completion).
 | Date | Action | Delta |
 |------|--------|-------|
 | 2026-03-20 | Sweep started, inventory complete, chunk 1 assessed | 93 tests, 17 traits, 4 ADRs rated |
+| 2026-03-20 | Chunk 2 assessed (scheduling core) | 159 tests, 4 traits, 6 ADRs. HIGH confidence |
+| 2026-03-20 | Chunk 3 assessed (node agent lifecycle) | 214 tests, 6 traits, 5 ADRs. MODERATE-HIGH confidence |
+| 2026-03-20 | Chunk 4 assessed (service workloads) | 28 tests, 0 new traits. HIGH confidence |
+| 2026-03-20 | Chunk 5 assessed (security + auth) | 92 tests, 2 traits, 3 ADRs. HIGH/MODERATE confidence |
+| 2026-03-20 | Chunk 6 assessed (networking + topology) | 93 tests. MODERATE-HIGH confidence |
+| 2026-03-20 | Chunk 7 assessed (data plane) | 127 tests. MODERATE confidence |
+| 2026-03-20 | Chunk 8 assessed (API + CLI + client) | 259 tests. HIGH confidence |
+| 2026-03-20 | Chunk 9 assessed (observability + telemetry) | 128 tests. HIGH/MODERATE confidence |
+| 2026-03-20 | Chunk 10 assessed (federation + multi-tenant) | 109 tests. HIGH/MODERATE confidence |
+| 2026-03-20 | Chunk 11 assessed (cross-cutting) | gaps.md compiled, SWEEP COMPLETE |
