@@ -10,6 +10,7 @@ quorum:
   election_timeout_ms: 500
   heartbeat_interval_ms: 200
   snapshot_threshold: 10000
+  # audit_signing_key_path: /etc/lattice/audit-signing-key.bin  # 32-byte Ed25519 seed
 api:
   grpc_address: "0.0.0.0:50051"
   rest_address: "0.0.0.0:8080"

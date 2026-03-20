@@ -39,6 +39,25 @@ Precise definitions for every domain term used in Lattice. When two terms seem s
 
 **Base Allocation** — The guaranteed node count for a vCluster. Nodes in the base allocation are not borrowable. Nodes beyond the base allocation that are idle become borrowable.
 
+## Service Lifecycle
+
+**Service** — An Allocation with Unbounded or Reactive lifecycle that exposes named endpoints. Not a separate type — it is an Allocation with `connectivity.expose` endpoints and optionally a `liveness_probe`. The term "service" is used informally when the allocation runs indefinitely and serves requests.
+
+**Liveness Probe** — A periodic health check on a service allocation. Two types:
+- **TCP probe**: Connects to a port; success = connection established.
+- **HTTP probe**: Sends GET to port+path; success = 2xx response.
+Configured with: `period_secs`, `initial_delay_secs`, `failure_threshold`, `timeout_secs`. Managed by the node agent's ProbeManager.
+
+**Service Registry** — A map in GlobalState from service name to registered endpoints. Auto-populated when allocations with `expose` endpoints transition to Running. Deregistered on terminal state or requeue. Tenant-filtered on query.
+
+**Service Discovery** — The act of querying the ServiceRegistry for endpoints of a named service. Available via `LookupService`/`ListServices` gRPC RPCs and REST `/api/v1/services`.
+
+**Reconciliation** — The scheduler's periodic check for failed Unbounded/Reactive allocations eligible for requeue. Failed → Pending transition with `requeue_count` increment. Respects `RequeuePolicy` (Never, OnNodeFailure, Always) and `max_requeue` cap (≤100).
+
+**Scale Executor** — Component that translates autoscaler decisions (ScaleUp/ScaleDown) into infrastructure actions: boot nodes via OpenCHAMI (scale-up) or drain idle nodes (scale-down).
+
+**Session** — An interactive terminal session attached to a running allocation. Tracked globally in Raft state for concurrency control. Sensitive allocations are limited to one concurrent session (INV-C2).
+
 ## Allocation Composition
 
 **DAG** — A directed acyclic graph of Allocations with typed dependency edges. Submitted as a single unit. The DAG structure controls when Allocations enter the scheduler queue, not how they are scored.

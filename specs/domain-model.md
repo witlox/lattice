@@ -65,8 +65,15 @@ Cross-context coordination mechanisms (not contexts themselves):
 - Identity: `AllocId` (UUID), belongs to one `Tenant`, one `Project`, one `vCluster`, submitted by one `User`
 - Lifecycle variant: `Bounded` (has walltime) | `Unbounded` (runs until cancelled, auto-restarts) | `Reactive` (autoscales on metric threshold)
 - State machine: Pending → Staging → Running → Checkpointing → Suspended → Completed | Failed | Cancelled
+  - Failed → Pending: allowed for Unbounded/Reactive allocations via reconciliation (service self-healing)
 - Composes into: TaskGroup (array of identical allocations) or DAG (dependency graph)
-- Has: ResourceRequest, Environment, Connectivity, DataRequirements, CheckpointStrategy, RequeuePolicy
+- Has: ResourceRequest, Environment, Connectivity, DataRequirements, CheckpointStrategy, RequeuePolicy, LivenessProbe (optional)
+- Service allocations expose named endpoints (ServiceEndpoint) and register in the ServiceRegistry when Running
+
+**LivenessProbe** — Health check for service allocations.
+- Type: TCP (connect to port) or HTTP (GET request, expect 2xx)
+- Configuration: period_secs, initial_delay_secs, failure_threshold, timeout_secs
+- Managed by ProbeManager in node agent; failures mark allocation as Failed, triggering reconciliation
 
 **vCluster** — A scheduling policy container that projects a view of shared resources.
 - Evolution of the CSCS vCluster concept (Martinasso et al., CiSE 2024). CSCS vClusters are immutable IaC-defined platforms with independent Slurm instances and static node sets. Lattice vClusters are dynamic policy boundaries within a shared quorum: mutable cost function weights, elastic node borrowing, and global state visibility.
@@ -92,9 +99,21 @@ Cross-context coordination mechanisms (not contexts themselves):
 ### Consensus Context
 
 **GlobalState** — The Raft-replicated state machine.
-- Contains: node ownership map, allocation states, tenant states, vCluster configs, topology model, sensitive audit log
-- Only two categories require strong consistency: (1) node ownership, (2) sensitive audit events
-- Everything else (job queues, telemetry, quota accounting) is eventually consistent
+- Contains: node ownership map, allocation states, tenant states, vCluster configs, topology model, sensitive audit log, service registry, sessions
+- Strong consistency: (1) node ownership, (2) sensitive audit events, (3) service registry, (4) sessions
+- Eventually consistent: job queues, telemetry, quota accounting
+
+**ServiceRegistry** — Auto-populated map from service name to registered endpoints.
+- Endpoints registered when allocation with `expose` transitions to Running
+- Deregistered on terminal state (Completed/Failed/Cancelled) or requeue
+- Query: LookupService (by name, tenant-filtered), ListServices (tenant-filtered)
+- Entries are tenant-scoped: cross-tenant lookups filtered for isolation
+
+**Session** — Interactive attach session tracked globally for concurrency control.
+- Identity: `SessionId` (UUID), links to `AllocId` and `UserId`
+- Created via Raft command (CreateSession), deleted via Raft command (DeleteSession)
+- Sensitive allocations: at most one active session globally (INV-C2, enforced in GlobalState)
+- Survives API server restart (persisted in Raft state)
 
 **NodeOwnership** — Which Tenant/vCluster/Allocation owns which nodes. Raft-committed. Cannot be violated even momentarily.
 

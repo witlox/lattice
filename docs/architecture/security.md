@@ -225,6 +225,42 @@ Attach session recordings for sensitive allocations are stored alongside the aud
 - **Retention:** 7 years (matching sensitive audit log retention)
 - **Access:** Only the claiming user and tenant-admin (compliance reviewer) can access recordings via the audit query API
 
+### Audit Signing Key Persistence
+
+The Ed25519 signing key for audit log entries is loaded from a persistent file configured via `QuorumConfig.audit_signing_key_path`. This ensures:
+
+- **Chain continuity**: Archived audit entries (in S3) can be verified after quorum restart
+- **Non-repudiation**: The same key signs all entries, forming a verifiable chain
+- **Key rotation**: Replace the file and restart the quorum to rotate (old entries remain verifiable with the old public key)
+- **Dev mode**: When `audit_signing_key_path` is not set, a random key is generated (suitable for testing only)
+
+### REST API Authentication
+
+REST endpoints are protected by the same auth stack as gRPC when OIDC is configured:
+
+- Bearer token required in `Authorization` header
+- Rate limiting applied per-user
+- Public endpoints exempt: `/healthz`, `/api/v1/auth/discovery`
+- OIDC discovery client disables HTTP redirects (JWKS cache poisoning prevention)
+- Non-HTTPS issuer URLs produce a warning (MITM risk)
+
+### Service Discovery Isolation
+
+Service discovery endpoints (`LookupService`, `ListServices`) are tenant-filtered:
+
+- `x-lattice-tenant` header constrains results to the requesting tenant's services
+- Without the header, all services are visible (admin/operator access)
+- Prevents cross-tenant information disclosure of service topology
+
+### Session Security
+
+Interactive sessions are tracked globally in Raft state:
+
+- `CreateSession` / `DeleteSession` are Raft-committed operations
+- Sensitive allocations: at most one concurrent session globally (INV-C2)
+- Sessions survive API server restart (persisted in quorum state)
+- Ownership verified: only the allocation's user can create sessions
+
 ## Cross-References
 
 - [sensitive-workloads.md](sensitive-workloads.md) — Sensitive-specific security requirements

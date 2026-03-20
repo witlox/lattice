@@ -37,18 +37,22 @@ Score(j) = Σ wᵢ · fᵢ(j)
 Weights are tunable per vCluster. Use RM-Replay simulator to test weight changes before production.
 
 ### Consistency Model
-- **Strong (Raft-committed)**: (1) Node ownership (2) Sensitive audit state
-- **Eventually consistent**: Job queues, telemetry, quota accounting, session state
+- **Strong (Raft-committed)**: (1) Node ownership (2) Sensitive audit state (3) Service registry (4) Sessions
+- **Eventually consistent**: Job queues, telemetry, quota accounting
 
 ### Key Abstractions
 - **Allocation**: The universal work unit (replaces Slurm job + K8s pod)
   - lifecycle: bounded (batch) | unbounded (service) | reactive (autoscale)
   - Has resources, constraints, dependencies, network domain, uenv
+  - Unbounded/Reactive allocations support liveness probes (TCP/HTTP) and service endpoint registration
 - **vCluster**: A view/projection of resources with its own scheduler policy
 - **Task Group**: Equivalent of Slurm job arrays
 - **DAG**: Directed acyclic graph of allocations with dependency edges (Slurm-compatible: afterok, afternotok, afterany, aftercorr)
 - **Network Domain**: Allocations sharing a domain get L3 reachability (Slingshot VNI)
 - **Tenant**: Organizational boundary (quotas, isolation, audit)
+- **Service Registry**: Auto-populated when allocations with `expose` endpoints reach Running; queried via LookupService/ListServices RPCs
+- **Session**: Interactive attach session tracked globally in Raft state; sensitive allocations limited to one concurrent session (INV-C2)
+- **Liveness Probe**: TCP or HTTP health check on service allocations; failures trigger requeue via reconciliation loop
 
 ### Two-Tier API
 1. **Intent API** (agent-native): Agents declare what they need, scheduler resolves how
@@ -78,6 +82,19 @@ Scheduler-coordinated with cost function:
 - Applications implement checkpoint API (signal, shmem flag, or gRPC callback)
 - Fallback: DMTCP transparent checkpointing or non-preemptible flag
 
+### Service Lifecycle
+- **Reconciliation loop**: Scheduler detects failed Unbounded/Reactive allocations, requeues per requeue policy (OnNodeFailure/Always) up to max_requeue (capped at 100)
+- **Liveness probes**: TCP or HTTP health checks configured per service allocation; ProbeManager in node agent runs periodic checks; failure threshold triggers allocation failure → reconciler requeues
+- **Service discovery**: Endpoints auto-registered in GlobalState when allocation reaches Running; deregistered on terminal state or requeue. Query via LookupService/ListServices gRPC + REST `/api/v1/services`
+- **Bin-pack density**: ServiceBinPackScheduler packs services into fewest dragonfly groups (density-first sorting)
+- **Scale executor**: ScaleExecutor trait translates autoscaler decisions into infrastructure actions (boot/drain nodes via OpenCHAMI)
+
+### Audit Integrity
+- Ed25519 signed entries with SHA-256 hash chain
+- Signing key loaded from persistent file (`audit_signing_key_path` in QuorumConfig); random key in dev mode
+- Tamper detection: signature verification + chain integrity check
+- Archive compaction preserves chain continuity across S3 chunks
+
 ### Federation (Optional — pluggable via feature flag)
 - Sovra for cryptographic trust (federated sovereign key management)
 - Loose coupling: federation broker suggests, local scheduler decides
@@ -99,9 +116,9 @@ Scheduler-coordinated with cost function:
 All performance-critical components. Shared protobuf types generated into lattice-common.
 
 - `lattice-common`: Shared types (Allocation, Node, Tenant, vCluster), config, errors, protobuf bindings
-- `lattice-quorum`: Raft consensus implementation, global state machine, node ownership, sensitive audit log
-- `lattice-scheduler`: vCluster scheduler trait + implementations (HPC backfill, service bin-pack, sensitive, interactive), knapsack solver, cost function, topology model
-- `lattice-node-agent`: Per-node daemon, Sarus/uenv lifecycle, eBPF telemetry loading, health reporting, checkpoint signal forwarding
+- `lattice-quorum`: Raft consensus implementation, global state machine, node ownership, sensitive audit log, service registry, session tracking
+- `lattice-scheduler`: vCluster scheduler trait + implementations (HPC backfill, service bin-pack, sensitive, interactive), knapsack solver, cost function, topology model, reconciliation loop, scale executor
+- `lattice-node-agent`: Per-node daemon, Sarus/uenv lifecycle, eBPF telemetry loading, health reporting, checkpoint signal forwarding, liveness probes, probe manager
 - `lattice-api`: gRPC server (tonic) + REST gateway, Intent API + Compatibility API endpoints
 - `lattice-cli`: `lattice` CLI binary, subcommands for submit/status/cancel/session/telemetry, Slurm compat aliases
 - `lattice-client`: Rust gRPC client SDK (42 methods, full API parity with Python SDK), publishable to crates.io

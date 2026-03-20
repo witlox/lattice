@@ -436,3 +436,59 @@ The cascade tries each provider's `is_available()` before calling `get_identity(
 **Statement:** FirecREST is not part of the Lattice architecture. Lattice authenticates directly against the institutional IdP via hpc-auth. If FirecREST is present as a legacy compatibility gateway for hybrid Slurm deployments, it is transparent — it does not participate in authentication, authorization, or any Lattice-specific logic.
 
 **Enforcement:** No FirecREST-specific code anywhere in the codebase. The auth path uses hpc-auth for OIDC flows.
+
+---
+
+## Service Lifecycle Invariants
+
+### INV-SVC1: Reconciliation Only For Service Lifecycles
+
+**Statement:** The reconciliation loop (Failed → Pending) only applies to Unbounded and Reactive allocations. Bounded allocations that fail remain permanently Failed.
+
+**Enforcement:** `should_requeue()` in loop_runner.rs checks `LifecycleType::Unbounded | Reactive`.
+
+---
+
+### INV-SVC2: Max Requeue Cap
+
+**Statement:** `max_requeue` is capped at 100. Values above 100 are rejected at submission time.
+
+**Enforcement:** Validation in `allocation_from_proto()` (convert.rs).
+
+---
+
+### INV-SVC3: Service Registry Consistency
+
+**Statement:** The service registry is consistent with allocation state: an endpoint exists in the registry if and only if its allocation is Running.
+
+**Enforcement:** Registration/deregistration in `update_allocation_state()` handler (global_state.rs). Deregistration also in `requeue_allocation()`.
+
+---
+
+### INV-SVC4: Requeue Optimistic Concurrency
+
+**Statement:** `RequeueAllocation` carries `expected_requeue_count`. If the count has changed since the reconciler read it, the requeue is rejected to prevent double-increment.
+
+**Enforcement:** Check in `requeue_allocation()` (global_state.rs).
+
+---
+
+### INV-SVC5: Tenant-Scoped Service Discovery
+
+**Statement:** Service discovery queries are filtered by the requesting tenant. A tenant cannot see endpoints belonging to other tenants.
+
+**Enforcement:** `x-lattice-tenant` header extraction + filter in LookupService/ListServices handlers.
+
+---
+
+### INV-SVC6: Input Validation at API Boundary
+
+**Statement:** The API rejects malformed input at the boundary:
+- Empty tenant or entrypoint
+- TaskGroup step=0 or range_start > range_end
+- Empty DAG allocations list
+- Self-referencing DAG dependencies
+- Reactive min_nodes > max_nodes
+- Service endpoint port outside 1-65535
+
+**Enforcement:** Validation in `allocation_from_proto()` and submit handler (allocation_service.rs).

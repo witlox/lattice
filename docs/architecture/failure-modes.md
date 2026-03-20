@@ -187,9 +187,29 @@ Configurable per allocation at submission time:
 | `on_node_failure` | Requeue only when the failure is node-side (hardware, agent crash, network partition). Default for batch allocations. |
 | `always` | Requeue on any failure including application crash. Use with caution — can cause infinite loops for buggy applications. |
 
-**Max requeue count:** Default 3. Configurable per allocation. After max requeues, allocation transitions to `Failed` regardless of policy.
+**Max requeue count:** Default 3. Configurable per allocation (max 100, validated at submission). After max requeues, allocation transitions to `Failed` regardless of policy. Requeue uses optimistic concurrency (`expected_requeue_count`) to prevent double-increment from concurrent reconcilers.
 
-**Requeue behavior:** Requeued allocations retain their original submission time for fair-share and wait-time calculations (no queue-jumping penalty, no starvation).
+**Requeue behavior:** Requeued allocations retain their original submission time for fair-share and wait-time calculations (no queue-jumping penalty, no starvation). Just-requeued allocations are excluded from the pending set in the same scheduler cycle (TOCTOU prevention).
+
+### Service Failure Detection (Liveness Probes)
+
+For Unbounded and Reactive allocations with a `liveness_probe` configured:
+
+1. **Node agent** runs the probe periodically (TCP connect or HTTP GET)
+2. **Consecutive failures** tracked by ProbeManager (per-allocation counter)
+3. **Threshold exceeded** → allocation marked Failed by node agent
+4. **Reconciler** detects Failed service → requeues per policy (if not at max_requeue)
+5. **Scheduler** re-places the allocation on available nodes
+
+Timeline: initial_delay (default 10s) → periodic probes (default 30s) → failure_threshold (default 3) → Failed → next scheduler cycle requeues.
+
+### Service Registry Failure
+
+If the service registry becomes inconsistent (e.g., allocation completes but endpoint not deregistered):
+- Registry is part of Raft state machine — same consistency guarantees as node ownership
+- Endpoint registration/deregistration happens atomically in `update_allocation_state()` handler
+- Deregistration also occurs in `requeue_allocation()` handler
+- Empty service entries are cleaned up automatically
 
 ## Cross-References
 

@@ -4,6 +4,11 @@
 
 Interactive sessions are allocations with a terminal. They reuse the standard allocation lifecycle with additional terminal protocol handling. Sessions are not a separate concept — they are bounded or unbounded allocations with an attached PTY as the primary interaction mode.
 
+**Global session tracking (F20):** Sessions are now tracked in GlobalState via Raft-committed `CreateSession`/`DeleteSession` commands. This enables:
+- Global session limit enforcement: sensitive allocations limited to one concurrent session (INV-C2)
+- Session survival across API server restarts
+- Ownership verification at creation time (allocation must be Running, user must own it)
+
 ## Session Creation
 
 A session is created via `POST /v1/sessions` (or `lattice session`):

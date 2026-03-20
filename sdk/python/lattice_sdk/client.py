@@ -952,3 +952,34 @@ class LatticeClient:
         response = await client.get("/healthz")
         self._raise_for_status(response)
         return response.json()
+
+    # ── Service Discovery ────────────────────────────────────
+
+    async def list_services(self) -> List[str]:
+        """
+        List all registered service names from the service registry.
+
+        Returns:
+            List of service name strings.
+        """
+        client = self._ensure_client()
+        response = await client.get("/api/v1/services")
+        self._raise_for_status(response)
+        data = response.json()
+        return data.get("services", [])
+
+    async def lookup_service(self, name: str) -> Dict[str, Any]:
+        """
+        Look up endpoints for a named service.
+
+        Args:
+            name: Service name to look up.
+
+        Returns:
+            Dictionary with service name and list of endpoints, each containing
+            allocation_id, tenant, nodes, port, and protocol.
+        """
+        client = self._ensure_client()
+        response = await client.get(f"/api/v1/services/{name}")
+        self._raise_for_status(response)
+        return response.json()

@@ -239,8 +239,39 @@ The protobuf definitions in `proto/lattice/v1/allocations.proto` currently cover
 | NodeService (list, get, drain, undrain, disable, enable, health) | Defined | `proto/lattice/v1/nodes.proto` |
 | AdminService (tenant CRUD, vCluster CRUD, Raft status, backup, audit, accounting) | Defined | `proto/lattice/v1/admin.proto` |
 | Session RPCs (create, get, delete) | Defined | Part of AllocationService |
+| Service Discovery (lookup, list) | Defined | Part of AdminService, `admin.proto` |
+| LivenessProbeSpec | Defined | Part of AllocationSpec, `allocations.proto` |
 
 All planned services have been implemented as RPCs within the existing three services (AllocationService, NodeService, AdminService). Both gRPC and REST endpoints are available for all operations.
+
+### Service Discovery Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| gRPC | `AdminService.LookupService(name)` | Returns endpoints for a named service (tenant-filtered) |
+| gRPC | `AdminService.ListServices()` | Lists all registered service names (tenant-filtered) |
+| REST | `GET /api/v1/services` | JSON list of registered service names |
+| REST | `GET /api/v1/services/{name}` | JSON endpoints for a named service |
+
+Tenant filtering: requests with `x-lattice-tenant` header only see services belonging to their tenant. Without the header, all services are visible (admin mode).
+
+### Liveness Probe Schema
+
+Allocations can include an optional `liveness_probe` in the submission spec:
+
+```protobuf
+message LivenessProbeSpec {
+  string probe_type = 1;    // "tcp" or "http"
+  uint32 port = 2;          // 1-65535
+  string path = 3;          // HTTP path (e.g., "/healthz")
+  uint32 period_secs = 4;   // default: 30
+  uint32 initial_delay_secs = 5;
+  uint32 failure_threshold = 6;  // default: 3
+  uint32 timeout_secs = 7;      // default: 5
+}
+```
+
+When failure_threshold consecutive probes fail, the allocation is marked Failed. The reconciliation loop then requeues it (for Unbounded/Reactive allocations with appropriate requeue policy).
 
 ## Client SDKs
 
