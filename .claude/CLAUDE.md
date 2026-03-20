@@ -34,15 +34,16 @@ Do not skip. Do not assume from prior context. Evaluate fresh.
 
 | Intent | Mode | Role(s) |
 |--------|------|---------|
-| "where are we" / "status" | ASSESS | Read fidelity index or inventory |
+| "where are we" / "status" | ASSESS | Read fidelity/findings indexes or inventory |
 | "sweep" / "baseline" / "full audit" | SWEEP | `.claude/roles/auditor.md` |
+| "adversary sweep" / "security review" / "full review" | ADV-SWEEP | `.claude/roles/adversary.md` |
 | "audit [X]" | AUDIT | `.claude/roles/auditor.md` |
 | "new feature" / "add" / "implement" | FEATURE | See Feature Protocol |
 | "fix" / "bug" / "broken" / "error" | BUGFIX | See Bugfix Protocol |
 | "design" / "spec" / "think about" | DESIGN | See Design Protocol |
 | "review" / "find flaws" / "adversary" | REVIEW | `.claude/roles/adversary.md` |
 | "integrate" | INTEGRATE | `.claude/roles/integrator.md` |
-| "continue" / "next" | RESUME | Read SWEEP.md or current state |
+| "continue" / "next" | RESUME | Read SWEEP.md / ADVERSARY-SWEEP.md or current state |
 | Unclear | ASK | State what you see, ask what they want |
 
 ### Step 3: State assessment
@@ -56,64 +57,46 @@ If ambiguous, ask.
 
 ## In-session role switching
 
-Say "audit this" → auditor. "Now implement" → implementer. "Review this" → adversary.
+Say "audit this" → auditor. "Implement" → implementer. "Review" → adversary.
 On switch: `Switching to [role]. Previous: [role].`
-
-Read the role file (`.claude/roles/[role].md`) when switching. Apply its
-behavioral constraints for the duration of that mode.
+Read `.claude/roles/[role].md` when switching. Apply its constraints.
 
 ## Protocols
 
 ### Feature Protocol (diverge → converge → diverge → converge)
 
 ```
-DESIGN (diverge)
-  analyst (if new domain) → spec artifacts
-  architect → interfaces, integration points
-  adversary → review design          ← convergence gate 1
-
-IMPLEMENT (diverge)
-  implementer → BDD scenarios first, then code
-  auditor → measure fidelity         ← convergence gate 2
-  implementer → harden if < HIGH (loop until HIGH)
-  adversary → review implementation
-
-INTEGRATE (if cross-feature impact)
-  auditor → refresh affected areas
-  integrator → cross-context verification
+DESIGN: analyst → spec | architect → interfaces | adversary → gate 1
+IMPLEMENT: implementer → BDD+code | auditor → gate 2 | harden until HIGH
+REVIEW: adversary → findings | INTEGRATE (if cross-feature): integrator
 ```
 
-Definition of Done:
-- All scenarios pass
-- Fidelity confidence HIGH (>80% THOROUGH+)
-- No DIVERGENT mocks on critical paths
-- Adversary signed off
+Done = scenarios pass + fidelity HIGH + no DIVERGENT mocks + adversary signed off.
 
 ### Bugfix Protocol
 
 ```
-1. DIAGNOSE: reproduce, identify spec/feature, check fidelity index
+1. DIAGNOSE: reproduce, check fidelity (was this area LOW?)
 2. WRITE FAILING TEST FIRST: must fail before fix, pass after
-3. FIX: implement, verify new test passes, no regressions
-4. AUDIT: is new test THOROUGH? If area was LOW, deepen adjacent tests
-5. UPDATE INDEX: update fidelity if picture changed
+3. FIX: implement, no regressions
+4. AUDIT: new test THOROUGH? Deepen adjacent if area was LOW
+5. UPDATE INDEX
 ```
 
 ### Design Protocol
 
 ```
-1. New domain concept → analyst: extract, spec
-2. Architecture change → architect: design, assess fidelity impact
-3. ADR-worthy decision → write ADR, note enforcement needed
-All three: adversary reviews before implementation
+1. New domain → analyst | 2. Architecture change → architect | 3. ADR → write it
+All: adversary reviews before implementation
 ```
 
-### Sweep Protocol (brownfield → checkpoint)
+### Sweep Protocols
 
-See `.claude/roles/auditor.md` for full protocol. Summary:
-- First session: inventory, generate SWEEP.md with risk-ordered chunks
-- Subsequent sessions: resume from first PENDING chunk
-- Completion: all chunks + cross-cutting → checkpoint
+**Fidelity sweep** (`.claude/roles/auditor.md`): inventory → chunked assessment → checkpoint.
+**Adversary sweep** (`.claude/roles/adversary.md`): attack surface → chunked review → findings index.
+
+Run fidelity first when possible — LOW areas get higher adversary priority.
+Both can run in parallel. Together: where tests are shallow AND where things are broken.
 
 ## Checkpoint
 
@@ -128,12 +111,15 @@ Re-sweep when: major refactoring, >50 commits, before release, trust lost.
 ## Brownfield entry
 
 ```
-Existing code → SWEEP (multi-session) → CHECKPOINT → diamond workflow
+Existing code → FIDELITY SWEEP → CHECKPOINT
+             → ADVERSARY SWEEP (can overlap or follow)
+             → diamond workflow
 ```
 
-The sweep measures. It doesn't design or implement. Its output is the
-fidelity index telling you where the project is solid and where it's
-held together by shallow tests.
+The fidelity sweep measures test depth. The adversary sweep finds actual
+problems. Together they tell you: where tests are shallow AND where things
+are broken. Highest priority fixes: areas that are both LOW confidence
+and have critical/high adversary findings.
 
 ## Greenfield entry
 
@@ -194,6 +180,10 @@ specs/
 │   ├── mocks/
 │   ├── adrs/
 │   └── gaps.md
+├── findings/
+│   ├── INDEX.md
+│   ├── ADVERSARY-SWEEP.md
+│   └── [chunk].md
 ├── integration/
 └── escalations/
 ```
