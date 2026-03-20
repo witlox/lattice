@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use lattice_common::traits::{AllocationFilter, AllocationStore, NodeRegistry};
-use lattice_common::types::{AllocationState, CostWeights, Node, TopologyModel};
+use lattice_common::types::{
+    AllocationState, CostWeights, LifecycleType, Node, RequeuePolicy, TopologyModel,
+};
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
@@ -15,6 +17,7 @@ use crate::autoscaler::{Autoscaler, ScaleDecision};
 use crate::cycle::{run_cycle, CycleInput};
 use crate::placement::PlacementDecision;
 use crate::resource_timeline::TimelineConfig;
+use crate::scale_executor::ScaleExecutor;
 
 /// Reads cluster state for the scheduler.
 #[async_trait::async_trait]
@@ -37,6 +40,13 @@ pub trait SchedulerStateReader: Send + Sync {
     ) -> Result<Vec<lattice_common::types::Tenant>, lattice_common::error::LatticeError>;
     /// Read topology.
     async fn topology(&self) -> TopologyModel;
+    /// Read failed allocations eligible for reconciliation.
+    /// Default returns empty (opt-in for reconciliation).
+    async fn failed_allocations(
+        &self,
+    ) -> Result<Vec<lattice_common::types::Allocation>, lattice_common::error::LatticeError> {
+        Ok(vec![])
+    }
 }
 
 /// Applies scheduling decisions to the cluster.
@@ -80,6 +90,13 @@ pub trait SchedulerCommandSink: Send + Sync {
     async fn scale_down(&self, _count: u32) -> Result<(), lattice_common::error::LatticeError> {
         Ok(())
     }
+    /// Requeue a failed allocation back to Pending (service reconciliation).
+    async fn requeue(
+        &self,
+        _alloc_id: lattice_common::types::AllocId,
+    ) -> Result<(), lattice_common::error::LatticeError> {
+        Ok(())
+    }
 }
 
 /// Configuration for the scheduler loop.
@@ -112,6 +129,7 @@ pub struct SchedulerLoop<R: SchedulerStateReader, S: SchedulerCommandSink> {
     sink: Arc<S>,
     config: SchedulerLoopConfig,
     autoscaler: Option<tokio::sync::Mutex<Autoscaler>>,
+    scale_executor: Option<Arc<dyn ScaleExecutor>>,
 }
 
 impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
@@ -121,6 +139,7 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
             sink,
             config,
             autoscaler: None,
+            scale_executor: None,
         }
     }
 
@@ -130,8 +149,25 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
         self
     }
 
+    /// Attach a scale executor that provisions/releases nodes for autoscaler decisions.
+    pub fn with_scale_executor(mut self, executor: Arc<dyn ScaleExecutor>) -> Self {
+        self.scale_executor = Some(executor);
+        self
+    }
+
     /// Run a single scheduling cycle. Returns the number of allocations placed.
     pub async fn run_once(&self) -> Result<usize, lattice_common::error::LatticeError> {
+        // ── Service reconciliation: requeue eligible failed allocations ──
+        let failed = self.reader.failed_allocations().await?;
+        for alloc in &failed {
+            if Self::should_requeue(alloc) {
+                info!(alloc_id = %alloc.id, requeue_count = alloc.requeue_count, max = alloc.max_requeue, "Reconciler: requeuing failed service");
+                if let Err(e) = self.sink.requeue(alloc.id).await {
+                    warn!(alloc_id = %alloc.id, error = %e, "Reconciler: failed to requeue");
+                }
+            }
+        }
+
         let pending = self.reader.pending_allocations().await?;
         let running = self.reader.running_allocations().await?;
         let nodes = self.reader.available_nodes().await?;
@@ -271,14 +307,34 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
             match scaler.evaluate(total_nodes, avg_utilization, queue_depth) {
                 ScaleDecision::ScaleUp { count } => {
                     info!(count, "Autoscaler: scale up");
+                    if let Some(ref executor) = self.scale_executor {
+                        match executor.scale_up(count).await {
+                            Ok(nodes) => {
+                                info!(booted = nodes.len(), "Scale executor: provisioned nodes");
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Scale executor: failed to provision nodes");
+                            }
+                        }
+                    }
                     if let Err(e) = self.sink.scale_up(count).await {
-                        warn!(error = %e, "Failed to execute scale-up");
+                        warn!(error = %e, "Failed to notify scale-up");
                     }
                 }
                 ScaleDecision::ScaleDown { count } => {
                     info!(count, "Autoscaler: scale down");
+                    if let Some(ref executor) = self.scale_executor {
+                        match executor.scale_down(count).await {
+                            Ok(nodes) => {
+                                info!(drained = nodes.len(), "Scale executor: released nodes");
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Scale executor: failed to release nodes");
+                            }
+                        }
+                    }
                     if let Err(e) = self.sink.scale_down(count).await {
-                        warn!(error = %e, "Failed to execute scale-down");
+                        warn!(error = %e, "Failed to notify scale-down");
                     }
                 }
                 ScaleDecision::NoChange => {}
@@ -286,6 +342,33 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
         }
 
         Ok(placed_count)
+    }
+
+    /// Determine if a failed allocation should be automatically requeued.
+    ///
+    /// Eligible: Unbounded or Reactive lifecycle, with requeue policy
+    /// OnNodeFailure or Always, and requeue_count < max_requeue.
+    fn should_requeue(alloc: &lattice_common::types::Allocation) -> bool {
+        // Only requeue non-terminal service workloads
+        let service_lifecycle = matches!(
+            alloc.lifecycle.lifecycle_type,
+            LifecycleType::Unbounded | LifecycleType::Reactive { .. }
+        );
+        if !service_lifecycle {
+            return false;
+        }
+
+        // Check requeue policy
+        let policy_allows = matches!(
+            alloc.requeue_policy,
+            RequeuePolicy::OnNodeFailure | RequeuePolicy::Always
+        );
+        if !policy_allows {
+            return false;
+        }
+
+        // Check requeue budget
+        alloc.requeue_count < alloc.max_requeue
     }
 
     /// Run the scheduler loop until the cancel signal fires.
@@ -367,6 +450,16 @@ impl SchedulerStateReader for TraitStateReader {
         self.allocations.list(&filter).await
     }
 
+    async fn failed_allocations(
+        &self,
+    ) -> Result<Vec<lattice_common::types::Allocation>, lattice_common::error::LatticeError> {
+        let filter = AllocationFilter {
+            state: Some(AllocationState::Failed),
+            ..Default::default()
+        };
+        self.allocations.list(&filter).await
+    }
+
     async fn available_nodes(&self) -> Result<Vec<Node>, lattice_common::error::LatticeError> {
         let filter = lattice_common::traits::NodeFilter {
             state: Some(lattice_common::types::NodeState::Ready),
@@ -443,6 +536,7 @@ mod tests {
     struct MockReader {
         pending: Vec<Allocation>,
         running: Vec<Allocation>,
+        failed: Vec<Allocation>,
         nodes: Vec<Node>,
         tenants: Vec<Tenant>,
         topology: TopologyModel,
@@ -455,6 +549,9 @@ mod tests {
         }
         async fn running_allocations(&self) -> Result<Vec<Allocation>, LatticeError> {
             Ok(self.running.clone())
+        }
+        async fn failed_allocations(&self) -> Result<Vec<Allocation>, LatticeError> {
+            Ok(self.failed.clone())
         }
         async fn available_nodes(&self) -> Result<Vec<Node>, LatticeError> {
             Ok(self.nodes.clone())
@@ -504,6 +601,7 @@ mod tests {
         MockReader {
             pending,
             running: vec![],
+            failed: vec![],
             nodes: create_node_batch(nodes, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, nodes),
@@ -778,6 +876,7 @@ mod tests {
                     .state(AllocationState::Running)
                     .build(),
             ],
+            failed: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -844,5 +943,182 @@ mod tests {
         // Should not crash, just skip the failed allocation
         let placed = sched.run_once().await.unwrap();
         assert_eq!(placed, 0);
+    }
+
+    // ─── Reconciler tests ────────────────────────────────────────
+
+    struct ReconcilerSink {
+        requeued: Mutex<Vec<AllocId>>,
+        assigned: Mutex<Vec<(AllocId, Vec<String>)>>,
+        running: Mutex<Vec<AllocId>>,
+        assign_count: AtomicUsize,
+    }
+
+    impl ReconcilerSink {
+        fn new() -> Self {
+            Self {
+                requeued: Mutex::new(Vec::new()),
+                assigned: Mutex::new(Vec::new()),
+                running: Mutex::new(Vec::new()),
+                assign_count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SchedulerCommandSink for ReconcilerSink {
+        async fn assign_nodes(
+            &self,
+            alloc_id: AllocId,
+            nodes: Vec<String>,
+        ) -> Result<(), LatticeError> {
+            self.assigned.lock().await.push((alloc_id, nodes));
+            self.assign_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        async fn set_running(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
+            self.running.lock().await.push(alloc_id);
+            Ok(())
+        }
+        async fn requeue(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
+            self.requeued.lock().await.push(alloc_id);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn reconciler_requeues_failed_unbounded_service() {
+        let failed_svc = AllocationBuilder::new()
+            .tenant("t1")
+            .lifecycle_unbounded()
+            .requeue_policy(RequeuePolicy::OnNodeFailure)
+            .state(AllocationState::Failed)
+            .build();
+        let alloc_id = failed_svc.id;
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![],
+            failed: vec![failed_svc],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(ReconcilerSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let requeued = sink.requeued.lock().await;
+        assert_eq!(requeued.len(), 1);
+        assert_eq!(requeued[0], alloc_id);
+    }
+
+    #[tokio::test]
+    async fn reconciler_skips_bounded_failed_allocation() {
+        let failed_batch = AllocationBuilder::new()
+            .tenant("t1")
+            .lifecycle_bounded(1)
+            .requeue_policy(RequeuePolicy::Always)
+            .state(AllocationState::Failed)
+            .build();
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![],
+            failed: vec![failed_batch],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(ReconcilerSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let requeued = sink.requeued.lock().await;
+        assert!(requeued.is_empty(), "Bounded jobs should not be reconciled");
+    }
+
+    #[tokio::test]
+    async fn reconciler_skips_never_requeue_policy() {
+        let failed_svc = AllocationBuilder::new()
+            .tenant("t1")
+            .lifecycle_unbounded()
+            .requeue_policy(RequeuePolicy::Never)
+            .state(AllocationState::Failed)
+            .build();
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![],
+            failed: vec![failed_svc],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(ReconcilerSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let requeued = sink.requeued.lock().await;
+        assert!(requeued.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconciler_respects_max_requeue_limit() {
+        let failed_svc = AllocationBuilder::new()
+            .tenant("t1")
+            .lifecycle_unbounded()
+            .requeue_policy(RequeuePolicy::Always)
+            .max_requeue(3)
+            .requeue_count(3) // already at limit
+            .state(AllocationState::Failed)
+            .build();
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![],
+            failed: vec![failed_svc],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(ReconcilerSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let requeued = sink.requeued.lock().await;
+        assert!(requeued.is_empty(), "Should not requeue when at max limit");
+    }
+
+    #[tokio::test]
+    async fn reconciler_requeues_reactive_allocation() {
+        let failed_reactive = AllocationBuilder::new()
+            .tenant("t1")
+            .lifecycle_reactive(1, 4, "gpu_util", "0.8")
+            .requeue_policy(RequeuePolicy::Always)
+            .state(AllocationState::Failed)
+            .build();
+        let alloc_id = failed_reactive.id;
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![],
+            failed: vec![failed_reactive],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(ReconcilerSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let requeued = sink.requeued.lock().await;
+        assert_eq!(requeued.len(), 1);
+        assert_eq!(requeued[0], alloc_id);
     }
 }

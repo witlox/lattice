@@ -28,6 +28,11 @@ pub enum Command {
         /// If provided and stale, the proposal is rejected.
         expected_version: Option<u64>,
     },
+    /// Re-queue a failed allocation back to Pending (service reconciliation).
+    /// Increments requeue_count, clears assigned_nodes, resets timestamps.
+    RequeueAllocation {
+        id: AllocId,
+    },
 
     // ── Node commands ───────────────────────────────────────
     RegisterNode(Node),
@@ -113,6 +118,7 @@ impl fmt::Display for Command {
             Command::AssignNodes { id, nodes, .. } => {
                 write!(f, "AssignNodes({id}, {} nodes)", nodes.len())
             }
+            Command::RequeueAllocation { id } => write!(f, "RequeueAllocation({id})"),
             Command::RegisterNode(n) => write!(f, "RegisterNode({})", n.id),
             Command::UpdateNodeState { id, state, .. } => {
                 write!(f, "UpdateNodeState({id}, {state:?})")

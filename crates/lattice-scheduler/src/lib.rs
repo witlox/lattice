@@ -26,6 +26,7 @@ pub mod placement;
 pub mod preemption;
 pub mod quota;
 pub mod resource_timeline;
+pub mod scale_executor;
 pub mod schedulers;
 pub mod topology;
 pub mod walltime;
@@ -47,5 +48,6 @@ pub use loop_runner::{
 pub use placement::{PlacementDecision, SchedulingResult};
 pub use preemption::{evaluate_preemption, PreemptionConfig, PreemptionResult};
 pub use resource_timeline::{ResourceTimeline, TimelineConfig};
+pub use scale_executor::{InfraScaleExecutor, NoopScaleExecutor, ScaleExecutor};
 pub use schedulers::create_scheduler;
 pub use walltime::{ExpiryPhase, WalltimeEnforcer, WalltimeExpiry};

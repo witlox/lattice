@@ -72,6 +72,8 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
         .route("/api/v1/nodes/{id}/drain", post(drain_node))
         .route("/api/v1/nodes/{id}/undrain", post(undrain_node))
         .route("/api/v1/nodes/{id}/enable", post(enable_node))
+        .route("/api/v1/services", get(list_services))
+        .route("/api/v1/services/{name}", get(lookup_service))
         .route("/api/v1/auth/discovery", get(auth_discovery))
         .route("/healthz", get(healthz))
         .with_state(state)
@@ -1913,6 +1915,65 @@ async fn accounting_usage(
         )
             .into_response()
     }
+}
+
+// ─── Service Discovery ──────────────────────────────────────
+
+#[derive(Serialize)]
+struct ServiceListResponse {
+    services: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ServiceLookupResponse {
+    name: String,
+    endpoints: Vec<ServiceEndpointResponse>,
+}
+
+#[derive(Serialize)]
+struct ServiceEndpointResponse {
+    allocation_id: String,
+    tenant: String,
+    nodes: Vec<String>,
+    port: u16,
+    protocol: String,
+}
+
+async fn list_services(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+    let names = if let Some(ref quorum) = state.quorum {
+        let sm = quorum.state().read().await;
+        sm.list_services()
+    } else {
+        vec![]
+    };
+    Json(ServiceListResponse { services: names }).into_response()
+}
+
+async fn lookup_service(
+    State(state): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let endpoints = if let Some(ref quorum) = state.quorum {
+        let sm = quorum.state().read().await;
+        match sm.lookup_service(&name) {
+            Some(entry) => entry
+                .endpoints
+                .iter()
+                .map(|ep| ServiceEndpointResponse {
+                    allocation_id: ep.allocation_id.to_string(),
+                    tenant: ep.tenant.clone(),
+                    nodes: ep.nodes.clone(),
+                    port: ep.port,
+                    protocol: ep.protocol.clone().unwrap_or_default(),
+                })
+                .collect(),
+            None => vec![],
+        }
+    } else {
+        vec![]
+    };
+
+    Json(ServiceLookupResponse { name, endpoints }).into_response()
 }
 
 #[cfg(test)]

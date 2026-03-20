@@ -24,6 +24,11 @@ pub struct AllocationBuilder {
     depends_on: Vec<Dependency>,
     dag_id: Option<String>,
     sensitive: bool,
+    requeue_policy: RequeuePolicy,
+    max_requeue: u32,
+    requeue_count: u32,
+    connectivity: Connectivity,
+    liveness_probe: Option<LivenessProbe>,
 }
 
 impl AllocationBuilder {
@@ -47,6 +52,11 @@ impl AllocationBuilder {
             depends_on: Vec::new(),
             dag_id: None,
             sensitive: false,
+            requeue_policy: RequeuePolicy::OnNodeFailure,
+            max_requeue: 3,
+            requeue_count: 0,
+            connectivity: Connectivity::default(),
+            liveness_probe: None,
         }
     }
 
@@ -97,6 +107,16 @@ impl AllocationBuilder {
         self
     }
 
+    pub fn lifecycle_reactive(mut self, min: u32, max: u32, metric: &str, target: &str) -> Self {
+        self.lifecycle = LifecycleType::Reactive {
+            min_nodes: min,
+            max_nodes: max,
+            metric: metric.into(),
+            target: target.into(),
+        };
+        self
+    }
+
     pub fn preemption_class(mut self, class: u8) -> Self {
         self.preemption_class = class;
         self
@@ -135,6 +155,31 @@ impl AllocationBuilder {
         self
     }
 
+    pub fn requeue_policy(mut self, policy: RequeuePolicy) -> Self {
+        self.requeue_policy = policy;
+        self
+    }
+
+    pub fn max_requeue(mut self, n: u32) -> Self {
+        self.max_requeue = n;
+        self
+    }
+
+    pub fn requeue_count(mut self, n: u32) -> Self {
+        self.requeue_count = n;
+        self
+    }
+
+    pub fn connectivity(mut self, c: Connectivity) -> Self {
+        self.connectivity = c;
+        self
+    }
+
+    pub fn liveness_probe(mut self, probe: LivenessProbe) -> Self {
+        self.liveness_probe = Some(probe);
+        self
+    }
+
     pub fn build(self) -> Allocation {
         Allocation {
             id: Uuid::new_v4(),
@@ -162,13 +207,14 @@ impl AllocationBuilder {
                 lifecycle_type: self.lifecycle,
                 preemption_class: self.preemption_class,
             },
-            requeue_policy: RequeuePolicy::OnNodeFailure,
-            max_requeue: 3,
+            requeue_policy: self.requeue_policy,
+            max_requeue: self.max_requeue,
             data: DataRequirements::default(),
-            connectivity: Connectivity::default(),
+            connectivity: self.connectivity,
             depends_on: self.depends_on,
             checkpoint: CheckpointStrategy::Auto,
             telemetry_mode: TelemetryMode::Prod,
+            liveness_probe: self.liveness_probe,
             state: self.state,
             created_at: Utc::now(),
             started_at: None,
@@ -177,7 +223,7 @@ impl AllocationBuilder {
             dag_id: self.dag_id,
             exit_code: None,
             message: None,
-            requeue_count: 0,
+            requeue_count: self.requeue_count,
             preempted_count: 0,
             resume_from_checkpoint: false,
             sensitive: self.sensitive,

@@ -619,6 +619,49 @@ impl AdminService for LatticeAdminService {
             }))
         }
     }
+
+    async fn lookup_service(
+        &self,
+        request: Request<pb::LookupServiceRequest>,
+    ) -> Result<Response<pb::LookupServiceResponse>, Status> {
+        let name = request.into_inner().name;
+
+        let endpoints = if let Some(ref quorum) = self.state.quorum {
+            let sm = quorum.state().read().await;
+            match sm.lookup_service(&name) {
+                Some(entry) => entry
+                    .endpoints
+                    .iter()
+                    .map(|ep| pb::RegisteredEndpointProto {
+                        allocation_id: ep.allocation_id.to_string(),
+                        tenant: ep.tenant.clone(),
+                        nodes: ep.nodes.clone(),
+                        port: ep.port as u32,
+                        protocol: ep.protocol.clone().unwrap_or_default(),
+                    })
+                    .collect(),
+                None => vec![],
+            }
+        } else {
+            vec![]
+        };
+
+        Ok(Response::new(pb::LookupServiceResponse { name, endpoints }))
+    }
+
+    async fn list_services(
+        &self,
+        _request: Request<pb::ListServicesRequest>,
+    ) -> Result<Response<pb::ListServicesResponse>, Status> {
+        let names = if let Some(ref quorum) = self.state.quorum {
+            let sm = quorum.state().read().await;
+            sm.list_services()
+        } else {
+            vec![]
+        };
+
+        Ok(Response::new(pb::ListServicesResponse { names }))
+    }
 }
 
 #[cfg(test)]

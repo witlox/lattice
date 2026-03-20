@@ -20,14 +20,23 @@ use crate::health::{HealthChecker, HealthStatus, ObservedHealth};
 use crate::heartbeat::{Heartbeat, HeartbeatGenerator};
 use crate::heartbeat_loop::{HealthObserver, HeartbeatLoop, HeartbeatSink};
 use crate::network::VniManager;
+use crate::probe_manager::ProbeManager;
 use crate::telemetry::{TelemetryCollector, TelemetryMode};
 
 /// Commands received from the quorum/API.
 #[derive(Debug, Clone)]
 pub enum AgentCommand {
-    StartAllocation { id: AllocId, entrypoint: String },
-    StopAllocation { id: AllocId },
-    Checkpoint { id: AllocId },
+    StartAllocation {
+        id: AllocId,
+        entrypoint: String,
+        liveness_probe: Option<lattice_common::types::LivenessProbe>,
+    },
+    StopAllocation {
+        id: AllocId,
+    },
+    Checkpoint {
+        id: AllocId,
+    },
     Drain,
     Undrain,
     UpdateTelemetryMode(TelemetryMode),
@@ -49,6 +58,7 @@ pub struct NodeAgent {
     heartbeat_gen: HeartbeatGenerator,
     health_checker: HealthChecker,
     allocations: AllocationManager,
+    probes: ProbeManager,
     checkpoints: CheckpointHandler,
     vni_manager: VniManager,
     telemetry: TelemetryCollector,
@@ -79,6 +89,7 @@ impl NodeAgent {
             heartbeat_gen: HeartbeatGenerator::new(node_id),
             health_checker: HealthChecker::new(capabilities),
             allocations: AllocationManager::new(),
+            probes: ProbeManager::new(),
             checkpoints: CheckpointHandler::new(),
             vni_manager: VniManager::new(),
             telemetry: TelemetryCollector::new(TelemetryMode::Production),
@@ -129,13 +140,22 @@ impl NodeAgent {
     /// Process a command from the quorum/API.
     pub async fn handle_command(&mut self, cmd: AgentCommand) -> Result<(), String> {
         match cmd {
-            AgentCommand::StartAllocation { id, entrypoint } => {
+            AgentCommand::StartAllocation {
+                id,
+                entrypoint,
+                liveness_probe,
+            } => {
                 self.allocations.start(id, entrypoint)?;
                 // Advance through prologue
                 self.allocations.advance(&id)?;
+                // Register liveness probe if configured
+                if let Some(probe) = liveness_probe {
+                    self.probes.register(id, probe);
+                }
                 Ok(())
             }
             AgentCommand::StopAllocation { id } => {
+                self.probes.deregister(&id);
                 self.allocations.fail(&id, "stopped by command".to_string())
             }
             AgentCommand::Checkpoint { id } => {
@@ -178,6 +198,16 @@ impl NodeAgent {
     /// Number of buffered updates (pending quorum reconnect).
     pub fn buffered_update_count(&self) -> usize {
         self.buffered_updates.len()
+    }
+
+    /// Access the probe manager.
+    pub fn probes(&self) -> &ProbeManager {
+        &self.probes
+    }
+
+    /// Access the probe manager mutably.
+    pub fn probes_mut(&mut self) -> &mut ProbeManager {
+        &mut self.probes
     }
 
     /// Access the allocation manager.
@@ -271,8 +301,9 @@ impl NodeAgent {
             heartbeat_loop.run().await;
         });
 
-        // Main command processing loop.
+        // Main command processing loop with liveness probe ticks.
         let mut cancel_rx_cmd = cancel_rx;
+        let mut probe_interval = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
@@ -285,6 +316,22 @@ impl NodeAgent {
                         self.allocations.active_count(),
                         std::sync::atomic::Ordering::Relaxed,
                     );
+                }
+                _ = probe_interval.tick() => {
+                    // Run liveness probes; any that exceed their threshold
+                    // mark the allocation as failed.
+                    let failed_ids = self.probes.tick().await;
+                    for id in &failed_ids {
+                        if let Err(e) = self.allocations.fail(id, "liveness probe failed".into()) {
+                            warn!(alloc_id = %id, error = %e, "failed to mark allocation as failed");
+                        }
+                    }
+                    if !failed_ids.is_empty() {
+                        alloc_count.store(
+                            self.allocations.active_count(),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
                 }
                 result = cancel_rx_cmd.changed() => {
                     if result.is_err() || *cancel_rx_cmd.borrow() {
@@ -380,6 +427,7 @@ mod tests {
             .handle_command(AgentCommand::StartAllocation {
                 id,
                 entrypoint: "python train.py".to_string(),
+                liveness_probe: None,
             })
             .await
             .unwrap();
@@ -396,6 +444,7 @@ mod tests {
             .handle_command(AgentCommand::StartAllocation {
                 id,
                 entrypoint: "train.py".to_string(),
+                liveness_probe: None,
             })
             .await
             .unwrap();
@@ -545,6 +594,7 @@ mod tests {
                 .send(AgentCommand::StartAllocation {
                     id: alloc_id,
                     entrypoint: "train.py".to_string(),
+                    liveness_probe: None,
                 })
                 .await
                 .unwrap();

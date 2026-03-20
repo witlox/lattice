@@ -420,6 +420,31 @@ impl LatticeClient {
         Ok(self.admin.get_accounting_usage(req).await?.into_inner())
     }
 
+    // ─── Service Discovery ────────────────────────────────────
+
+    /// Look up registered endpoints for a named service.
+    pub async fn lookup_service(
+        &mut self,
+        name: &str,
+    ) -> Result<pb::LookupServiceResponse, LatticeClientError> {
+        Ok(self
+            .admin
+            .lookup_service(pb::LookupServiceRequest {
+                name: name.to_string(),
+            })
+            .await?
+            .into_inner())
+    }
+
+    /// List all registered service names.
+    pub async fn list_services(&mut self) -> Result<pb::ListServicesResponse, LatticeClientError> {
+        Ok(self
+            .admin
+            .list_services(pb::ListServicesRequest {})
+            .await?
+            .into_inner())
+    }
+
     // ─── Raft / Admin ───────────────────────────────────────
 
     /// Get Raft cluster status.

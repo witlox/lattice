@@ -232,6 +232,7 @@ fn trace_to_allocation(entry: &TraceEntry) -> Allocation {
         preempted_count: 0,
         resume_from_checkpoint: false,
         sensitive: false,
+        liveness_probe: None,
     }
 }
 

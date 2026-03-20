@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 0243d49033a74c34dfb3a4d1e1ae5cd4d0b9a7e3015f037cfb852b5020eadcfe # shrinks to priority = 0.0, wait_time = 1.1870740222706975, fair_share = 0.0, topo = 0.0, data_readiness = 0.0, backlog = 0.0, energy = 0.0, checkpoint_efficiency = 0.0, conformance = 0.0
+cc d8be38c2ff01ca829503acf308563ddd431a653421f1ba28c69df23f5b3b1a38 # shrinks to target = Pending

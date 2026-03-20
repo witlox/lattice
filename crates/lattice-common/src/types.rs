@@ -57,6 +57,9 @@ pub struct Allocation {
     // Telemetry
     pub telemetry_mode: TelemetryMode,
 
+    // Liveness probe (for Unbounded/Reactive service allocations)
+    pub liveness_probe: Option<LivenessProbe>,
+
     // State (managed by scheduler, not set by user)
     pub state: AllocationState,
     pub created_at: DateTime<Utc>,
@@ -266,6 +269,63 @@ pub struct ServiceEndpoint {
     pub name: String,
     pub port: u16,
     pub protocol: Option<String>,
+}
+
+/// A registered service endpoint — published into the service registry
+/// when an allocation with `expose` endpoints transitions to Running.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisteredEndpoint {
+    pub allocation_id: AllocId,
+    pub tenant: TenantId,
+    pub nodes: Vec<NodeId>,
+    pub port: u16,
+    pub protocol: Option<String>,
+}
+
+/// A service registry entry — groups all endpoints for a named service.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServiceRegistryEntry {
+    pub endpoints: Vec<RegisteredEndpoint>,
+}
+
+// ─── Liveness Probe ─────────────────────────────────────────
+
+/// A liveness probe checks whether a service allocation's workload is healthy.
+/// If the probe fails `failure_threshold` consecutive times, the allocation is
+/// marked Failed (and the reconciler can requeue it).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LivenessProbe {
+    /// The type of probe to run.
+    pub probe_type: ProbeType,
+    /// How often (in seconds) to run the probe.
+    pub period_secs: u32,
+    /// Seconds to wait before the first probe (gives the workload time to start).
+    pub initial_delay_secs: u32,
+    /// Number of consecutive failures before marking the allocation as Failed.
+    pub failure_threshold: u32,
+    /// Seconds to wait for the probe to succeed before counting as a failure.
+    pub timeout_secs: u32,
+}
+
+impl Default for LivenessProbe {
+    fn default() -> Self {
+        Self {
+            probe_type: ProbeType::Tcp { port: 8080 },
+            period_secs: 30,
+            initial_delay_secs: 10,
+            failure_threshold: 3,
+            timeout_secs: 5,
+        }
+    }
+}
+
+/// The mechanism used to check workload liveness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProbeType {
+    /// Open a TCP connection to the given port on the allocation's node.
+    Tcp { port: u16 },
+    /// Send an HTTP GET request and expect a 2xx response.
+    Http { port: u16, path: String },
 }
 
 // ─── Network Domain ────────────────────────────────────────
@@ -817,6 +877,8 @@ impl AllocationState {
                 | (AllocationState::Suspended, AllocationState::Pending)
                 | (AllocationState::Suspended, AllocationState::Cancelled)
                 | (AllocationState::Suspended, AllocationState::Failed)
+                // Service reconciliation: failed services can be requeued
+                | (AllocationState::Failed, AllocationState::Pending)
         )
     }
 
@@ -1103,12 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_states_cannot_transition_to_anything() {
-        let terminals = [
-            AllocationState::Completed,
-            AllocationState::Failed,
-            AllocationState::Cancelled,
-        ];
+    fn terminal_states_cannot_transition_to_anything_except_failed_to_pending() {
         let all_states = [
             AllocationState::Pending,
             AllocationState::Staging,
@@ -1120,11 +1177,23 @@ mod tests {
             AllocationState::Cancelled,
         ];
 
-        for terminal in &terminals {
+        // Completed and Cancelled are fully terminal
+        for terminal in &[AllocationState::Completed, AllocationState::Cancelled] {
             for target in &all_states {
                 assert!(
                     !terminal.can_transition_to(target),
                     "{terminal:?} should not transition to {target:?}"
+                );
+            }
+        }
+
+        // Failed can only transition to Pending (service reconciliation)
+        assert!(AllocationState::Failed.can_transition_to(&AllocationState::Pending));
+        for target in &all_states {
+            if *target != AllocationState::Pending {
+                assert!(
+                    !AllocationState::Failed.can_transition_to(target),
+                    "Failed should not transition to {target:?}"
                 );
             }
         }
@@ -1546,13 +1615,13 @@ mod tests {
 
             #[test]
             fn terminal_states_block_all_transitions(target in arb_allocation_state()) {
-                let terminals = [
-                    AllocationState::Completed,
-                    AllocationState::Failed,
-                    AllocationState::Cancelled,
-                ];
-                for terminal in &terminals {
+                // Completed and Cancelled are fully terminal
+                for terminal in &[AllocationState::Completed, AllocationState::Cancelled] {
                     prop_assert!(!terminal.can_transition_to(&target));
+                }
+                // Failed → Pending is allowed (service reconciliation), everything else blocked
+                if target != AllocationState::Pending {
+                    prop_assert!(!AllocationState::Failed.can_transition_to(&target));
                 }
             }
 

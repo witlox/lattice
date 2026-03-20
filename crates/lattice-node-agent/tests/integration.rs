@@ -479,6 +479,7 @@ async fn agent_heartbeat_health_integration() {
         .handle_command(AgentCommand::StartAllocation {
             id: Uuid::new_v4(),
             entrypoint: "train.py".to_string(),
+            liveness_probe: None,
         })
         .await
         .unwrap();
@@ -755,6 +756,7 @@ async fn agent_run_loop_heartbeats_and_commands() {
             .send(AgentCommand::StartAllocation {
                 id: alloc_1,
                 entrypoint: "train.py".to_string(),
+                liveness_probe: None,
             })
             .await
             .unwrap();
@@ -763,6 +765,7 @@ async fn agent_run_loop_heartbeats_and_commands() {
             .send(AgentCommand::StartAllocation {
                 id: alloc_2,
                 entrypoint: "eval.py".to_string(),
+                liveness_probe: None,
             })
             .await
             .unwrap();
@@ -913,6 +916,7 @@ async fn agent_checkpoint_to_signal_delivery() {
         .handle_command(AgentCommand::StartAllocation {
             id: alloc_id,
             entrypoint: "server".to_string(),
+            liveness_probe: None,
         })
         .await
         .unwrap();

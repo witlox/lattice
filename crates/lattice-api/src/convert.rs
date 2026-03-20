@@ -123,6 +123,7 @@ pub fn allocation_from_proto(spec: &pb::AllocationSpec, user: &str) -> Result<Al
         preempted_count: 0,
         resume_from_checkpoint: false,
         sensitive: spec.sensitive,
+        liveness_probe: liveness_probe_from_proto(spec),
     })
 }
 
@@ -164,6 +165,7 @@ pub fn allocation_to_spec(alloc: &Allocation) -> pb::AllocationSpec {
         requeue_policy: requeue_policy_to_str(&alloc.requeue_policy).to_string(),
         max_requeue: alloc.max_requeue,
         sensitive: alloc.sensitive,
+        liveness_probe: liveness_probe_to_proto(&alloc.liveness_probe),
     }
 }
 
@@ -763,6 +765,53 @@ fn requeue_policy_to_str(p: &RequeuePolicy) -> &'static str {
         RequeuePolicy::OnNodeFailure => "on_node_failure",
         RequeuePolicy::Always => "always",
     }
+}
+
+// ─── Liveness probe conversions ──────────────────────────────
+
+fn liveness_probe_from_proto(spec: &pb::AllocationSpec) -> Option<LivenessProbe> {
+    let p = spec.liveness_probe.as_ref()?;
+    let probe_type = match p.probe_type.as_str() {
+        "http" => ProbeType::Http {
+            port: p.port as u16,
+            path: p.path.clone(),
+        },
+        _ => ProbeType::Tcp {
+            port: p.port as u16,
+        },
+    };
+    Some(LivenessProbe {
+        probe_type,
+        period_secs: if p.period_secs > 0 { p.period_secs } else { 30 },
+        initial_delay_secs: p.initial_delay_secs,
+        failure_threshold: if p.failure_threshold > 0 {
+            p.failure_threshold
+        } else {
+            3
+        },
+        timeout_secs: if p.timeout_secs > 0 {
+            p.timeout_secs
+        } else {
+            5
+        },
+    })
+}
+
+fn liveness_probe_to_proto(probe: &Option<LivenessProbe>) -> Option<pb::LivenessProbeSpec> {
+    let p = probe.as_ref()?;
+    let (probe_type, port, path) = match &p.probe_type {
+        ProbeType::Tcp { port } => ("tcp".to_string(), *port as u32, String::new()),
+        ProbeType::Http { port, path } => ("http".to_string(), *port as u32, path.clone()),
+    };
+    Some(pb::LivenessProbeSpec {
+        probe_type,
+        port,
+        path,
+        period_secs: p.period_secs,
+        initial_delay_secs: p.initial_delay_secs,
+        failure_threshold: p.failure_threshold,
+        timeout_secs: p.timeout_secs,
+    })
 }
 
 fn isolation_from_str(s: &str) -> IsolationLevel {

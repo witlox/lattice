@@ -217,14 +217,22 @@ async fn state_machine_consistency_under_chaos() {
     ];
 
     // Verify terminal states block all transitions
+    // Exception: Failed → Pending is allowed (service reconciliation)
     for terminal in &terminal_states {
         for target in &all_states {
-            assert!(
-                !terminal.can_transition_to(target),
-                "Terminal state {:?} should not transition to {:?}",
-                terminal,
-                target
-            );
+            if *terminal == AllocationState::Failed && *target == AllocationState::Pending {
+                assert!(
+                    terminal.can_transition_to(target),
+                    "Failed should be allowed to transition to Pending (service reconciliation)"
+                );
+            } else {
+                assert!(
+                    !terminal.can_transition_to(target),
+                    "Terminal state {:?} should not transition to {:?}",
+                    terminal,
+                    target
+                );
+            }
         }
     }
 

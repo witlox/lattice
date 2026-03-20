@@ -142,6 +142,9 @@ message AllocationSpec {
   // Telemetry
   TelemetrySpec telemetry = 80;
 
+  // Liveness probe (for service allocations)
+  LivenessProbeSpec liveness_probe = 85;
+
   // Requeue policy: "never", "on_node_failure", "always"
   string requeue_policy = 90;
   uint32 max_requeue = 91;
@@ -225,6 +228,16 @@ message CheckpointSpec {
 message TelemetrySpec {
   string mode = 1;          // "prod", "debug", "audit"
   uint64 duration_seconds = 2; // for debug mode auto-revert
+}
+
+message LivenessProbeSpec {
+  string probe_type = 1;    // "tcp" or "http"
+  uint32 port = 2;
+  string path = 3;          // HTTP path (only for http probe_type)
+  uint32 period_secs = 4;
+  uint32 initial_delay_secs = 5;
+  uint32 failure_threshold = 6;
+  uint32 timeout_secs = 7;
 }
 
 // ─── Status / Events ────────────────────────────────────────

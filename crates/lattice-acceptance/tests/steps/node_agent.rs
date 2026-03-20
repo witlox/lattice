@@ -108,6 +108,7 @@ async fn agent_starts_allocation(world: &mut LatticeWorld, entrypoint: String) {
         .handle_command(AgentCommand::StartAllocation {
             id: alloc_id,
             entrypoint,
+            liveness_probe: None,
         })
         .await
         .unwrap();

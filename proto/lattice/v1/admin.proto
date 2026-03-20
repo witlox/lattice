@@ -53,6 +53,12 @@ service AdminService {
 
   // Get accounting usage
   rpc GetAccountingUsage(GetAccountingUsageRequest) returns (AccountingUsageResponse);
+
+  // Service discovery: look up endpoints for a named service
+  rpc LookupService(LookupServiceRequest) returns (LookupServiceResponse);
+
+  // Service discovery: list all registered service names
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
 }
 
 // ─── Tenant Management ─────────────────────────────────────
@@ -267,4 +273,30 @@ message AccountingUsageResponse {
   double gpu_hours = 3;
   uint64 storage_bytes = 4;
   uint32 allocation_count = 5;
+}
+
+// ─── Service Discovery ─────────────────────────────────────
+
+message LookupServiceRequest {
+  string name = 1;
+}
+
+message LookupServiceResponse {
+  string name = 1;
+  repeated RegisteredEndpointProto endpoints = 2;
+}
+
+message RegisteredEndpointProto {
+  string allocation_id = 1;
+  string tenant = 2;
+  repeated string nodes = 3;
+  uint32 port = 4;
+  string protocol = 5;
+}
+
+message ListServicesRequest {
+}
+
+message ListServicesResponse {
+  repeated string names = 1;
 }
