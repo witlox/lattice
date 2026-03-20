@@ -102,13 +102,15 @@ pub fn allocation_from_proto(spec: &pb::AllocationSpec, user: &str) -> Result<Al
 
     // F16: Validate reactive lifecycle min <= max.
     if let Some(ref l) = spec.lifecycle {
-        if l.reactive_min_nodes > 0 && l.reactive_max_nodes > 0
-            && l.reactive_min_nodes > l.reactive_max_nodes {
-                return Err(format!(
-                    "reactive min_nodes ({}) must be <= max_nodes ({})",
-                    l.reactive_min_nodes, l.reactive_max_nodes
-                ));
-            }
+        if l.reactive_min_nodes > 0
+            && l.reactive_max_nodes > 0
+            && l.reactive_min_nodes > l.reactive_max_nodes
+        {
+            return Err(format!(
+                "reactive min_nodes ({}) must be <= max_nodes ({})",
+                l.reactive_min_nodes, l.reactive_max_nodes
+            ));
+        }
     }
 
     // F17: Validate service endpoint ports.

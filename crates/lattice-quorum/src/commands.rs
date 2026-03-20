@@ -4,7 +4,8 @@ use chrono::{DateTime, Utc};
 use lattice_common::traits::AuditEntry;
 use lattice_common::types::{
     AllocId, Allocation, AllocationState, CostWeights, IsolationLevel, Node, NodeId, NodeOwnership,
-    NodeState, Tenant, TenantId, TenantQuota, TopologyModel, VCluster, VClusterId,
+    NodeState, Session, SessionId, Tenant, TenantId, TenantQuota, TopologyModel, VCluster,
+    VClusterId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -30,8 +31,10 @@ pub enum Command {
     },
     /// Re-queue a failed allocation back to Pending (service reconciliation).
     /// Increments requeue_count, clears assigned_nodes, resets timestamps.
+    /// F14: expected_requeue_count prevents double-increment from concurrent reconcilers.
     RequeueAllocation {
         id: AllocId,
+        expected_requeue_count: Option<u32>,
     },
 
     // ── Node commands ───────────────────────────────────────
@@ -94,6 +97,12 @@ pub enum Command {
         name: String,
     },
 
+    // ── Session commands (F20: global session tracking) ─────
+    CreateSession(Session),
+    DeleteSession {
+        session_id: SessionId,
+    },
+
     // ── Audit commands ──────────────────────────────────────
     RecordAudit(AuditEntry),
 
@@ -118,7 +127,7 @@ impl fmt::Display for Command {
             Command::AssignNodes { id, nodes, .. } => {
                 write!(f, "AssignNodes({id}, {} nodes)", nodes.len())
             }
-            Command::RequeueAllocation { id } => write!(f, "RequeueAllocation({id})"),
+            Command::RequeueAllocation { id, .. } => write!(f, "RequeueAllocation({id})"),
             Command::RegisterNode(n) => write!(f, "RegisterNode({})", n.id),
             Command::UpdateNodeState { id, state, .. } => {
                 write!(f, "UpdateNodeState({id}, {state:?})")
@@ -138,6 +147,10 @@ impl fmt::Display for Command {
             Command::UpdateVCluster { id, .. } => write!(f, "UpdateVCluster({id})"),
             Command::UpdateTopology(_) => write!(f, "UpdateTopology"),
             Command::SetSensitivePoolSize(s) => write!(f, "SetSensitivePoolSize({s:?})"),
+            Command::CreateSession(s) => write!(f, "CreateSession({})", s.id),
+            Command::DeleteSession { session_id } => {
+                write!(f, "DeleteSession({session_id})")
+            }
             Command::RecordAudit(e) => write!(f, "RecordAudit({})", e.event.action),
             Command::CompactAuditLog {
                 entries_to_archive, ..
@@ -151,6 +164,7 @@ impl fmt::Display for Command {
 pub enum CommandResponse {
     Ok,
     AllocationId(AllocId),
+    SessionId(SessionId),
     NodeId(NodeId),
     TenantId(TenantId),
     VClusterId(VClusterId),
@@ -162,6 +176,7 @@ impl fmt::Display for CommandResponse {
         match self {
             CommandResponse::Ok => write!(f, "Ok"),
             CommandResponse::AllocationId(id) => write!(f, "AllocationId({id})"),
+            CommandResponse::SessionId(id) => write!(f, "SessionId({id})"),
             CommandResponse::NodeId(id) => write!(f, "NodeId({id})"),
             CommandResponse::TenantId(id) => write!(f, "TenantId({id})"),
             CommandResponse::VClusterId(id) => write!(f, "VClusterId({id})"),

@@ -91,9 +91,11 @@ pub trait SchedulerCommandSink: Send + Sync {
         Ok(())
     }
     /// Requeue a failed allocation back to Pending (service reconciliation).
+    /// F14: expected_requeue_count enables optimistic concurrency.
     async fn requeue(
         &self,
         _alloc_id: lattice_common::types::AllocId,
+        _expected_requeue_count: u32,
     ) -> Result<(), lattice_common::error::LatticeError> {
         Ok(())
     }
@@ -164,7 +166,7 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
         for alloc in &failed {
             if Self::should_requeue(alloc) {
                 info!(alloc_id = %alloc.id, requeue_count = alloc.requeue_count, max = alloc.max_requeue, "Reconciler: requeuing failed service");
-                if let Err(e) = self.sink.requeue(alloc.id).await {
+                if let Err(e) = self.sink.requeue(alloc.id, alloc.requeue_count).await {
                     warn!(alloc_id = %alloc.id, error = %e, "Reconciler: failed to requeue");
                 } else {
                     requeued_ids.insert(alloc.id);
@@ -990,7 +992,11 @@ mod tests {
             self.running.lock().await.push(alloc_id);
             Ok(())
         }
-        async fn requeue(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
+        async fn requeue(
+            &self,
+            alloc_id: AllocId,
+            _expected_requeue_count: u32,
+        ) -> Result<(), LatticeError> {
             self.requeued.lock().await.push(alloc_id);
             Ok(())
         }

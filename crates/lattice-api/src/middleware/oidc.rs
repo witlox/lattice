@@ -209,11 +209,29 @@ pub struct JwtOidcValidator {
 impl JwtOidcValidator {
     /// Create a new JWT OIDC validator.
     pub fn new(config: OidcConfig) -> Self {
+        // F09: Enforce HTTPS on issuer URL (allow http://localhost for dev)
+        if !config.issuer_url.starts_with("https://")
+            && !config.issuer_url.starts_with("http://localhost")
+            && !config.issuer_url.starts_with("http://127.0.0.1")
+        {
+            tracing::warn!(
+                issuer = %config.issuer_url,
+                "OIDC issuer URL is not HTTPS — vulnerable to MITM. Use https:// in production."
+            );
+        }
+
+        // F09: Disable HTTP redirect following to prevent JWKS cache poisoning
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+
         Self {
             issuer_url: config.issuer_url,
             audience: config.audience,
             required_scopes: config.required_scopes,
-            client: reqwest::Client::new(),
+            client,
             jwks_cache: Arc::new(RwLock::new(None)),
         }
     }

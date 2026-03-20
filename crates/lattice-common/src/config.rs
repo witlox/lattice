@@ -135,6 +135,11 @@ pub struct QuorumConfig {
     /// See PACT ADR-017: lattice traffic runs on HSN, PACT on management.
     #[serde(default = "default_bind_network")]
     pub bind_network: BindNetwork,
+    /// Path to Ed25519 signing key for audit log entries (F10).
+    /// When None, a random key is generated (dev/test mode only).
+    /// Production deployments MUST set this to a persistent key file.
+    #[serde(default)]
+    pub audit_signing_key_path: Option<PathBuf>,
 }
 
 fn default_raft_listen_address() -> String {
@@ -176,6 +181,7 @@ impl Default for QuorumConfig {
             raft_listen_address: default_raft_listen_address(),
             data_dir: None,
             bind_network: BindNetwork::Any,
+            audit_signing_key_path: None,
         }
     }
 }

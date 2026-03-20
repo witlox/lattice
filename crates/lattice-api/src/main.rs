@@ -170,6 +170,18 @@ async fn main() -> Result<()> {
 
     // ── Raft Quorum ────────────────────────────────────────────────────────
     let (quorum, _raft_handle) = lattice_quorum::create_quorum_from_config(&config.quorum).await?;
+
+    // F10: Load persistent audit signing key if configured
+    if let Some(ref key_path) = config.quorum.audit_signing_key_path {
+        let mut state = quorum.state().write().await;
+        state
+            .load_signing_key_from_file(key_path)
+            .map_err(|e| anyhow::anyhow!("audit signing key: {e}"))?;
+        info!("Audit signing key loaded from {}", key_path.display());
+    } else {
+        tracing::warn!("No audit_signing_key_path configured — using random key (dev mode only)");
+    }
+
     let quorum = Arc::new(quorum);
 
     if config.quorum.peers.is_empty() {

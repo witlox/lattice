@@ -33,6 +33,12 @@ impl LatticeAllocationService {
             .unwrap_or("anonymous")
             .to_string()
     }
+
+    fn extract_tenant(req: &tonic::metadata::MetadataMap) -> Option<String> {
+        req.get("x-lattice-tenant")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    }
 }
 
 type StreamPin<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
@@ -214,8 +220,21 @@ impl AllocationService for LatticeAllocationService {
         &self,
         request: Request<pb::ListAllocationsRequest>,
     ) -> Result<Response<pb::ListAllocationsResponse>, Status> {
+        let requesting_tenant = Self::extract_tenant(request.metadata());
         let req = request.into_inner();
-        let filter = convert::filter_from_list_request(&req);
+        let mut filter = convert::filter_from_list_request(&req);
+
+        // F04: Enforce tenant scoping — if requester has a tenant, constrain results
+        if let Some(ref tenant) = requesting_tenant {
+            if filter.tenant.is_some() && filter.tenant.as_ref() != Some(tenant) {
+                return Err(Status::permission_denied(format!(
+                    "cannot list allocations for tenant '{}' (you are '{}')",
+                    filter.tenant.as_deref().unwrap_or(""),
+                    tenant
+                )));
+            }
+            filter.tenant = Some(tenant.clone());
+        }
 
         let allocations = self
             .state

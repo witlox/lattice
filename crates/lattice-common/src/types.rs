@@ -13,6 +13,18 @@ pub type GroupId = u32; // dragonfly group index
 pub type UserId = String; // OIDC subject
 pub type LaunchId = Uuid;
 
+pub type SessionId = Uuid;
+
+/// An interactive session attached to a running allocation.
+/// Tracked in quorum state for global session limit enforcement (F20).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub id: SessionId,
+    pub allocation_id: AllocId,
+    pub user: UserId,
+    pub created_at: DateTime<Utc>,
+}
+
 // ─── Allocation ─────────────────────────────────────────────
 
 /// The universal work unit. Replaces both Slurm jobs and K8s pods.
