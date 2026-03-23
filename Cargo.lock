@@ -567,9 +567,9 @@ dependencies = [
 
 [[package]]
 name = "config"
-version = "0.15.21"
+version = "0.15.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fe5feec195269515c4722937cd7ffcfe7b4205d18d2e6577b7223ecb159ab00"
+checksum = "8e68cfe19cd7d23ffde002c24ffa5cda73931913ef394d5eaaa32037dc940c0c"
 dependencies = [
  "async-trait",
  "convert_case 0.6.0",
@@ -581,7 +581,7 @@ dependencies = [
  "serde_core",
  "serde_json",
  "toml",
- "winnow",
+ "winnow 1.0.0",
  "yaml-rust2",
 ]
 
@@ -1423,9 +1423,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hpc-audit"
-version = "2026.1.25"
+version = "2026.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "739f5edff0f8d844a4081fa389e4a3aba7c83c119d6e67d79857789f882348e4"
+checksum = "fb3411de0c162a38a8e62587013917fad0d4afa51a25b27a249e1ac33bad2709"
 dependencies = [
  "chrono",
  "serde",
@@ -1435,9 +1435,9 @@ dependencies = [
 
 [[package]]
 name = "hpc-auth"
-version = "2026.1.23"
+version = "2026.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bc99d8f1db99e8ab050e6a5da0366bb9f3221eb02e55c13f302c82b6bfc58eb"
+checksum = "c7738f460c335c562dbfe0f2fccf096f0f02adf9d9c9f1a45a69d491f0e36f4a"
 dependencies = [
  "anyhow",
  "base64",
@@ -1458,9 +1458,9 @@ dependencies = [
 
 [[package]]
 name = "hpc-identity"
-version = "2026.1.25"
+version = "2026.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d7f9bef7632454698eeb0531a1d18bc106bfe00cddb83525568031421f610c3"
+checksum = "ca44fc7daf5538c95dca6028be1e2de23130df7cb2e935ca5d13813dc9f7f7b2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1471,9 +1471,9 @@ dependencies = [
 
 [[package]]
 name = "hpc-node"
-version = "2026.1.25"
+version = "2026.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d7a2582149b62962826c71fcf3db0eb09edda024542834aa380c9a830e23588"
+checksum = "3a09d7859341a5d5ec5330f7e168ca414bb290c260dcea4237478ec966989e3a"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1481,9 +1481,9 @@ dependencies = [
 
 [[package]]
 name = "hpc-scheduler-core"
-version = "2026.1.95"
+version = "2026.1.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b6bf91ecf6f169c6ae81c38c902c59edd591240ea1cb1215d2613bc59f25c7c"
+checksum = "305082480c477e82b814545e23f172580b345aa214fdd8ecb5ae07e5c070e709"
 dependencies = [
  "chrono",
  "serde",
@@ -2130,7 +2130,7 @@ dependencies = [
  "lattice-test-harness",
  "openraft",
  "raft-hpc-core",
- "rand 0.8.5",
+ "rand 0.9.2",
  "serde",
  "serde_json",
  "sha2",
@@ -3075,9 +3075,9 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "raft-hpc-core"
-version = "2026.1.19"
+version = "2026.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b8791f6a508c9b32363c6f98339821021fa8b9fab756e8becc1208785c1aff9"
+checksum = "90bf825a7b2b553213b97ff176d349dd57aa099f2b2a88c00cb7772c9de2316b"
 dependencies = [
  "chrono",
  "flate2",
@@ -3995,9 +3995,9 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tar"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d863878d212c87a19c1a610eb53bb01fe12951c0501cf5a0d65f724914a667a"
+checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
 dependencies = [
  "filetime",
  "libc",
@@ -4238,17 +4238,17 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.0.6+spec-1.1.0"
+version = "1.0.7+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "399b1124a3c9e16766831c6bba21e50192572cdd98706ea114f9502509686ffc"
+checksum = "dd28d57d8a6f6e458bc0b8784f8fdcc4b99a437936056fa122cb234f18656a96"
 dependencies = [
  "indexmap",
  "serde_core",
  "serde_spanned",
- "toml_datetime 1.0.0+spec-1.1.0",
+ "toml_datetime 1.0.1+spec-1.1.0",
  "toml_parser",
  "toml_writer",
- "winnow",
+ "winnow 1.0.0",
 ]
 
 [[package]]
@@ -4262,9 +4262,9 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "1.0.0+spec-1.1.0"
+version = "1.0.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32c2555c699578a4f59f0cc68e5116c8d7cabbd45e1409b989d4be085b53f13e"
+checksum = "9b320e741db58cac564e26c607d3cc1fdc4a88fd36c879568c07856ed83ff3e9"
 dependencies = [
  "serde_core",
 ]
@@ -4278,23 +4278,23 @@ dependencies = [
  "indexmap",
  "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
- "winnow",
+ "winnow 0.7.15",
 ]
 
 [[package]]
 name = "toml_parser"
-version = "1.0.9+spec-1.1.0"
+version = "1.0.10+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4"
+checksum = "7df25b4befd31c4816df190124375d5a20c6b6921e2cad937316de3fccd63420"
 dependencies = [
- "winnow",
+ "winnow 1.0.0",
 ]
 
 [[package]]
 name = "toml_writer"
-version = "1.0.6+spec-1.1.0"
+version = "1.0.7+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab16f14aed21ee8bfd8ec22513f7287cd4a91aa92e44edfe2c17ddd004e92607"
+checksum = "f17aaa1c6e3dc22b1da4b6bba97d066e354c7945cac2f7852d4e4e7ca7a6b56d"
 
 [[package]]
 name = "tonic"
@@ -4460,9 +4460,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-subscriber"
-version = "0.3.22"
+version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f30143827ddab0d256fd843b7a66d164e9f271cfa0dde49142c5ca0ca291f1e"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
  "matchers",
  "nu-ansi-term",
@@ -5129,6 +5129,15 @@ name = "winnow"
 version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "winnow"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a90e88e4667264a994d34e6d1ab2d26d398dcdca8b7f52bec8668957517fc7d8"
 dependencies = [
  "memchr",
 ]
