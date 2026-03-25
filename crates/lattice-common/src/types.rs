@@ -667,6 +667,11 @@ pub struct TenantQuota {
     pub fair_share_target: f64,
     /// GPU-hours budget (None = unlimited)
     pub gpu_hours_budget: Option<f64>,
+    /// Node-hours budget (None = unlimited). Universal metric that works
+    /// for both GPU and CPU-only nodes. When both gpu_hours_budget and
+    /// node_hours_budget are set, the worse utilization drives the penalty.
+    #[serde(default)]
+    pub node_hours_budget: Option<f64>,
     /// Maximum concurrent allocations (hard limit per quota-enforcement)
     pub max_concurrent_allocations: Option<u32>,
     /// Burst allowance multiplier (e.g. 1.5 = allow up to 150% of fair share

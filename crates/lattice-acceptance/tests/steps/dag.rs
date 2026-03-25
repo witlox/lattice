@@ -200,6 +200,7 @@ fn scheduler_runs_dag_cycle(world: &mut LatticeWorld) {
         data_readiness: HashMap::new(),
         energy_price: 0.5,
         timeline_config: TimelineConfig::default(),
+        budget_utilization: HashMap::new(),
     };
 
     let result = run_cycle(&input, &weights);

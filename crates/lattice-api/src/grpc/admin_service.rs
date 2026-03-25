@@ -80,6 +80,7 @@ impl AdminService for LatticeAdminService {
                 max_nodes: q.max_nodes,
                 fair_share_target: q.fair_share_target,
                 gpu_hours_budget: q.gpu_hours_budget,
+                node_hours_budget: None,
                 max_concurrent_allocations: q.max_concurrent_allocations,
                 burst_allowance: None,
             });
@@ -128,6 +129,7 @@ impl AdminService for LatticeAdminService {
                     max_nodes: quota.max_nodes,
                     fair_share_target: quota.fair_share_target,
                     gpu_hours_budget: quota.gpu_hours_budget,
+                    node_hours_budget: None,
                     max_concurrent_allocations: quota.max_concurrent_allocations,
                     burst_allowance: None,
                 };

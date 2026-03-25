@@ -187,6 +187,7 @@ Tenant {
 
   // Soft quotas (scheduler-enforced, INV-E6)
   gpu_hours_budget: Option<f64>,
+  node_hours_budget: Option<f64>,
   fair_share_target: Option<f64>,
   burst_allowance: Option<f64>,
 }

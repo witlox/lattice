@@ -144,7 +144,7 @@ Cross-context coordination mechanisms (not contexts themselves):
 
 **Tenant** — Organizational boundary. Owns projects, users, quotas.
 - Hard quotas (Raft-enforced): max_nodes, max_concurrent_allocations, sensitive_pool_size
-- Soft quotas (scheduler-enforced): gpu_hours_budget, fair_share_target, burst_allowance
+- Soft quotas (scheduler-enforced): gpu_hours_budget, node_hours_budget, fair_share_target, burst_allowance
 - Quotas are global (not per-vCluster)
 
 **User** — Authenticated via OIDC. Identity is the OIDC subject claim. For sensitive workloads, the User (not Tenant) claims nodes.

@@ -43,6 +43,7 @@ fn cycle_input(
         data_readiness: HashMap::new(),
         energy_price: 0.5,
         timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
+        budget_utilization: HashMap::new(),
     }
 }
 
@@ -712,6 +713,7 @@ fn cost_weights_drive_placement_order_across_cycle() {
         data_readiness: HashMap::new(),
         energy_price: 0.5,
         timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
+        budget_utilization: HashMap::new(),
     };
 
     let result = run_cycle(&input, &weights);

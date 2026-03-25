@@ -507,6 +507,7 @@ fn when_scheduler_runs_cycle(world: &mut LatticeWorld) {
             data_readiness: HashMap::new(),
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
+            budget_utilization: HashMap::new(),
         };
         let weights = world
             .vclusters

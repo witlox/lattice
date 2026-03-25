@@ -47,6 +47,15 @@ pub trait SchedulerStateReader: Send + Sync {
     ) -> Result<Vec<lattice_common::types::Allocation>, lattice_common::error::LatticeError> {
         Ok(vec![])
     }
+    /// Read completed/failed/cancelled allocations within a time window.
+    /// Used by the budget ledger to compute GPU-hours consumed.
+    /// Default returns empty (opt-in for budget tracking).
+    async fn terminal_allocations_since(
+        &self,
+        _since: DateTime<Utc>,
+    ) -> Result<Vec<lattice_common::types::Allocation>, lattice_common::error::LatticeError> {
+        Ok(vec![])
+    }
 }
 
 /// Applies scheduling decisions to the cluster.
@@ -112,6 +121,8 @@ pub struct SchedulerLoopConfig {
     pub energy_price: f64,
     /// Resource timeline configuration for backfill scheduling.
     pub timeline_config: TimelineConfig,
+    /// Rolling window for GPU-hours budget tracking (days).
+    pub budget_period_days: u32,
 }
 
 impl Default for SchedulerLoopConfig {
@@ -121,6 +132,7 @@ impl Default for SchedulerLoopConfig {
             weights: CostWeights::default(),
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
+            budget_period_days: 90,
         }
     }
 }
@@ -190,6 +202,24 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
             let tenants = self.reader.tenants().await?;
             let topology = self.reader.topology().await;
 
+            // ── Budget ledger: compute GPU-hours utilization per tenant ──
+            let now = Utc::now();
+            let period_start = now - chrono::Duration::days(self.config.budget_period_days as i64);
+            let terminal = self
+                .reader
+                .terminal_allocations_since(period_start)
+                .await
+                .unwrap_or_default();
+            // Combine running + terminal allocations for budget computation
+            let budget_allocs: Vec<_> = running.iter().chain(terminal.iter()).cloned().collect();
+            let budget_utilization = crate::quota::compute_budget_utilization(
+                &tenants,
+                &budget_allocs,
+                &nodes,
+                self.config.budget_period_days,
+                now,
+            );
+
             let input = CycleInput {
                 pending: pending.clone(),
                 running: running.clone(),
@@ -199,6 +229,7 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                 data_readiness: HashMap::new(),
                 energy_price: self.config.energy_price,
                 timeline_config: self.config.timeline_config.clone(),
+                budget_utilization,
             };
 
             let result = run_cycle(&input, &self.config.weights);

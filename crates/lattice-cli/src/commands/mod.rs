@@ -12,6 +12,7 @@ pub mod session;
 pub mod status;
 pub mod submit;
 pub mod top;
+pub mod usage;
 pub mod watch;
 
 use clap::{Parser, Subcommand};
@@ -75,6 +76,9 @@ pub enum Command {
 
     /// Interactive session management
     Session(session::SessionArgs),
+
+    /// Show GPU-hours budget usage
+    Usage(usage::UsageArgs),
 
     /// DAG workflow management
     Dag(dag::DagArgs),

@@ -658,6 +658,7 @@ fn quota_from_proto(q: &pb::TenantQuotaSpec) -> TenantQuota {
         max_nodes: q.max_nodes,
         fair_share_target: q.fair_share_target,
         gpu_hours_budget: q.gpu_hours_budget,
+        node_hours_budget: None,
         max_concurrent_allocations: q.max_concurrent_allocations,
         burst_allowance: None,
     }
@@ -677,6 +678,7 @@ fn default_quota() -> TenantQuota {
         max_nodes: 100,
         fair_share_target: 0.0,
         gpu_hours_budget: None,
+        node_hours_budget: None,
         max_concurrent_allocations: None,
         burst_allowance: None,
     }

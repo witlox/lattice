@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use lattice_common::types::*;
 
 use crate::conformance::{conformance_fitness, memory_locality_score};
-use crate::cost::{BacklogMetrics, CostContext};
+use crate::cost::{BacklogMetrics, BudgetUtilization, CostContext};
 use crate::knapsack::KnapsackSolver;
 use crate::placement::SchedulingResult;
 use crate::quota::compute_tenant_usage;
@@ -33,6 +33,8 @@ pub struct CycleInput {
     pub energy_price: f64,
     /// Resource timeline configuration
     pub timeline_config: TimelineConfig,
+    /// Pre-computed budget utilization per tenant (from internal ledger or Waldur)
+    pub budget_utilization: HashMap<TenantId, BudgetUtilization>,
 }
 
 /// Run a single scheduling cycle.
@@ -57,7 +59,7 @@ pub fn run_cycle(input: &CycleInput, weights: &CostWeights) -> SchedulingResult 
     // Build cost context
     let ctx = CostContext {
         tenant_usage,
-        budget_utilization: std::collections::HashMap::new(),
+        budget_utilization: input.budget_utilization.clone(),
         backlog: BacklogMetrics {
             queued_gpu_hours,
             running_gpu_hours,
@@ -151,6 +153,7 @@ mod tests {
             data_readiness: HashMap::new(),
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
+            budget_utilization: HashMap::new(),
         };
 
         let result = run_cycle(&input, &CostWeights::default());
@@ -170,6 +173,7 @@ mod tests {
             data_readiness: HashMap::new(),
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
+            budget_utilization: HashMap::new(),
         };
 
         let result = run_cycle(&input, &CostWeights::default());
@@ -199,6 +203,7 @@ mod tests {
             data_readiness: HashMap::new(),
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
+            budget_utilization: HashMap::new(),
         };
 
         let weights = CostWeights {
@@ -231,6 +236,7 @@ mod tests {
             data_readiness: HashMap::new(),
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
+            budget_utilization: HashMap::new(),
         };
 
         let result = run_cycle(&input, &CostWeights::default());
@@ -278,6 +284,7 @@ mod tests {
             data_readiness: HashMap::new(),
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
+            budget_utilization: HashMap::new(),
         };
 
         let result = run_cycle(&input, &CostWeights::default());
@@ -300,6 +307,7 @@ mod tests {
             data_readiness: HashMap::new(),
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
+            budget_utilization: HashMap::new(),
         };
 
         let result = run_cycle(&input, &CostWeights::default());

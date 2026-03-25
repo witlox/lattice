@@ -320,6 +320,7 @@ async fn drain_scheduler_avoids_drained_nodes() {
         data_readiness: HashMap::new(),
         energy_price: 0.5,
         timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
+        budget_utilization: HashMap::new(),
     };
 
     let result = run_cycle(&input, &CostWeights::default());
@@ -802,6 +803,7 @@ async fn launch_tasks_e2e_with_scheduling() {
         data_readiness: HashMap::new(),
         energy_price: 0.5,
         timeline_config: lattice_scheduler::resource_timeline::TimelineConfig::default(),
+        budget_utilization: HashMap::new(),
     };
 
     let result = run_cycle(&input, &CostWeights::default());
