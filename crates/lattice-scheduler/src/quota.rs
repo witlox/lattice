@@ -178,10 +178,7 @@ pub fn compute_budget_utilization(
             fraction_used = fraction_used.max(node_hours / node_budget);
         }
 
-        result.insert(
-            tenant.id.clone(),
-            BudgetUtilization { fraction_used },
-        );
+        result.insert(tenant.id.clone(), BudgetUtilization { fraction_used });
     }
 
     result
@@ -203,9 +200,7 @@ pub fn compute_tenant_usage_metrics(
     let tenant_allocs: Vec<&Allocation> = allocations
         .iter()
         .filter(|a| {
-            a.tenant == tenant.id
-                && a.started_at.is_some()
-                && a.started_at.unwrap() >= period_start
+            a.tenant == tenant.id && a.started_at.is_some() && a.started_at.unwrap() >= period_start
         })
         .collect();
 
@@ -395,9 +390,18 @@ mod tests {
     fn budget_worst_of_gpu_and_node() {
         let now = Utc::now();
         // GPU budget: loose. Node budget: tight.
-        let mut tenant = TenantBuilder::new("t1").gpu_hours(10000.0).node_hours(25.0).build();
+        let mut tenant = TenantBuilder::new("t1")
+            .gpu_hours(10000.0)
+            .node_hours(25.0)
+            .build();
         let alloc = make_alloc("t1", vec!["n0", "n1"], 10, true);
-        let result = compute_budget_utilization(&[tenant.clone()], &[alloc.clone()], &test_nodes(), 90, now);
+        let result = compute_budget_utilization(
+            std::slice::from_ref(&tenant),
+            std::slice::from_ref(&alloc),
+            &test_nodes(),
+            90,
+            now,
+        );
         // GPU: 80/10000 = 0.008, Node: 20/25 = 0.8 → worst = 0.8
         assert!((result["t1"].fraction_used - 0.8).abs() < 1e-6);
 
@@ -431,7 +435,7 @@ mod tests {
         old.started_at = Some(now - chrono::Duration::days(100));
         old.completed_at = Some(now - chrono::Duration::days(99));
         let result = compute_budget_utilization(&[tenant], &[old], &test_nodes(), 90, now);
-        assert!(result.get("t1").is_none() || result["t1"].fraction_used.abs() < 1e-10);
+        assert!(!result.contains_key("t1") || result["t1"].fraction_used.abs() < 1e-10);
     }
 
     #[test]
@@ -461,10 +465,14 @@ mod tests {
     #[test]
     fn usage_metrics_both_tracked() {
         let now = Utc::now();
-        let tenant = TenantBuilder::new("t1").gpu_hours(1000.0).node_hours(500.0).build();
+        let tenant = TenantBuilder::new("t1")
+            .gpu_hours(1000.0)
+            .node_hours(500.0)
+            .build();
         let alloc = make_alloc("t1", vec!["n0", "n1"], 10, true);
         let period_start = now - chrono::Duration::days(90);
-        let metrics = compute_tenant_usage_metrics(&tenant, &[alloc], &test_nodes(), period_start, now);
+        let metrics =
+            compute_tenant_usage_metrics(&tenant, &[alloc], &test_nodes(), period_start, now);
         assert!((metrics.gpu_hours_used - 80.0).abs() < 1e-6); // 10h × 2 × 4
         assert!((metrics.node_hours_used - 20.0).abs() < 1e-6); // 10h × 2
     }

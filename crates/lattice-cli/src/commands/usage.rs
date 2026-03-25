@@ -73,7 +73,10 @@ pub async fn execute(
 
     if let Some(ref tenant) = args.tenant.as_ref().or(config.tenant.as_ref()) {
         // Tenant-specific usage
-        let url = format!("{}/api/v1/tenants/{}/usage?days={}", base, tenant, args.days);
+        let url = format!(
+            "{}/api/v1/tenants/{}/usage?days={}",
+            base, tenant, args.days
+        );
         let mut req = client.get(&url);
         if let Some(ref token) = config.token {
             req = req.bearer_auth(token);
@@ -97,7 +100,11 @@ pub async fn execute(
             }
             _ => {
                 println!("Tenant:      {}", resp.tenant);
-                println!("Period:      {} to {}", &resp.period_start[..10], &resp.period_end[..10]);
+                println!(
+                    "Period:      {} to {}",
+                    &resp.period_start[..10],
+                    &resp.period_end[..10]
+                );
                 println!(
                     "Node-hours:  {:.1} / {}",
                     resp.node_hours_used,
@@ -168,7 +175,11 @@ pub async fn execute(
                     })
                     .collect();
                 let table = crate::output::render_table(&headers, &rows);
-                println!("Period: {} to {}", &resp.period_start[..10], &resp.period_end[..10]);
+                println!(
+                    "Period: {} to {}",
+                    &resp.period_start[..10],
+                    &resp.period_end[..10]
+                );
                 print!("{table}");
                 println!("Total:  {:.1} GPU-hours", resp.total_gpu_hours);
             }

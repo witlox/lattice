@@ -205,7 +205,11 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
             // ── Budget ledger: compute GPU-hours utilization per tenant ──
             let now = Utc::now();
             let period_start = now - chrono::Duration::days(self.config.budget_period_days as i64);
-            let terminal = self.reader.terminal_allocations_since(period_start).await.unwrap_or_default();
+            let terminal = self
+                .reader
+                .terminal_allocations_since(period_start)
+                .await
+                .unwrap_or_default();
             // Combine running + terminal allocations for budget computation
             let budget_allocs: Vec<_> = running.iter().chain(terminal.iter()).cloned().collect();
             let budget_utilization = crate::quota::compute_budget_utilization(
