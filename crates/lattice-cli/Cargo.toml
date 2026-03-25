@@ -28,7 +28,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 reqwest = { workspace = true }
 clap_complete = "4"
-toml = "1.0"
+toml = "1.1"
 dirs = "6"
 hpc-auth = { workspace = true }
 
