@@ -55,6 +55,36 @@ burst_allowance: 1.5  # allow up to 150% of fair share when resources idle
 
 **Behavior:** Allows temporary over-allocation when the system has spare capacity. When demand increases and other tenants need their share, burst allocations are the first candidates for preemption (via checkpoint cost model).
 
+## Internal Budget Ledger
+
+When Waldur is unavailable or not configured, the scheduler computes GPU-hours consumption internally from allocation records in the quorum. This replaces the previously empty `budget_utilization` map in the cost function.
+
+### Computation
+
+```
+gpu_hours_used = Σ (end_time - started_at).hours × assigned_nodes.len() × gpu_count_per_node
+```
+
+- For running allocations: `end_time = now`
+- For completed/failed/cancelled: `end_time = completed_at`
+- Only allocations within the configured `budget_period_days` (default: 90 days, rolling window) are included
+- Node GPU count looked up from current hardware inventory; unknown nodes default to 1 GPU
+
+### Budget Period
+
+Configurable via `scheduling.budget_period_days` (default: 90). This is a **rolling window**, not a calendar-aligned reset. Calendar-aligned resets require Waldur to push new `gpu_hours_budget` values at period boundaries.
+
+### Waldur Override
+
+When Waldur is available, its `remaining_budget()` response takes precedence over the internal ledger. When Waldur is unavailable (transient failure), the internal ledger provides fallback data so budget enforcement continues.
+
+### API Access
+
+- `GET /api/v1/tenants/{id}/usage?days=90` — tenant GPU-hours usage
+- `GET /api/v1/usage?user=alice&days=90` — per-user usage across tenants
+- `lattice usage --tenant physics` — CLI convenience
+- `lattice usage` — show usage across all tenants for current user
+
 ## Exhausted Budget Behavior
 
 ### GPU-Hours Budget Exhausted

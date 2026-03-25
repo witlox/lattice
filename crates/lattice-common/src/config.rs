@@ -353,6 +353,14 @@ pub struct SchedulingConfig {
     pub cycle_interval_seconds: u64,
     /// Maximum number of jobs to consider during backfill pass
     pub backfill_depth: u32,
+    /// Rolling window for GPU-hours budget tracking (days).
+    /// Allocations older than this are excluded from budget utilization.
+    #[serde(default = "default_budget_period_days")]
+    pub budget_period_days: u32,
+}
+
+fn default_budget_period_days() -> u32 {
+    90
 }
 
 impl Default for SchedulingConfig {
@@ -360,6 +368,7 @@ impl Default for SchedulingConfig {
         Self {
             cycle_interval_seconds: 5,
             backfill_depth: 100,
+            budget_period_days: default_budget_period_days(),
         }
     }
 }
@@ -529,6 +538,7 @@ mod tests {
         let cfg = SchedulingConfig::default();
         assert_eq!(cfg.cycle_interval_seconds, 5);
         assert_eq!(cfg.backfill_depth, 100);
+        assert_eq!(cfg.budget_period_days, 90);
     }
 
     #[test]

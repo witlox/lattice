@@ -148,10 +148,10 @@ Fail-safe defaults. Running allocations survive component failures. No silent fa
 |---|---|
 | **Detection** | Failed API calls |
 | **Blast radius** | Accounting events buffered. Quota updates from Waldur delayed. |
-| **Degradation** | Scheduling continues unaffected (INV-N5). Events buffered in memory (10K) then disk (100K). |
-| **Recovery** | Buffered events replayed in order on reconnection. |
+| **Degradation** | Scheduling continues unaffected (INV-N5). Events buffered in memory (10K) then disk (100K). Budget enforcement falls back to internal ledger (IP-10a): GPU-hours computed from allocation history in quorum state. Budget penalty in cost function remains active. |
+| **Recovery** | Buffered events replayed in order on reconnection. When Waldur recovers, its `remaining_budget` takes precedence over internal ledger. |
 | **Data loss** | If both buffers full: events dropped (counter metric). Reconstructable from quorum logs via reconciliation. |
-| **Unacceptable** | Scheduling blocked by accounting failure. |
+| **Unacceptable** | Scheduling blocked by accounting failure. Budget enforcement disabled silently (must fall back to internal ledger, not to "unlimited"). |
 
 ### FM-14: TSDB Unavailable (VictoriaMetrics Down)
 

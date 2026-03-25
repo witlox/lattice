@@ -218,6 +218,31 @@ hpc-core integration (trait-based, no code coupling):
 
 **Guarantee:** Accounting never blocks scheduling (INV-N5).
 
+---
+
+### IP-10a: Scheduling ← Consensus (Internal Budget Ledger)
+
+**Direction:** Scheduler reads allocation history from quorum state to compute GPU-hours usage per tenant.
+
+**Contract:**
+- Input: All allocations with `started_at` set (Running + terminal states) within the budget period
+- Computation: `Σ (end_time - started_at).hours × assigned_nodes.len() × gpu_count_per_node`
+  - For running allocations: `end_time = now`
+  - For completed/failed/cancelled: `end_time = completed_at`
+- Output: `BudgetUtilization { fraction_used }` per tenant, fed into cost function
+- Period: configurable `budget_period_days` (default 90), rolling window
+
+**Relationship to Waldur (IP-10):**
+- Without Waldur: internal ledger is the sole source of budget utilization
+- With Waldur available: Waldur's `remaining_budget()` takes precedence
+- With Waldur unavailable (transient): internal ledger used as fallback
+
+**Failure modes:**
+- Quorum unavailable → scheduler cannot read allocations → no budget data → penalty defaults to 0.0 (no penalty). Acceptable because scheduling also pauses when quorum is down.
+- Clock skew between scheduler replicas → minor GPU-hours discrepancy (~seconds). Acceptable.
+
+**Guarantee:** Budget computation is read-only on Raft-committed state. No new writes. No external dependencies.
+
 ## hpc-core Integration Points
 
 ### IP-11: Node Management ↔ PACT (Namespace Handoff via hpc-node)

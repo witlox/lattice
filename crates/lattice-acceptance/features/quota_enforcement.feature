@@ -19,11 +19,12 @@ Feature: Quota Enforcement
     When I submit a new allocation for tenant "ml-team"
     Then the allocation should be rejected with "QuotaExceeded"
 
-  Scenario: GPU quota enforcement
+  Scenario: GPU budget over-usage applies soft penalty not hard rejection
     Given a tenant "ai-team" with gpu_hours_budget 100
-    And 95 gpu_hours already consumed by tenant "ai-team"
+    And 120 gpu_hours already consumed by tenant "ai-team"
     When I submit an allocation requesting 8 GPUs with walltime "2h" for tenant "ai-team"
-    Then the allocation should be rejected with "QuotaExceeded"
+    Then the allocation should not be rejected
+    And the allocation should receive a severely reduced scheduling score
 
   Scenario: Soft quota overshoot scores lower but not rejected
     Given a tenant "physics" with fair_share_target 0.3

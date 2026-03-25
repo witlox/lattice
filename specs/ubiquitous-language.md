@@ -179,6 +179,12 @@ Configured with: `period_secs`, `initial_delay_secs`, `failure_threshold`, `time
 
 **Waldur** — External accounting and billing system. Lattice pushes usage events; Waldur pushes quota updates. Feature-gated. Failure never blocks scheduling.
 
+**Budget Ledger** — Internal GPU-hours usage tracking computed from allocation history in the quorum. Provides budget utilization data to the cost function without requiring Waldur. When Waldur is available, Waldur's `remaining_budget` takes precedence; when unavailable, the internal ledger is the fallback. The ledger is not a separate store — it is a computation over existing allocation records (started_at, completed_at, assigned_nodes, gpu_count).
+
+**Budget Period** — The time window over which GPU-hours consumption is measured. Configurable per system (default: 90 days). Allocations completed before the period start are excluded from usage computation. The period is a rolling window, not a calendar-aligned reset.
+
+**Budget Utilization** — The fraction of `gpu_hours_budget` consumed within the current budget period. Expressed as `gpu_hours_used / gpu_hours_budget`. Values above 1.0 indicate over-budget. Fed into the cost function as a penalty multiplier (0-80%: no penalty, 80-120%: increasing penalty, >120%: floor at 0.05).
+
 **VAST** — Storage system providing hot tier (NFS + S3). Lattice integrates via REST API for QoS, pre-staging, snapshots, and secure encrypted pools.
 
 ## API Tiers

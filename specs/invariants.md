@@ -126,9 +126,19 @@ These invariants may be briefly violated during consistency windows (bounded by 
 
 **Statement:** Soft quotas (gpu_hours_budget, fair_share_target) may temporarily overshoot but converge within a bounded window (~30s). Over-budget Tenants receive progressively lower scheduling scores.
 
-**Enforcement:** Scheduler cost function factors f3 (fair share) and budget penalty. Eventual consistency window bounded by scheduling cycle time.
+**Enforcement:** Scheduler cost function factors f3 (fair share) and budget penalty. Budget utilization computed from internal ledger (allocation history) or Waldur (when available). Eventual consistency window bounded by scheduling cycle time.
 
 **Violation consequence (if self-correction fails):** Unbounded resource consumption by a single Tenant, starvation of others.
+
+---
+
+### INV-E7: Budget Ledger Consistency
+
+**Statement:** The internal budget ledger computes GPU-hours from allocation records (started_at, completed_at, assigned_nodes, gpu_count_per_node). The computation is deterministic: given the same allocation set and timestamp, the result is identical across scheduler replicas.
+
+**Enforcement:** Computation uses only Raft-committed allocation state and wall-clock time. No external dependencies. Waldur override, when available, takes precedence but internal ledger is always available as fallback.
+
+**Violation consequence:** Budget penalty applied inconsistently across scheduling cycles. Tenants may oscillate between penalized and unpenalized states.
 
 ## Ordering Invariants
 

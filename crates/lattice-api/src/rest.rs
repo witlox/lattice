@@ -122,6 +122,8 @@ pub fn router(state: Arc<ApiState>) -> axum::Router {
         .route("/api/v1/vclusters/{id}", get(get_vcluster))
         .route("/api/v1/vclusters/{id}/queue", get(vcluster_queue))
         .route("/api/v1/accounting/usage", get(accounting_usage))
+        .route("/api/v1/tenants/{id}/usage", get(tenant_usage))
+        .route("/api/v1/usage", get(user_usage))
         .route("/api/v1/raft/status", get(raft_status))
         .route("/api/v1/admin/backup", post(create_backup))
         .route("/api/v1/admin/backup/verify", post(verify_backup))
@@ -1982,6 +1984,200 @@ async fn accounting_usage(
         )
             .into_response()
     }
+}
+
+// ─── Tenant Usage (Internal Budget Ledger) ──────────────────
+
+#[derive(Serialize)]
+struct TenantUsageResponse {
+    tenant: String,
+    gpu_hours_used: f64,
+    gpu_hours_budget: Option<f64>,
+    fraction_used: Option<f64>,
+    period_start: String,
+    period_end: String,
+    period_days: u32,
+}
+
+#[derive(Deserialize)]
+struct TenantUsageQuery {
+    #[serde(default = "default_usage_days")]
+    days: u32,
+}
+
+fn default_usage_days() -> u32 {
+    90
+}
+
+async fn tenant_usage(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+    Query(query): Query<TenantUsageQuery>,
+) -> impl IntoResponse {
+    let Some(ref quorum) = state.quorum else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "quorum not available".into(),
+            }),
+        )
+            .into_response();
+    };
+
+    let gs = quorum.state().read().await;
+    let Some(tenant) = gs.tenants.get(&id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("tenant '{}' not found", id),
+            }),
+        )
+            .into_response();
+    };
+    let tenant = tenant.clone();
+    drop(gs);
+
+    let now = chrono::Utc::now();
+    let period_days = query.days;
+    let period_start = now - chrono::Duration::days(period_days as i64);
+
+    // Get all allocations for this tenant with started_at set
+    let allocs = state
+        .allocations
+        .list(&lattice_common::traits::AllocationFilter {
+            tenant: Some(id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+
+    // Get nodes for GPU count lookup
+    let nodes = state
+        .nodes
+        .list_nodes(&lattice_common::traits::NodeFilter::default())
+        .await
+        .unwrap_or_default();
+
+    let gpu_hours_used = lattice_scheduler::quota::compute_tenant_gpu_hours(
+        &tenant,
+        &allocs,
+        &nodes,
+        period_start,
+        now,
+    );
+
+    let fraction_used = tenant
+        .quota
+        .gpu_hours_budget
+        .filter(|b| *b > 0.0)
+        .map(|b| gpu_hours_used / b);
+
+    (
+        StatusCode::OK,
+        Json(TenantUsageResponse {
+            tenant: id,
+            gpu_hours_used,
+            gpu_hours_budget: tenant.quota.gpu_hours_budget,
+            fraction_used,
+            period_start: period_start.to_rfc3339(),
+            period_end: now.to_rfc3339(),
+            period_days,
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Serialize)]
+struct UserUsageResponse {
+    user: String,
+    tenants: Vec<UserTenantUsage>,
+    total_gpu_hours: f64,
+    period_start: String,
+    period_end: String,
+}
+
+#[derive(Serialize)]
+struct UserTenantUsage {
+    tenant: String,
+    gpu_hours_used: f64,
+    gpu_hours_budget: Option<f64>,
+    fraction_used: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct UserUsageQuery {
+    user: String,
+    #[serde(default = "default_usage_days")]
+    days: u32,
+}
+
+async fn user_usage(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<UserUsageQuery>,
+) -> impl IntoResponse {
+    let now = chrono::Utc::now();
+    let period_start = now - chrono::Duration::days(query.days as i64);
+
+    let allocs = state
+        .allocations
+        .list(&lattice_common::traits::AllocationFilter {
+            user: Some(query.user.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+
+    let nodes = state
+        .nodes
+        .list_nodes(&lattice_common::traits::NodeFilter::default())
+        .await
+        .unwrap_or_default();
+
+    let by_tenant = lattice_scheduler::quota::compute_user_gpu_hours(
+        &query.user,
+        &allocs,
+        &nodes,
+        period_start,
+        now,
+    );
+
+    // Look up budgets from quorum if available
+    let tenant_budgets: std::collections::HashMap<String, Option<f64>> =
+        if let Some(ref quorum) = state.quorum {
+            let gs = quorum.state().read().await;
+            gs.tenants
+                .iter()
+                .map(|(id, t)| (id.clone(), t.quota.gpu_hours_budget))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
+    let total_gpu_hours: f64 = by_tenant.values().sum();
+    let tenants: Vec<UserTenantUsage> = by_tenant
+        .into_iter()
+        .map(|(tid, hours)| {
+            let budget = tenant_budgets.get(&tid).copied().flatten();
+            UserTenantUsage {
+                tenant: tid,
+                gpu_hours_used: hours,
+                gpu_hours_budget: budget,
+                fraction_used: budget.filter(|b| *b > 0.0).map(|b| hours / b),
+            }
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(UserUsageResponse {
+            user: query.user,
+            tenants,
+            total_gpu_hours,
+            period_start: period_start.to_rfc3339(),
+            period_end: now.to_rfc3339(),
+        }),
+    )
+        .into_response()
 }
 
 // ─── Service Discovery ──────────────────────────────────────
