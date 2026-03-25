@@ -61,14 +61,19 @@ When Waldur is unavailable or not configured, the scheduler computes GPU-hours c
 
 ### Computation
 
+Two metrics are tracked:
+
 ```
-gpu_hours_used = Σ (end_time - started_at).hours × assigned_nodes.len() × gpu_count_per_node
+node_hours_used = Σ (end_time - started_at).hours × assigned_nodes.len()
+gpu_hours_used  = Σ (end_time - started_at).hours × Σ gpu_count_per_node
 ```
 
 - For running allocations: `end_time = now`
 - For completed/failed/cancelled: `end_time = completed_at`
 - Only allocations within the configured `budget_period_days` (default: 90 days, rolling window) are included
 - Node GPU count looked up from current hardware inventory; unknown nodes default to 1 GPU
+- Node-hours is the universal metric (works for CPU-only and GPU nodes)
+- When both `gpu_hours_budget` and `node_hours_budget` are set, the **worse** (higher) utilization fraction drives the budget penalty
 
 ### Budget Period
 

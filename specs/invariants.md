@@ -134,7 +134,7 @@ These invariants may be briefly violated during consistency windows (bounded by 
 
 ### INV-E7: Budget Ledger Consistency
 
-**Statement:** The internal budget ledger computes GPU-hours from allocation records (started_at, completed_at, assigned_nodes, gpu_count_per_node). The computation is deterministic: given the same allocation set and timestamp, the result is identical across scheduler replicas.
+**Statement:** The internal budget ledger computes GPU-hours and node-hours from allocation records (started_at, completed_at, assigned_nodes, gpu_count_per_node). The computation is deterministic: given the same allocation set and timestamp, the result is identical across scheduler replicas. When both budgets are set, the worse utilization fraction drives the penalty.
 
 **Enforcement:** Computation uses only Raft-committed allocation state and wall-clock time. No external dependencies. Waldur override, when available, takes precedence but internal ledger is always available as fallback.
 

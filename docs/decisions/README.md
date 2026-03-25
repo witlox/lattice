@@ -163,7 +163,7 @@ Everything else (job queues, telemetry, quota accounting, session state) is even
 
 **Decision:** Two-tier quota enforcement matching the two consistency domains (ADR-004):
 1. **Hard quotas** (quorum-enforced, strong consistency): `max_nodes`, `max_concurrent_allocations`, `sensitive_pool_size`. Checked during Raft proposal validation. Cannot be violated even momentarily.
-2. **Soft quotas** (scheduler-enforced, eventual consistency): `gpu_hours_budget`, `fair_share_target`, `burst_allowance`. Influence scheduling score but don't hard-block. May temporarily overshoot during consistency window (~30s), self-correcting via fair-share scoring.
+2. **Soft quotas** (scheduler-enforced, eventual consistency): `gpu_hours_budget`, `node_hours_budget`, `fair_share_target`, `burst_allowance`. Influence scheduling score but don't hard-block. May temporarily overshoot during consistency window (~30s), self-correcting via fair-share scoring. When both GPU-hours and node-hours budgets are set, the worse utilization drives the penalty.
 
 **Consequences:**
 - (+) Hard quotas are provably enforced (Raft consensus guarantees).

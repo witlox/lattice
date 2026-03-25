@@ -183,7 +183,9 @@ Configured with: `period_secs`, `initial_delay_secs`, `failure_threshold`, `time
 
 **Budget Period** — The time window over which GPU-hours consumption is measured. Configurable per system (default: 90 days). Allocations completed before the period start are excluded from usage computation. The period is a rolling window, not a calendar-aligned reset.
 
-**Budget Utilization** — The fraction of `gpu_hours_budget` consumed within the current budget period. Expressed as `gpu_hours_used / gpu_hours_budget`. Values above 1.0 indicate over-budget. Fed into the cost function as a penalty multiplier (0-80%: no penalty, 80-120%: increasing penalty, >120%: floor at 0.05).
+**Budget Utilization** — The fraction of budget consumed within the current budget period. Computed from both `gpu_hours_used / gpu_hours_budget` and `node_hours_used / node_hours_budget`. When both budgets are set, the worse (higher) fraction drives the penalty. Values above 1.0 indicate over-budget. Fed into the cost function as a penalty multiplier (0-80%: no penalty, 80-120%: increasing penalty, >120%: floor at 0.05).
+
+**Node-Hours** — The universal resource metric for budget tracking. Computed as `assigned_nodes.len() × elapsed_hours`. Works for all node types (GPU and CPU-only). One node occupied for one hour = one node-hour. Since Lattice does full-node scheduling (ADR-007), there is no fractional node usage.
 
 **VAST** — Storage system providing hot tier (NFS + S3). Lattice integrates via REST API for QoS, pre-staging, snapshots, and secure encrypted pools.
 
