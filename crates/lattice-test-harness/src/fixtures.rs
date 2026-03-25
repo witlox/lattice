@@ -370,6 +370,7 @@ pub struct TenantBuilder {
     max_nodes: u32,
     fair_share_target: f64,
     gpu_hours_budget: Option<f64>,
+    node_hours_budget: Option<f64>,
     max_concurrent_allocations: Option<u32>,
     isolation_level: IsolationLevel,
 }
@@ -382,6 +383,7 @@ impl TenantBuilder {
             max_nodes: 100,
             fair_share_target: 0.1,
             gpu_hours_budget: None,
+            node_hours_budget: None,
             max_concurrent_allocations: None,
             isolation_level: IsolationLevel::Standard,
         }
@@ -407,6 +409,11 @@ impl TenantBuilder {
         self
     }
 
+    pub fn node_hours(mut self, h: f64) -> Self {
+        self.node_hours_budget = Some(h);
+        self
+    }
+
     pub fn max_concurrent(mut self, n: u32) -> Self {
         self.max_concurrent_allocations = Some(n);
         self
@@ -425,6 +432,7 @@ impl TenantBuilder {
                 max_nodes: self.max_nodes,
                 fair_share_target: self.fair_share_target,
                 gpu_hours_budget: self.gpu_hours_budget,
+                node_hours_budget: self.node_hours_budget,
                 max_concurrent_allocations: self.max_concurrent_allocations,
                 burst_allowance: None,
             },

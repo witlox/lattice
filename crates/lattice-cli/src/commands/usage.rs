@@ -23,7 +23,10 @@ struct TenantUsageResponse {
     tenant: String,
     gpu_hours_used: f64,
     gpu_hours_budget: Option<f64>,
-    fraction_used: Option<f64>,
+    gpu_fraction_used: Option<f64>,
+    node_hours_used: f64,
+    node_hours_budget: Option<f64>,
+    node_fraction_used: Option<f64>,
     period_start: String,
     period_end: String,
     #[allow(dead_code)]
@@ -45,7 +48,8 @@ struct UserTenantUsage {
     tenant: String,
     gpu_hours_used: f64,
     gpu_hours_budget: Option<f64>,
-    fraction_used: Option<f64>,
+    node_hours_used: f64,
+    node_hours_budget: Option<f64>,
 }
 
 fn rest_base_url(grpc_endpoint: &str) -> String {
@@ -82,26 +86,37 @@ pub async fn execute(
                     "tenant": resp.tenant,
                     "gpu_hours_used": resp.gpu_hours_used,
                     "gpu_hours_budget": resp.gpu_hours_budget,
-                    "fraction_used": resp.fraction_used,
+                    "gpu_fraction_used": resp.gpu_fraction_used,
+                    "node_hours_used": resp.node_hours_used,
+                    "node_hours_budget": resp.node_hours_budget,
+                    "node_fraction_used": resp.node_fraction_used,
                     "period_start": resp.period_start,
                     "period_end": resp.period_end,
                 });
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
             _ => {
-                println!("Tenant:     {}", resp.tenant);
-                println!("Period:     {} to {}", &resp.period_start[..10], &resp.period_end[..10]);
+                println!("Tenant:      {}", resp.tenant);
+                println!("Period:      {} to {}", &resp.period_start[..10], &resp.period_end[..10]);
                 println!(
-                    "GPU-hours:  {:.1} / {}",
+                    "Node-hours:  {:.1} / {}",
+                    resp.node_hours_used,
+                    resp.node_hours_budget
+                        .map(|b| format!("{:.1}", b))
+                        .unwrap_or_else(|| "unlimited".into())
+                );
+                if let Some(frac) = resp.node_fraction_used {
+                    println!("  Used:      {:.1}% {}", frac * 100.0, budget_bar(frac));
+                }
+                println!(
+                    "GPU-hours:   {:.1} / {}",
                     resp.gpu_hours_used,
                     resp.gpu_hours_budget
                         .map(|b| format!("{:.1}", b))
                         .unwrap_or_else(|| "unlimited".into())
                 );
-                if let Some(frac) = resp.fraction_used {
-                    let pct = frac * 100.0;
-                    let bar = budget_bar(frac);
-                    println!("Used:       {:.1}% {}", pct, bar);
+                if let Some(frac) = resp.gpu_fraction_used {
+                    println!("  Used:      {:.1}% {}", frac * 100.0, budget_bar(frac));
                 }
             }
         }
@@ -124,7 +139,8 @@ pub async fn execute(
                         "tenant": t.tenant,
                         "gpu_hours_used": t.gpu_hours_used,
                         "gpu_hours_budget": t.gpu_hours_budget,
-                        "fraction_used": t.fraction_used,
+                        "node_hours_used": t.node_hours_used,
+                        "node_hours_budget": t.node_hours_budget,
                     })).collect::<Vec<_>>(),
                     "total_gpu_hours": resp.total_gpu_hours,
                     "period_start": resp.period_start,
@@ -133,19 +149,20 @@ pub async fn execute(
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
             _ => {
-                let headers = vec!["TENANT", "GPU-HOURS", "BUDGET", "USED"];
+                let headers = vec!["TENANT", "NODE-HRS", "NODE-BUDGET", "GPU-HRS", "GPU-BUDGET"];
                 let rows: Vec<TableRow> = resp
                     .tenants
                     .iter()
                     .map(|t| TableRow {
                         cells: vec![
                             t.tenant.clone(),
+                            format!("{:.1}", t.node_hours_used),
+                            t.node_hours_budget
+                                .map(|b| format!("{:.1}", b))
+                                .unwrap_or_else(|| "-".into()),
                             format!("{:.1}", t.gpu_hours_used),
                             t.gpu_hours_budget
                                 .map(|b| format!("{:.1}", b))
-                                .unwrap_or_else(|| "-".into()),
-                            t.fraction_used
-                                .map(|f| format!("{:.1}%", f * 100.0))
                                 .unwrap_or_else(|| "-".into()),
                         ],
                     })

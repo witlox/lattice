@@ -307,6 +307,7 @@ pub struct CreateTenantRequest {
     pub max_nodes: Option<u32>,
     pub fair_share_target: Option<f64>,
     pub gpu_hours_budget: Option<f64>,
+    pub node_hours_budget: Option<f64>,
     pub max_concurrent_allocations: Option<u32>,
     pub burst_allowance: Option<f64>,
     pub isolation_level: Option<String>,
@@ -319,6 +320,7 @@ pub struct TenantResponse {
     pub max_nodes: u32,
     pub fair_share_target: f64,
     pub gpu_hours_budget: Option<f64>,
+    pub node_hours_budget: Option<f64>,
     pub max_concurrent_allocations: Option<u32>,
     pub isolation_level: String,
 }
@@ -328,6 +330,7 @@ pub struct UpdateTenantRequest {
     pub max_nodes: Option<u32>,
     pub fair_share_target: Option<f64>,
     pub gpu_hours_budget: Option<f64>,
+    pub node_hours_budget: Option<f64>,
     pub max_concurrent_allocations: Option<u32>,
     pub burst_allowance: Option<f64>,
     pub isolation_level: Option<String>,
@@ -1135,6 +1138,7 @@ async fn create_tenant(
             max_nodes: req.max_nodes.unwrap_or(100),
             fair_share_target: req.fair_share_target.unwrap_or(0.1),
             gpu_hours_budget: req.gpu_hours_budget,
+            node_hours_budget: req.node_hours_budget,
             max_concurrent_allocations: req.max_concurrent_allocations,
             burst_allowance: req.burst_allowance,
         },
@@ -1153,6 +1157,7 @@ async fn create_tenant(
         max_nodes: tenant.quota.max_nodes,
         fair_share_target: tenant.quota.fair_share_target,
         gpu_hours_budget: tenant.quota.gpu_hours_budget,
+        node_hours_budget: tenant.quota.node_hours_budget,
         max_concurrent_allocations: tenant.quota.max_concurrent_allocations,
         isolation_level: isolation_str.to_string(),
     };
@@ -1187,6 +1192,7 @@ async fn list_tenants(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
                 max_nodes: t.quota.max_nodes,
                 fair_share_target: t.quota.fair_share_target,
                 gpu_hours_budget: t.quota.gpu_hours_budget,
+                node_hours_budget: t.quota.node_hours_budget,
                 max_concurrent_allocations: t.quota.max_concurrent_allocations,
                 isolation_level: match &t.isolation_level {
                     lattice_common::types::IsolationLevel::Standard => "standard".to_string(),
@@ -1215,6 +1221,7 @@ async fn get_tenant(
                     max_nodes: t.quota.max_nodes,
                     fair_share_target: t.quota.fair_share_target,
                     gpu_hours_budget: t.quota.gpu_hours_budget,
+                    node_hours_budget: t.quota.node_hours_budget,
                     max_concurrent_allocations: t.quota.max_concurrent_allocations,
                     isolation_level: match &t.isolation_level {
                         lattice_common::types::IsolationLevel::Standard => "standard".to_string(),
@@ -1277,6 +1284,11 @@ async fn update_tenant(
                 } else {
                     existing.quota.gpu_hours_budget
                 },
+                node_hours_budget: if req.node_hours_budget.is_some() {
+                    req.node_hours_budget
+                } else {
+                    existing.quota.node_hours_budget
+                },
                 max_concurrent_allocations: if req.max_concurrent_allocations.is_some() {
                     req.max_concurrent_allocations
                 } else {
@@ -1313,6 +1325,7 @@ async fn update_tenant(
                             max_nodes: t.quota.max_nodes,
                             fair_share_target: t.quota.fair_share_target,
                             gpu_hours_budget: t.quota.gpu_hours_budget,
+                            node_hours_budget: t.quota.node_hours_budget,
                             max_concurrent_allocations: t.quota.max_concurrent_allocations,
                             isolation_level: match &t.isolation_level {
                                 lattice_common::types::IsolationLevel::Standard => {
@@ -1993,7 +2006,10 @@ struct TenantUsageResponse {
     tenant: String,
     gpu_hours_used: f64,
     gpu_hours_budget: Option<f64>,
-    fraction_used: Option<f64>,
+    gpu_fraction_used: Option<f64>,
+    node_hours_used: f64,
+    node_hours_budget: Option<f64>,
+    node_fraction_used: Option<f64>,
     period_start: String,
     period_end: String,
     period_days: u32,
@@ -2058,7 +2074,7 @@ async fn tenant_usage(
         .await
         .unwrap_or_default();
 
-    let gpu_hours_used = lattice_scheduler::quota::compute_tenant_gpu_hours(
+    let metrics = lattice_scheduler::quota::compute_tenant_usage_metrics(
         &tenant,
         &allocs,
         &nodes,
@@ -2066,19 +2082,27 @@ async fn tenant_usage(
         now,
     );
 
-    let fraction_used = tenant
+    let gpu_fraction = tenant
         .quota
         .gpu_hours_budget
         .filter(|b| *b > 0.0)
-        .map(|b| gpu_hours_used / b);
+        .map(|b| metrics.gpu_hours_used / b);
+    let node_fraction = tenant
+        .quota
+        .node_hours_budget
+        .filter(|b| *b > 0.0)
+        .map(|b| metrics.node_hours_used / b);
 
     (
         StatusCode::OK,
         Json(TenantUsageResponse {
             tenant: id,
-            gpu_hours_used,
+            gpu_hours_used: metrics.gpu_hours_used,
             gpu_hours_budget: tenant.quota.gpu_hours_budget,
-            fraction_used,
+            gpu_fraction_used: gpu_fraction,
+            node_hours_used: metrics.node_hours_used,
+            node_hours_budget: tenant.quota.node_hours_budget,
+            node_fraction_used: node_fraction,
             period_start: period_start.to_rfc3339(),
             period_end: now.to_rfc3339(),
             period_days,
@@ -2101,7 +2125,8 @@ struct UserTenantUsage {
     tenant: String,
     gpu_hours_used: f64,
     gpu_hours_budget: Option<f64>,
-    fraction_used: Option<f64>,
+    node_hours_used: f64,
+    node_hours_budget: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -2133,7 +2158,7 @@ async fn user_usage(
         .await
         .unwrap_or_default();
 
-    let by_tenant = lattice_scheduler::quota::compute_user_gpu_hours(
+    let by_tenant = lattice_scheduler::quota::compute_user_usage_metrics(
         &query.user,
         &allocs,
         &nodes,
@@ -2142,27 +2167,28 @@ async fn user_usage(
     );
 
     // Look up budgets from quorum if available
-    let tenant_budgets: std::collections::HashMap<String, Option<f64>> =
+    let tenant_quotas: std::collections::HashMap<String, lattice_common::types::TenantQuota> =
         if let Some(ref quorum) = state.quorum {
             let gs = quorum.state().read().await;
             gs.tenants
                 .iter()
-                .map(|(id, t)| (id.clone(), t.quota.gpu_hours_budget))
+                .map(|(id, t)| (id.clone(), t.quota.clone()))
                 .collect()
         } else {
             std::collections::HashMap::new()
         };
 
-    let total_gpu_hours: f64 = by_tenant.values().sum();
+    let total_gpu_hours: f64 = by_tenant.values().map(|m| m.gpu_hours_used).sum();
     let tenants: Vec<UserTenantUsage> = by_tenant
         .into_iter()
-        .map(|(tid, hours)| {
-            let budget = tenant_budgets.get(&tid).copied().flatten();
+        .map(|(tid, metrics)| {
+            let quota = tenant_quotas.get(&tid);
             UserTenantUsage {
                 tenant: tid,
-                gpu_hours_used: hours,
-                gpu_hours_budget: budget,
-                fraction_used: budget.filter(|b| *b > 0.0).map(|b| hours / b),
+                gpu_hours_used: metrics.gpu_hours_used,
+                gpu_hours_budget: quota.and_then(|q| q.gpu_hours_budget),
+                node_hours_used: metrics.node_hours_used,
+                node_hours_budget: quota.and_then(|q| q.node_hours_budget),
             }
         })
         .collect();

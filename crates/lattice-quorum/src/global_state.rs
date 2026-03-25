@@ -1530,6 +1530,7 @@ mod tests {
                 max_nodes: 20,
                 fair_share_target: 0.2,
                 gpu_hours_budget: None,
+                node_hours_budget: None,
                 max_concurrent_allocations: None,
                 burst_allowance: None,
             }),
