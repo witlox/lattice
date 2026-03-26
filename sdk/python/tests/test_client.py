@@ -82,12 +82,12 @@ def _sample_tenant_dict(tenant_id="tenant-001"):
     return {
         "id": tenant_id,
         "name": "team-ai",
-        "quota_cpus": 1000.0,
-        "quota_memory_gb": 10000.0,
-        "quota_gpus": 100,
-        "used_cpus": 200.0,
-        "used_memory_gb": 2000.0,
-        "used_gpus": 20,
+        "max_nodes": 50,
+        "fair_share_target": 0.3,
+        "gpu_hours_budget": 5000.0,
+        "node_hours_budget": 10000.0,
+        "max_concurrent_allocations": 10,
+        "isolation_level": "standard",
     }
 
 
@@ -928,10 +928,14 @@ class TestTenants:
         )
         async with LatticeClient() as client:
             tenant = await client.create_tenant(
-                name="team-ai", quota_cpus=1000.0, quota_memory_gb=10000.0, quota_gpus=100
+                name="team-ai",
+                max_nodes=50,
+                fair_share_target=0.3,
+                gpu_hours_budget=5000.0,
+                node_hours_budget=10000.0,
             )
             assert tenant.name == "team-ai"
-            assert tenant.quota_cpus == 1000.0
+            assert tenant.max_nodes == 50
 
     @pytest.mark.asyncio
     async def test_list_tenants(self, httpx_mock):
@@ -957,21 +961,21 @@ class TestTenants:
         async with LatticeClient() as client:
             tenant = await client.get_tenant("tenant-001")
             assert tenant.id == "tenant-001"
-            assert tenant.quota_gpus == 100
+            assert tenant.gpu_hours_budget == 5000.0
 
     @pytest.mark.asyncio
     async def test_update_tenant_success(self, httpx_mock):
         """Test successful tenant update."""
         updated = _sample_tenant_dict()
-        updated["quota_cpus"] = 2000.0
+        updated["max_nodes"] = 100
         httpx_mock.add_response(
             url="http://localhost:8080/api/v1/tenants/tenant-001",
             method="PUT",
             json=updated,
         )
         async with LatticeClient() as client:
-            tenant = await client.update_tenant("tenant-001", {"quota_cpus": 2000.0})
-            assert tenant.quota_cpus == 2000.0
+            tenant = await client.update_tenant("tenant-001", {"max_nodes": 100})
+            assert tenant.max_nodes == 100
 
     @pytest.mark.asyncio
     async def test_update_tenant_not_found(self, httpx_mock):
@@ -1101,6 +1105,124 @@ class TestAccounting:
                 end="2025-01-31T23:59:59Z",
             )
             assert usage.tenant_id == "tenant-001"
+
+
+# ── Budget Usage Tests ──
+
+
+class TestBudgetUsage:
+    """Tests for budget usage methods."""
+
+    @pytest.mark.asyncio
+    async def test_tenant_usage_success(self, httpx_mock):
+        """Test successful tenant usage query."""
+        httpx_mock.add_response(
+            url=re.compile(r".*/api/v1/tenants/physics/usage(\?.*)?$"),
+            method="GET",
+            json={
+                "tenant": "physics",
+                "gpu_hours_used": 450.0,
+                "gpu_hours_budget": 1000.0,
+                "gpu_fraction_used": 0.45,
+                "node_hours_used": 800.0,
+                "node_hours_budget": 5000.0,
+                "node_fraction_used": 0.16,
+                "period_start": "2025-10-01T00:00:00Z",
+                "period_end": "2025-12-30T00:00:00Z",
+                "period_days": 90,
+            },
+        )
+        async with LatticeClient() as client:
+            usage = await client.tenant_usage("physics", days=90)
+            assert usage.tenant == "physics"
+            assert usage.gpu_hours_used == 450.0
+            assert usage.gpu_hours_budget == 1000.0
+            assert usage.gpu_fraction_used == 0.45
+            assert usage.node_hours_used == 800.0
+            assert usage.node_hours_budget == 5000.0
+            assert usage.period_days == 90
+
+    @pytest.mark.asyncio
+    async def test_tenant_usage_not_found(self, httpx_mock):
+        """Test tenant usage for non-existent tenant."""
+        httpx_mock.add_response(
+            url=re.compile(r".*/api/v1/tenants/nonexistent/usage(\?.*)?$"),
+            method="GET",
+            status_code=404,
+            text="tenant 'nonexistent' not found",
+        )
+        async with LatticeClient() as client:
+            with pytest.raises(LatticeNotFoundError):
+                await client.tenant_usage("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_user_usage_success(self, httpx_mock):
+        """Test successful user usage query."""
+        httpx_mock.add_response(
+            url=re.compile(r".*/api/v1/usage(\?.*)?$"),
+            method="GET",
+            json={
+                "user": "alice",
+                "tenants": [
+                    {
+                        "tenant": "physics",
+                        "gpu_hours_used": 200.0,
+                        "gpu_hours_budget": 1000.0,
+                        "node_hours_used": 400.0,
+                        "node_hours_budget": 5000.0,
+                    },
+                    {
+                        "tenant": "ml-team",
+                        "gpu_hours_used": 50.0,
+                        "gpu_hours_budget": None,
+                        "node_hours_used": 100.0,
+                        "node_hours_budget": None,
+                    },
+                ],
+                "total_gpu_hours": 250.0,
+                "period_start": "2025-10-01T00:00:00Z",
+                "period_end": "2025-12-30T00:00:00Z",
+            },
+        )
+        async with LatticeClient() as client:
+            usage = await client.user_usage("alice", days=90)
+            assert usage.user == "alice"
+            assert len(usage.tenants) == 2
+            assert usage.total_gpu_hours == 250.0
+            assert usage.tenants[0].tenant == "physics"
+            assert usage.tenants[0].gpu_hours_budget == 1000.0
+            assert usage.tenants[1].gpu_hours_budget is None
+
+
+# ── Node Enable/Disable Tests ──
+
+
+class TestNodeEnableDisable:
+    """Tests for node enable/disable methods."""
+
+    @pytest.mark.asyncio
+    async def test_disable_node_success(self, httpx_mock):
+        """Test successful node disable."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/nodes/node-001/disable",
+            method="POST",
+            json={"status": "ok"},
+        )
+        async with LatticeClient() as client:
+            result = await client.disable_node("node-001", reason="hardware issue")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_enable_node_success(self, httpx_mock):
+        """Test successful node enable."""
+        httpx_mock.add_response(
+            url="http://localhost:8080/api/v1/nodes/node-001/enable",
+            method="POST",
+            json={"status": "ok"},
+        )
+        async with LatticeClient() as client:
+            result = await client.enable_node("node-001")
+            assert result is True
 
 
 # ── Raft Status Tests ──
@@ -1385,12 +1507,15 @@ class TestTenantSerialization:
 
     def test_roundtrip(self):
         t = Tenant(
-            id="t1", name="team-ai", quota_cpus=1000.0, quota_memory_gb=10000.0, quota_gpus=50
+            id="t1", name="team-ai", max_nodes=50, fair_share_target=0.3,
+            gpu_hours_budget=5000.0, node_hours_budget=10000.0,
         )
         d = t.to_dict()
         restored = Tenant.from_dict(d)
         assert restored.id == "t1"
-        assert restored.quota_gpus == 50
+        assert restored.max_nodes == 50
+        assert restored.gpu_hours_budget == 5000.0
+        assert restored.node_hours_budget == 10000.0
 
 
 class TestVClusterSerialization:

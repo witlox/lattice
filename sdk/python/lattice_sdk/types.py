@@ -382,39 +382,110 @@ class Tenant:
     """Organizational boundary with quotas and isolation."""
     id: str
     name: str
-    quota_cpus: float
-    quota_memory_gb: float
-    quota_gpus: int = 0
-    used_cpus: float = 0.0
-    used_memory_gb: float = 0.0
-    used_gpus: int = 0
-    metadata: Dict[str, str] = field(default_factory=dict)
+    max_nodes: int = 0
+    fair_share_target: float = 0.0
+    gpu_hours_budget: Optional[float] = None
+    node_hours_budget: Optional[float] = None
+    max_concurrent_allocations: Optional[int] = None
+    isolation_level: str = "standard"
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "id": self.id,
             "name": self.name,
-            "quota_cpus": self.quota_cpus,
-            "quota_memory_gb": self.quota_memory_gb,
-            "quota_gpus": self.quota_gpus,
-            "used_cpus": self.used_cpus,
-            "used_memory_gb": self.used_memory_gb,
-            "used_gpus": self.used_gpus,
-            "metadata": dict(self.metadata),
+            "max_nodes": self.max_nodes,
+            "fair_share_target": self.fair_share_target,
+            "isolation_level": self.isolation_level,
         }
+        if self.gpu_hours_budget is not None:
+            d["gpu_hours_budget"] = self.gpu_hours_budget
+        if self.node_hours_budget is not None:
+            d["node_hours_budget"] = self.node_hours_budget
+        if self.max_concurrent_allocations is not None:
+            d["max_concurrent_allocations"] = self.max_concurrent_allocations
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Tenant":
         return cls(
             id=data["id"],
             name=data["name"],
-            quota_cpus=float(data["quota_cpus"]),
-            quota_memory_gb=float(data["quota_memory_gb"]),
-            quota_gpus=int(data.get("quota_gpus", 0)),
-            used_cpus=float(data.get("used_cpus", 0.0)),
-            used_memory_gb=float(data.get("used_memory_gb", 0.0)),
-            used_gpus=int(data.get("used_gpus", 0)),
-            metadata=data.get("metadata", {}),
+            max_nodes=int(data.get("max_nodes", 0)),
+            fair_share_target=float(data.get("fair_share_target", 0.0)),
+            gpu_hours_budget=data.get("gpu_hours_budget"),
+            node_hours_budget=data.get("node_hours_budget"),
+            max_concurrent_allocations=data.get("max_concurrent_allocations"),
+            isolation_level=data.get("isolation_level", "standard"),
+        )
+
+
+@dataclass
+class TenantUsage:
+    """Budget usage metrics for a tenant."""
+    tenant: str
+    gpu_hours_used: float = 0.0
+    gpu_hours_budget: Optional[float] = None
+    gpu_fraction_used: Optional[float] = None
+    node_hours_used: float = 0.0
+    node_hours_budget: Optional[float] = None
+    node_fraction_used: Optional[float] = None
+    period_start: str = ""
+    period_end: str = ""
+    period_days: int = 90
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TenantUsage":
+        return cls(
+            tenant=data["tenant"],
+            gpu_hours_used=float(data.get("gpu_hours_used", 0.0)),
+            gpu_hours_budget=data.get("gpu_hours_budget"),
+            gpu_fraction_used=data.get("gpu_fraction_used"),
+            node_hours_used=float(data.get("node_hours_used", 0.0)),
+            node_hours_budget=data.get("node_hours_budget"),
+            node_fraction_used=data.get("node_fraction_used"),
+            period_start=data.get("period_start", ""),
+            period_end=data.get("period_end", ""),
+            period_days=int(data.get("period_days", 90)),
+        )
+
+
+@dataclass
+class UserTenantUsage:
+    """Per-tenant usage breakdown for a user."""
+    tenant: str
+    gpu_hours_used: float = 0.0
+    gpu_hours_budget: Optional[float] = None
+    node_hours_used: float = 0.0
+    node_hours_budget: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UserTenantUsage":
+        return cls(
+            tenant=data["tenant"],
+            gpu_hours_used=float(data.get("gpu_hours_used", 0.0)),
+            gpu_hours_budget=data.get("gpu_hours_budget"),
+            node_hours_used=float(data.get("node_hours_used", 0.0)),
+            node_hours_budget=data.get("node_hours_budget"),
+        )
+
+
+@dataclass
+class UserUsage:
+    """Budget usage for a user across all tenants."""
+    user: str
+    tenants: List[UserTenantUsage] = field(default_factory=list)
+    total_gpu_hours: float = 0.0
+    period_start: str = ""
+    period_end: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UserUsage":
+        return cls(
+            user=data["user"],
+            tenants=[UserTenantUsage.from_dict(t) for t in data.get("tenants", [])],
+            total_gpu_hours=float(data.get("total_gpu_hours", 0.0)),
+            period_start=data.get("period_start", ""),
+            period_end=data.get("period_end", ""),
         )
 
 

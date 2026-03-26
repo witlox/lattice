@@ -26,6 +26,8 @@ from .types import (
     RaftStatus,
     Session,
     Tenant,
+    TenantUsage,
+    UserUsage,
     VCluster,
     WatchEvent,
 )
@@ -351,6 +353,44 @@ class LatticeClient:
         """
         client = self._ensure_client()
         response = await client.post(f"/api/v1/nodes/{node_id}/undrain")
+        self._raise_for_status(response)
+        return True
+
+    async def disable_node(self, node_id: str, reason: str = "") -> bool:
+        """
+        Disable a node (mark as unavailable until re-enabled).
+
+        Args:
+            node_id: Node ID to disable.
+            reason: Reason for disabling.
+
+        Returns:
+            True if the disable request was accepted.
+
+        Raises:
+            LatticeNotFoundError: If the node does not exist.
+        """
+        client = self._ensure_client()
+        body: Dict[str, Any] = {"reason": reason}
+        response = await client.post(f"/api/v1/nodes/{node_id}/disable", json=body)
+        self._raise_for_status(response)
+        return True
+
+    async def enable_node(self, node_id: str) -> bool:
+        """
+        Re-enable a previously disabled node.
+
+        Args:
+            node_id: Node ID to enable.
+
+        Returns:
+            True if the enable request was accepted.
+
+        Raises:
+            LatticeNotFoundError: If the node does not exist.
+        """
+        client = self._ensure_client()
+        response = await client.post(f"/api/v1/nodes/{node_id}/enable")
         self._raise_for_status(response)
         return True
 
@@ -692,16 +732,28 @@ class LatticeClient:
     # ── Tenant Operations ──
 
     async def create_tenant(
-        self, name: str, quota_cpus: float, quota_memory_gb: float, quota_gpus: int = 0
+        self,
+        name: str,
+        max_nodes: int = 100,
+        fair_share_target: float = 0.0,
+        gpu_hours_budget: Optional[float] = None,
+        node_hours_budget: Optional[float] = None,
+        max_concurrent_allocations: Optional[int] = None,
+        burst_allowance: Optional[float] = None,
+        isolation_level: str = "standard",
     ) -> Tenant:
         """
         Create a new tenant.
 
         Args:
-            name: Tenant name.
-            quota_cpus: CPU quota for the tenant.
-            quota_memory_gb: Memory quota in GB.
-            quota_gpus: GPU quota. Defaults to 0.
+            name: Tenant name (also used as ID).
+            max_nodes: Maximum nodes this tenant can use simultaneously.
+            fair_share_target: Target fair-share fraction (0.0 - 1.0).
+            gpu_hours_budget: GPU-hours budget (None = unlimited).
+            node_hours_budget: Node-hours budget (None = unlimited).
+            max_concurrent_allocations: Hard limit on concurrent allocations.
+            burst_allowance: Burst multiplier (e.g. 1.5 = 150% of fair share when idle).
+            isolation_level: "standard" or "strict".
 
         Returns:
             The created Tenant.
@@ -709,10 +761,18 @@ class LatticeClient:
         client = self._ensure_client()
         body: Dict[str, Any] = {
             "name": name,
-            "quota_cpus": quota_cpus,
-            "quota_memory_gb": quota_memory_gb,
-            "quota_gpus": quota_gpus,
+            "max_nodes": max_nodes,
+            "fair_share_target": fair_share_target,
+            "isolation_level": isolation_level,
         }
+        if gpu_hours_budget is not None:
+            body["gpu_hours_budget"] = gpu_hours_budget
+        if node_hours_budget is not None:
+            body["node_hours_budget"] = node_hours_budget
+        if max_concurrent_allocations is not None:
+            body["max_concurrent_allocations"] = max_concurrent_allocations
+        if burst_allowance is not None:
+            body["burst_allowance"] = burst_allowance
         response = await client.post("/api/v1/tenants", json=body)
         self._raise_for_status(response)
         return Tenant.from_dict(response.json())
@@ -886,6 +946,51 @@ class LatticeClient:
         response = await client.get("/api/v1/accounting/usage", params=params)
         self._raise_for_status(response)
         return AccountingUsage.from_dict(response.json())
+
+    # ── Budget Usage ──
+
+    async def tenant_usage(
+        self, tenant_id: str, days: int = 90
+    ) -> TenantUsage:
+        """
+        Get budget usage (GPU-hours, node-hours) for a tenant.
+
+        Args:
+            tenant_id: Tenant ID to query.
+            days: Number of days to look back (rolling window). Defaults to 90.
+
+        Returns:
+            TenantUsage with GPU-hours and node-hours consumption.
+
+        Raises:
+            LatticeNotFoundError: If the tenant does not exist.
+        """
+        client = self._ensure_client()
+        params: Dict[str, Any] = {"days": days}
+        response = await client.get(
+            f"/api/v1/tenants/{tenant_id}/usage", params=params
+        )
+        self._raise_for_status(response)
+        return TenantUsage.from_dict(response.json())
+
+    async def user_usage(
+        self, user: str, days: int = 90
+    ) -> UserUsage:
+        """
+        Get budget usage for a user across all tenants.
+
+        Args:
+            user: User ID to query.
+            days: Number of days to look back (rolling window). Defaults to 90.
+
+        Returns:
+            UserUsage with per-tenant breakdown.
+        """
+        client = self._ensure_client()
+        params: Dict[str, Any] = {"user": user, "days": days}
+        response = await client.get("/api/v1/usage", params=params)
+        self._raise_for_status(response)
+        return UserUsage.from_dict(response.json())
 
     # ── Raft Operations ──
 

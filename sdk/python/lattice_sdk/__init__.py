@@ -40,6 +40,9 @@ from .types import (
     ResourceRequest,
     Session,
     Tenant,
+    TenantUsage,
+    UserTenantUsage,
+    UserUsage,
     VCluster,
     WatchEvent,
 )
@@ -66,6 +69,9 @@ __all__ = [
     "ResourceRequest",
     "Session",
     "Tenant",
+    "TenantUsage",
+    "UserTenantUsage",
+    "UserUsage",
     "VCluster",
     "WatchEvent",
 ]
