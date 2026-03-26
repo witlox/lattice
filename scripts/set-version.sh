@@ -46,6 +46,11 @@ sed -i.bak "s/^version = \"${BASE_VERSION}\"/version = \"${RELEASE_VERSION}\"/" 
 sed -i.bak "s/^version = \"${BASE_VERSION}\"/version = \"${RELEASE_VERSION}\"/" \
     "$REPO_ROOT/sdk/python/pyproject.toml"
 
+# lattice-client depends on lattice-common — pin to exact release version
+# so crates.io consumers always get matching proto types
+sed -i.bak "s|lattice-common = { path = \"../lattice-common\", version = \"[^\"]*\" }|lattice-common = { path = \"../lattice-common\", version = \"=${RELEASE_VERSION}\" }|" \
+    "$REPO_ROOT/crates/lattice-client/Cargo.toml"
+
 # Clean up sed backup files
 find "$REPO_ROOT" -name '*.bak' -delete
 
