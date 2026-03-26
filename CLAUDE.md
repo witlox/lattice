@@ -121,7 +121,7 @@ All performance-critical components. Shared protobuf types generated into lattic
 - `lattice-node-agent`: Per-node daemon, Sarus/uenv lifecycle, eBPF telemetry loading, health reporting, checkpoint signal forwarding, liveness probes, probe manager
 - `lattice-api`: gRPC server (tonic) + REST gateway, Intent API + Compatibility API endpoints
 - `lattice-cli`: `lattice` CLI binary, subcommands for submit/status/cancel/session/telemetry, Slurm compat aliases
-- `lattice-client`: Rust gRPC client SDK (42 methods, full API parity with Python SDK), publishable to crates.io
+- `lattice-client`: Rust gRPC client SDK (44 methods, full API parity with Python SDK), publishable to crates.io
 - `lattice-checkpoint`: Checkpoint broker, cost function evaluator, application protocol (signal/shmem/gRPC)
 
 ### Proto (proto/)

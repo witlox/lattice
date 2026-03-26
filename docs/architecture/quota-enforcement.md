@@ -85,10 +85,10 @@ When Waldur is available, its `remaining_budget()` response takes precedence ove
 
 ### API Access
 
-- `GET /api/v1/tenants/{id}/usage?days=90` — tenant GPU-hours usage
-- `GET /api/v1/usage?user=alice&days=90` — per-user usage across tenants
-- `lattice usage --tenant physics` — CLI convenience
-- `lattice usage` — show usage across all tenants for current user
+- gRPC: `GetTenantUsage` / `GetUserUsage` RPCs in AdminService
+- REST: `GET /api/v1/tenants/{id}/usage?days=90` / `GET /api/v1/usage?user=alice&days=90`
+- Rust SDK: `client.tenant_usage("physics", 90)` / `client.user_usage("alice", 90)`
+- CLI: `lattice usage --tenant physics` / `lattice usage` (uses gRPC)
 
 ## Exhausted Budget Behavior
 

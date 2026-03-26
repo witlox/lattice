@@ -10,7 +10,7 @@ This crate is the Rust counterpart to the Python SDK (`sdk/python/`). It is the 
 
 ## Features
 
-- **Full API Parity**: 42 methods covering all 11 API domains, matching the Python SDK surface
+- **Full API Parity**: 44 methods covering all 11 API domains, matching the Python SDK surface
 - **Type-Safe**: Generated tonic/prost types — compile-time guarantees on request/response shapes
 - **Pure gRPC**: No REST fallback needed; all operations have proto definitions
 - **Streaming**: Server-streaming (watch, logs, metrics) and bidirectional (attach) support
@@ -139,7 +139,7 @@ match client.get_node("nonexistent").await {
 
 | Component | Description |
 |-----------|-------------|
-| `LatticeClient` | Main entry point — 42 async methods across all API domains |
+| `LatticeClient` | Main entry point — 44 async methods across all API domains |
 | `ClientConfig` | Endpoint, timeout, and bearer token configuration |
 | `LatticeClientError` | Typed error enum mapped from gRPC status codes |
 | `AuthInterceptor` | Bearer token injection on every outgoing request |
@@ -166,4 +166,5 @@ match client.get_node("nonexistent").await {
 | vClusters | create_vcluster, update_vcluster, list_vclusters, get_vcluster, vcluster_queue | gRPC |
 | Audit | query_audit | gRPC |
 | Accounting | accounting_usage | gRPC |
+| Budget Usage | tenant_usage, user_usage | gRPC |
 | Raft/Admin | raft_status, create_backup, verify_backup, restore_backup | gRPC |
