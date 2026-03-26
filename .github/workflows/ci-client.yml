@@ -7,6 +7,8 @@ on:
       - "crates/lattice-client/**"
       - "crates/lattice-common/**"
       - "proto/**"
+      - "scripts/set-version.sh"
+      - ".github/workflows/ci-client.yml"
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:
@@ -15,6 +17,8 @@ on:
       - "crates/lattice-client/**"
       - "crates/lattice-common/**"
       - "proto/**"
+      - "scripts/set-version.sh"
+      - ".github/workflows/ci-client.yml"
       - "Cargo.toml"
       - "Cargo.lock"
 
