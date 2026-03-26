@@ -111,6 +111,11 @@ client.create_tenant(proto::CreateTenantRequest {
     isolation_level: "standard".to_string(),
 }).await?;
 
+// Check budget usage
+let usage = client.tenant_usage("physics", 90).await?;
+println!("GPU-hours: {:.1}/{}", usage.gpu_hours_used,
+    usage.gpu_hours_budget.map(|b| format!("{:.0}", b)).unwrap_or("unlimited".into()));
+
 // Check cluster health
 let status = client.raft_status().await?;
 println!("Leader: {}, Term: {}", status.leader_id, status.current_term);

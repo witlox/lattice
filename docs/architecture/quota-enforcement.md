@@ -110,13 +110,34 @@ When Waldur is available, its `remaining_budget()` response takes precedence ove
 
 ### Administrative Update
 
-System admin updates tenant quotas via API:
+System admin updates tenant quotas via CLI or API:
+```bash
+# CLI (uses gRPC UpdateTenant RPC)
+lattice admin tenant update physics \
+  --max-nodes 250 \
+  --max-concurrent-allocations 50 \
+  --gpu-hours-budget 150000 \
+  --node-hours-budget 500000
 ```
-PUT /v1/tenants/{id}/quotas
+
+```python
+# Python SDK
+await client.update_tenant("physics", {
+    "max_nodes": 250,
+    "max_concurrent_allocations": 50,
+    "gpu_hours_budget": 150000,
+    "node_hours_budget": 500000,
+})
+```
+
+```
+# REST
+PUT /api/v1/tenants/{id}
 {
   "max_nodes": 250,
   "max_concurrent_allocations": 50,
-  "gpu_hours_budget": 150000
+  "gpu_hours_budget": 150000,
+  "node_hours_budget": 500000
 }
 ```
 
@@ -127,7 +148,7 @@ Hard quota changes are Raft-committed (immediate effect). Soft quota changes pro
 When Waldur integration is enabled, Waldur can push quota changes:
 
 1. Waldur determines budget exhaustion or contract change
-2. Waldur calls lattice-api: `PUT /v1/tenants/{id}/quotas` (authenticated with Waldur service token)
+2. Waldur calls lattice-api: `PUT /api/v1/tenants/{id}` (authenticated with Waldur service token)
 3. Hard quotas committed via Raft; soft quotas propagated to schedulers
 4. Reducing `max_nodes` below current usage does not preempt running allocations — it prevents new ones
 

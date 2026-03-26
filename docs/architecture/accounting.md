@@ -55,7 +55,7 @@ Events are timestamped and include the allocation ID for correlation.
 | Lattice → Waldur | `POST /api/marketplace-orders/` | Report resource usage |
 | Lattice → Waldur | `POST /api/invoices/{id}/items/` | Add billing line items |
 | Waldur → Lattice | `GET /api/customers/{id}/quotas/` | Read project quotas |
-| Waldur → Lattice | `PUT /v1/tenants/{id}/quotas` | Update tenant quotas in Lattice |
+| Waldur → Lattice | `PUT /api/v1/tenants/{id}` | Update tenant quotas in Lattice |
 
 ## Authentication
 
@@ -100,7 +100,7 @@ When the accounting buffer fills and events are dropped:
 Waldur can act as the budget authority, updating Lattice tenant quotas:
 
 1. Waldur detects budget exhaustion (e.g., project spent its allocated compute hours)
-2. Waldur calls lattice-api: `PUT /v1/tenants/{id}/quotas` with reduced limits
+2. Waldur calls lattice-api: `PUT /api/v1/tenants/{id}` with reduced limits
 3. Lattice updates hard/soft quotas (cross-ref: [quota-enforcement.md](quota-enforcement.md))
 4. Effect: tenant's new allocations are blocked (hard quota) or deprioritized (soft quota)
 
