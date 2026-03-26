@@ -54,6 +54,12 @@ service AdminService {
   // Get accounting usage
   rpc GetAccountingUsage(GetAccountingUsageRequest) returns (AccountingUsageResponse);
 
+  // Get budget usage for a tenant (internal GPU/node-hours ledger)
+  rpc GetTenantUsage(GetTenantUsageRequest) returns (TenantUsageResponse);
+
+  // Get budget usage for a user across all tenants
+  rpc GetUserUsage(GetUserUsageRequest) returns (UserUsageResponse);
+
   // Service discovery: look up endpoints for a named service
   rpc LookupService(LookupServiceRequest) returns (LookupServiceResponse);
 
@@ -80,6 +86,8 @@ message TenantQuotaSpec {
   double fair_share_target = 2;
   optional double gpu_hours_budget = 3;
   optional uint32 max_concurrent_allocations = 4;
+  optional double node_hours_budget = 5;
+  optional double burst_allowance = 6;
 }
 
 message TenantResponse {
@@ -273,6 +281,47 @@ message AccountingUsageResponse {
   double gpu_hours = 3;
   uint64 storage_bytes = 4;
   uint32 allocation_count = 5;
+}
+
+// ─── Budget Usage ──────────────────────────────────────────
+
+message GetTenantUsageRequest {
+  string tenant_id = 1;
+  uint32 days = 2;              // rolling window (default 90)
+}
+
+message TenantUsageResponse {
+  string tenant = 1;
+  double gpu_hours_used = 2;
+  optional double gpu_hours_budget = 3;
+  optional double gpu_fraction_used = 4;
+  double node_hours_used = 5;
+  optional double node_hours_budget = 6;
+  optional double node_fraction_used = 7;
+  string period_start = 8;
+  string period_end = 9;
+  uint32 period_days = 10;
+}
+
+message GetUserUsageRequest {
+  string user = 1;
+  uint32 days = 2;              // rolling window (default 90)
+}
+
+message UserUsageResponse {
+  string user = 1;
+  repeated UserTenantUsageProto tenants = 2;
+  double total_gpu_hours = 3;
+  string period_start = 4;
+  string period_end = 5;
+}
+
+message UserTenantUsageProto {
+  string tenant = 1;
+  double gpu_hours_used = 2;
+  optional double gpu_hours_budget = 3;
+  double node_hours_used = 4;
+  optional double node_hours_budget = 5;
 }
 
 // ─── Service Discovery ─────────────────────────────────────

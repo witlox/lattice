@@ -220,6 +220,27 @@ impl LatticeGrpcClient {
         self.inner.enable_node(node_id).await.map_err(to_status)
     }
 
+    // ─── Budget Usage ────────────────────────────────────────
+
+    pub async fn tenant_usage(
+        &mut self,
+        tenant_id: &str,
+        days: u32,
+    ) -> Result<pb::TenantUsageResponse, tonic::Status> {
+        self.inner
+            .tenant_usage(tenant_id, days)
+            .await
+            .map_err(to_status)
+    }
+
+    pub async fn user_usage(
+        &mut self,
+        user: &str,
+        days: u32,
+    ) -> Result<pb::UserUsageResponse, tonic::Status> {
+        self.inner.user_usage(user, days).await.map_err(to_status)
+    }
+
     // ─── Admin Operations ───────────────────────────────────
 
     pub async fn create_tenant(

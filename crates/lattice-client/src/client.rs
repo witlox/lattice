@@ -445,6 +445,34 @@ impl LatticeClient {
             .into_inner())
     }
 
+    // ─── Budget Usage ───────────────────────────────────────
+
+    /// Get budget usage (GPU-hours, node-hours) for a tenant.
+    pub async fn tenant_usage(
+        &mut self,
+        tenant_id: &str,
+        days: u32,
+    ) -> Result<pb::TenantUsageResponse, LatticeClientError> {
+        let req = pb::GetTenantUsageRequest {
+            tenant_id: tenant_id.to_string(),
+            days,
+        };
+        Ok(self.admin.get_tenant_usage(req).await?.into_inner())
+    }
+
+    /// Get budget usage for a user across all tenants.
+    pub async fn user_usage(
+        &mut self,
+        user: &str,
+        days: u32,
+    ) -> Result<pb::UserUsageResponse, LatticeClientError> {
+        let req = pb::GetUserUsageRequest {
+            user: user.to_string(),
+            days,
+        };
+        Ok(self.admin.get_user_usage(req).await?.into_inner())
+    }
+
     // ─── Raft / Admin ───────────────────────────────────────
 
     /// Get Raft cluster status.

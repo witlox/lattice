@@ -1,10 +1,9 @@
-//! `lattice usage` — show GPU-hours budget consumption.
+//! `lattice usage` — show GPU-hours and node-hours budget consumption.
 
 use clap::Args;
-use serde::Deserialize;
 
-use crate::client::ClientConfig;
-use crate::output::{OutputFormat, TableRow};
+use crate::client::{ClientConfig, LatticeGrpcClient};
+use crate::output::OutputFormat;
 
 /// Arguments for the usage command.
 #[derive(Args, Debug)]
@@ -18,70 +17,16 @@ pub struct UsageArgs {
     pub days: u32,
 }
 
-#[derive(Deserialize)]
-struct TenantUsageResponse {
-    tenant: String,
-    gpu_hours_used: f64,
-    gpu_hours_budget: Option<f64>,
-    gpu_fraction_used: Option<f64>,
-    node_hours_used: f64,
-    node_hours_budget: Option<f64>,
-    node_fraction_used: Option<f64>,
-    period_start: String,
-    period_end: String,
-    #[allow(dead_code)]
-    period_days: u32,
-}
-
-#[derive(Deserialize)]
-struct UserUsageResponse {
-    #[allow(dead_code)]
-    user: String,
-    tenants: Vec<UserTenantUsage>,
-    total_gpu_hours: f64,
-    period_start: String,
-    period_end: String,
-}
-
-#[derive(Deserialize)]
-struct UserTenantUsage {
-    tenant: String,
-    gpu_hours_used: f64,
-    gpu_hours_budget: Option<f64>,
-    node_hours_used: f64,
-    node_hours_budget: Option<f64>,
-}
-
-fn rest_base_url(grpc_endpoint: &str) -> String {
-    // The gRPC endpoint is typically on port 50051, REST on 8080.
-    // Convention: replace port 50051 with 8080, or use the same host.
-    let base = grpc_endpoint
-        .replace(":50051", ":8080")
-        .replace("grpc://", "http://");
-    // Strip trailing slash
-    base.trim_end_matches('/').to_string()
-}
-
-/// Execute the usage command.
+/// Execute the usage command via gRPC.
 pub async fn execute(
     args: &UsageArgs,
+    client: &mut LatticeGrpcClient,
     config: &ClientConfig,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let base = rest_base_url(&config.api_endpoint);
-    let client = reqwest::Client::new();
-
     if let Some(ref tenant) = args.tenant.as_ref().or(config.tenant.as_ref()) {
         // Tenant-specific usage
-        let url = format!(
-            "{}/api/v1/tenants/{}/usage?days={}",
-            base, tenant, args.days
-        );
-        let mut req = client.get(&url);
-        if let Some(ref token) = config.token {
-            req = req.bearer_auth(token);
-        }
-        let resp: TenantUsageResponse = req.send().await?.json().await?;
+        let resp = client.tenant_usage(tenant, args.days).await?;
 
         match format {
             OutputFormat::Json => {
@@ -129,15 +74,7 @@ pub async fn execute(
         }
     } else {
         // Per-user usage across all tenants
-        let url = format!(
-            "{}/api/v1/usage?user={}&days={}",
-            base, config.user, args.days
-        );
-        let mut req = client.get(&url);
-        if let Some(ref token) = config.token {
-            req = req.bearer_auth(token);
-        }
-        let resp: UserUsageResponse = req.send().await?.json().await?;
+        let resp = client.user_usage(&config.user, args.days).await?;
 
         match format {
             OutputFormat::Json => {
@@ -157,10 +94,10 @@ pub async fn execute(
             }
             _ => {
                 let headers = vec!["TENANT", "NODE-HRS", "NODE-BUDGET", "GPU-HRS", "GPU-BUDGET"];
-                let rows: Vec<TableRow> = resp
+                let rows: Vec<crate::output::TableRow> = resp
                     .tenants
                     .iter()
-                    .map(|t| TableRow {
+                    .map(|t| crate::output::TableRow {
                         cells: vec![
                             t.tenant.clone(),
                             format!("{:.1}", t.node_hours_used),

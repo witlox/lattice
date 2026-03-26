@@ -80,9 +80,9 @@ impl AdminService for LatticeAdminService {
                 max_nodes: q.max_nodes,
                 fair_share_target: q.fair_share_target,
                 gpu_hours_budget: q.gpu_hours_budget,
-                node_hours_budget: None,
+                node_hours_budget: q.node_hours_budget,
                 max_concurrent_allocations: q.max_concurrent_allocations,
-                burst_allowance: None,
+                burst_allowance: q.burst_allowance,
             });
 
             let isolation = req.isolation_level.as_ref().map(|l| match l.as_str() {
@@ -129,9 +129,9 @@ impl AdminService for LatticeAdminService {
                     max_nodes: quota.max_nodes,
                     fair_share_target: quota.fair_share_target,
                     gpu_hours_budget: quota.gpu_hours_budget,
-                    node_hours_budget: None,
+                    node_hours_budget: quota.node_hours_budget,
                     max_concurrent_allocations: quota.max_concurrent_allocations,
-                    burst_allowance: None,
+                    burst_allowance: quota.burst_allowance,
                 };
             }
 
@@ -622,6 +622,148 @@ impl AdminService for LatticeAdminService {
         }
     }
 
+    async fn get_tenant_usage(
+        &self,
+        request: Request<pb::GetTenantUsageRequest>,
+    ) -> Result<Response<pb::TenantUsageResponse>, Status> {
+        let req = request.into_inner();
+        let days = if req.days == 0 { 90 } else { req.days };
+
+        let quorum = self
+            .quorum()
+            .ok_or_else(|| Status::unavailable("quorum not configured"))?;
+
+        let gs = quorum.state().read().await;
+        let tenant = gs
+            .tenants
+            .get(&req.tenant_id)
+            .ok_or_else(|| Status::not_found(format!("tenant '{}' not found", req.tenant_id)))?
+            .clone();
+        drop(gs);
+
+        let now = chrono::Utc::now();
+        let period_start = now - chrono::Duration::days(days as i64);
+
+        let allocs = self
+            .state
+            .allocations
+            .list(&lattice_common::traits::AllocationFilter {
+                tenant: Some(req.tenant_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let nodes = self
+            .state
+            .nodes
+            .list_nodes(&lattice_common::traits::NodeFilter::default())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let metrics = lattice_scheduler::quota::compute_tenant_usage_metrics(
+            &tenant,
+            &allocs,
+            &nodes,
+            period_start,
+            now,
+        );
+
+        let gpu_fraction = tenant
+            .quota
+            .gpu_hours_budget
+            .filter(|b| *b > 0.0)
+            .map(|b| metrics.gpu_hours_used / b);
+        let node_fraction = tenant
+            .quota
+            .node_hours_budget
+            .filter(|b| *b > 0.0)
+            .map(|b| metrics.node_hours_used / b);
+
+        Ok(Response::new(pb::TenantUsageResponse {
+            tenant: req.tenant_id,
+            gpu_hours_used: metrics.gpu_hours_used,
+            gpu_hours_budget: tenant.quota.gpu_hours_budget,
+            gpu_fraction_used: gpu_fraction,
+            node_hours_used: metrics.node_hours_used,
+            node_hours_budget: tenant.quota.node_hours_budget,
+            node_fraction_used: node_fraction,
+            period_start: period_start.to_rfc3339(),
+            period_end: now.to_rfc3339(),
+            period_days: days,
+        }))
+    }
+
+    async fn get_user_usage(
+        &self,
+        request: Request<pb::GetUserUsageRequest>,
+    ) -> Result<Response<pb::UserUsageResponse>, Status> {
+        let req = request.into_inner();
+        let days = if req.days == 0 { 90 } else { req.days };
+        let now = chrono::Utc::now();
+        let period_start = now - chrono::Duration::days(days as i64);
+
+        let allocs = self
+            .state
+            .allocations
+            .list(&lattice_common::traits::AllocationFilter {
+                user: Some(req.user.clone()),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let nodes = self
+            .state
+            .nodes
+            .list_nodes(&lattice_common::traits::NodeFilter::default())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let by_tenant = lattice_scheduler::quota::compute_user_usage_metrics(
+            &req.user,
+            &allocs,
+            &nodes,
+            period_start,
+            now,
+        );
+
+        // Look up budgets from quorum if available
+        let tenant_quotas: std::collections::HashMap<String, lattice_common::types::TenantQuota> =
+            if let Some(quorum) = self.quorum() {
+                let gs = quorum.state().read().await;
+                gs.tenants
+                    .iter()
+                    .map(|(id, t)| (id.clone(), t.quota.clone()))
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        let total_gpu_hours: f64 = by_tenant.values().map(|m| m.gpu_hours_used).sum();
+        let tenants: Vec<pb::UserTenantUsageProto> = by_tenant
+            .into_iter()
+            .map(|(tid, metrics)| {
+                let quota = tenant_quotas.get(&tid);
+                pb::UserTenantUsageProto {
+                    tenant: tid,
+                    gpu_hours_used: metrics.gpu_hours_used,
+                    gpu_hours_budget: quota.and_then(|q| q.gpu_hours_budget),
+                    node_hours_used: metrics.node_hours_used,
+                    node_hours_budget: quota.and_then(|q| q.node_hours_budget),
+                }
+            })
+            .collect();
+
+        Ok(Response::new(pb::UserUsageResponse {
+            user: req.user,
+            tenants,
+            total_gpu_hours,
+            period_start: period_start.to_rfc3339(),
+            period_end: now.to_rfc3339(),
+        }))
+    }
+
     async fn lookup_service(
         &self,
         request: Request<pb::LookupServiceRequest>,
@@ -752,8 +894,7 @@ mod tests {
                 quota: Some(pb::TenantQuotaSpec {
                     max_nodes: 50,
                     fair_share_target: 0.3,
-                    gpu_hours_budget: None,
-                    max_concurrent_allocations: None,
+                    ..Default::default()
                 }),
                 isolation_level: "standard".to_string(),
             }))
@@ -770,8 +911,7 @@ mod tests {
                 quota: Some(pb::TenantQuotaSpec {
                     max_nodes: 100,
                     fair_share_target: 0.5,
-                    gpu_hours_budget: None,
-                    max_concurrent_allocations: None,
+                    ..Default::default()
                 }),
                 isolation_level: None,
             }))
@@ -902,8 +1042,7 @@ mod tests {
                 quota: Some(pb::TenantQuotaSpec {
                     max_nodes: 10,
                     fair_share_target: 0.1,
-                    gpu_hours_budget: None,
-                    max_concurrent_allocations: None,
+                    ..Default::default()
                 }),
                 isolation_level: "standard".to_string(),
             }))
@@ -940,6 +1079,179 @@ mod tests {
         // Verify it's in quorum state
         let quorum_state = state.quorum.as_ref().unwrap().state().read().await;
         assert!(quorum_state.vclusters.contains_key("bio/gpu-batch"));
+    }
+
+    #[tokio::test]
+    async fn create_tenant_with_node_hours_budget() {
+        let state = test_state();
+        let svc = LatticeAdminService::new(state);
+
+        let resp = svc
+            .create_tenant(Request::new(pb::CreateTenantRequest {
+                name: "ml-team".to_string(),
+                quota: Some(pb::TenantQuotaSpec {
+                    max_nodes: 20,
+                    fair_share_target: 0.2,
+                    gpu_hours_budget: Some(5000.0),
+                    max_concurrent_allocations: Some(5),
+                    node_hours_budget: Some(10000.0),
+                    burst_allowance: Some(1.5),
+                }),
+                isolation_level: "standard".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let quota = resp.get_ref().quota.as_ref().unwrap();
+        assert_eq!(quota.node_hours_budget, Some(10000.0));
+        assert_eq!(quota.burst_allowance, Some(1.5));
+        assert_eq!(quota.gpu_hours_budget, Some(5000.0));
+    }
+
+    #[tokio::test]
+    async fn update_tenant_preserves_node_hours_budget() {
+        let state = test_state();
+        let svc = LatticeAdminService::new(state);
+
+        // Create with budgets
+        svc.create_tenant(Request::new(pb::CreateTenantRequest {
+            name: "bio".to_string(),
+            quota: Some(pb::TenantQuotaSpec {
+                max_nodes: 10,
+                fair_share_target: 0.1,
+                gpu_hours_budget: None,
+                max_concurrent_allocations: None,
+                node_hours_budget: None,
+                burst_allowance: None,
+            }),
+            isolation_level: "standard".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        // Update with node_hours_budget
+        let resp = svc
+            .update_tenant(Request::new(pb::UpdateTenantRequest {
+                tenant_id: "bio".to_string(),
+                quota: Some(pb::TenantQuotaSpec {
+                    max_nodes: 10,
+                    fair_share_target: 0.1,
+                    gpu_hours_budget: None,
+                    max_concurrent_allocations: None,
+                    node_hours_budget: Some(8000.0),
+                    burst_allowance: Some(2.0),
+                }),
+                isolation_level: None,
+            }))
+            .await
+            .unwrap();
+
+        let quota = resp.get_ref().quota.as_ref().unwrap();
+        assert_eq!(quota.node_hours_budget, Some(8000.0));
+        assert_eq!(quota.burst_allowance, Some(2.0));
+    }
+
+    #[tokio::test]
+    async fn get_tenant_usage_requires_quorum() {
+        let state = test_state();
+        let svc = LatticeAdminService::new(state);
+
+        let result = svc
+            .get_tenant_usage(Request::new(pb::GetTenantUsageRequest {
+                tenant_id: "nonexistent".to_string(),
+                days: 30,
+            }))
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn get_tenant_usage_via_quorum() {
+        let state = test_state_with_quorum().await;
+        let svc = LatticeAdminService::new(state.clone());
+
+        // Create a tenant first
+        svc.create_tenant(Request::new(pb::CreateTenantRequest {
+            name: "usage-test".to_string(),
+            quota: Some(pb::TenantQuotaSpec {
+                max_nodes: 10,
+                fair_share_target: 0.1,
+                gpu_hours_budget: Some(1000.0),
+                max_concurrent_allocations: None,
+                node_hours_budget: Some(5000.0),
+                burst_allowance: None,
+            }),
+            isolation_level: "standard".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let resp = svc
+            .get_tenant_usage(Request::new(pb::GetTenantUsageRequest {
+                tenant_id: "usage-test".to_string(),
+                days: 90,
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.get_ref().tenant, "usage-test");
+        assert_eq!(resp.get_ref().gpu_hours_budget, Some(1000.0));
+        assert_eq!(resp.get_ref().node_hours_budget, Some(5000.0));
+        assert_eq!(resp.get_ref().period_days, 90);
+        // No allocations yet, so usage should be 0
+        assert_eq!(resp.get_ref().gpu_hours_used, 0.0);
+        assert_eq!(resp.get_ref().node_hours_used, 0.0);
+    }
+
+    #[tokio::test]
+    async fn get_user_usage_empty() {
+        let state = test_state_with_quorum().await;
+        let svc = LatticeAdminService::new(state);
+
+        let resp = svc
+            .get_user_usage(Request::new(pb::GetUserUsageRequest {
+                user: "testuser".to_string(),
+                days: 30,
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.get_ref().user, "testuser");
+        assert!(resp.get_ref().tenants.is_empty());
+        assert_eq!(resp.get_ref().total_gpu_hours, 0.0);
+    }
+
+    #[tokio::test]
+    async fn get_tenant_usage_defaults_to_90_days() {
+        let state = test_state_with_quorum().await;
+        let svc = LatticeAdminService::new(state);
+
+        svc.create_tenant(Request::new(pb::CreateTenantRequest {
+            name: "days-test".to_string(),
+            quota: Some(pb::TenantQuotaSpec {
+                max_nodes: 5,
+                fair_share_target: 0.1,
+                gpu_hours_budget: None,
+                max_concurrent_allocations: None,
+                node_hours_budget: None,
+                burst_allowance: None,
+            }),
+            isolation_level: "standard".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let resp = svc
+            .get_tenant_usage(Request::new(pb::GetTenantUsageRequest {
+                tenant_id: "days-test".to_string(),
+                days: 0, // should default to 90
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.get_ref().period_days, 90);
     }
 
     #[tokio::test]

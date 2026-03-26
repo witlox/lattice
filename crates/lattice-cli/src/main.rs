@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
                 .await?;
         }
         Command::Usage(args) => {
-            commands::usage::execute(&args, &client_config, output_format).await?;
+            commands::usage::execute(&args, &mut client, &client_config, output_format).await?;
         }
         Command::Login(_) | Command::Logout(_) | Command::Completions { .. } => unreachable!(),
     }

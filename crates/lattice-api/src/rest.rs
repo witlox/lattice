@@ -1259,6 +1259,8 @@ async fn update_tenant(
             || req.fair_share_target.is_some()
             || req.gpu_hours_budget.is_some()
             || req.max_concurrent_allocations.is_some()
+            || req.node_hours_budget.is_some()
+            || req.burst_allowance.is_some()
         {
             let gs = quorum.state().read().await;
             let existing = match gs.tenants.get(&id) {

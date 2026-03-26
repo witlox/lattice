@@ -241,6 +241,8 @@ pub fn build_create_tenant_request(
             fair_share_target: args.fair_share.unwrap_or(0.0),
             gpu_hours_budget: None,
             max_concurrent_allocations: None,
+            node_hours_budget: None,
+            burst_allowance: None,
         }),
         isolation_level: args.isolation.clone(),
     }

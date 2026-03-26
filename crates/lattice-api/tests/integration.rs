@@ -674,6 +674,7 @@ async fn admin_and_allocation_services_share_api_state() {
                 fair_share_target: 0.25,
                 gpu_hours_budget: Some(500.0),
                 max_concurrent_allocations: Some(5),
+                ..Default::default()
             }),
             isolation_level: "strict".to_string(),
         }))
@@ -1809,8 +1810,7 @@ async fn admin_create_update_tenant_lifecycle() {
             quota: Some(pb::TenantQuotaSpec {
                 max_nodes: 50,
                 fair_share_target: 0.3,
-                gpu_hours_budget: None,
-                max_concurrent_allocations: None,
+                ..Default::default()
             }),
             isolation_level: "standard".to_string(),
         }))
@@ -1829,6 +1829,7 @@ async fn admin_create_update_tenant_lifecycle() {
                 fair_share_target: 0.5,
                 gpu_hours_budget: Some(1000.0),
                 max_concurrent_allocations: Some(10),
+                ..Default::default()
             }),
             isolation_level: Some("strict".to_string()),
         }))
@@ -1852,8 +1853,7 @@ async fn admin_create_update_vcluster_lifecycle() {
             quota: Some(pb::TenantQuotaSpec {
                 max_nodes: 100,
                 fair_share_target: 0.5,
-                gpu_hours_budget: None,
-                max_concurrent_allocations: None,
+                ..Default::default()
             }),
             isolation_level: "standard".to_string(),
         }))

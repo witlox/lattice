@@ -2024,7 +2024,6 @@ dependencies = [
  "lattice-common",
  "prost",
  "prost-types",
- "reqwest 0.13.2",
  "serde",
  "serde_json",
  "serde_yaml",

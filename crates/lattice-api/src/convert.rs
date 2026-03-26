@@ -658,9 +658,9 @@ fn quota_from_proto(q: &pb::TenantQuotaSpec) -> TenantQuota {
         max_nodes: q.max_nodes,
         fair_share_target: q.fair_share_target,
         gpu_hours_budget: q.gpu_hours_budget,
-        node_hours_budget: None,
+        node_hours_budget: q.node_hours_budget,
         max_concurrent_allocations: q.max_concurrent_allocations,
-        burst_allowance: None,
+        burst_allowance: q.burst_allowance,
     }
 }
 
@@ -670,6 +670,8 @@ fn quota_to_proto(q: &TenantQuota) -> pb::TenantQuotaSpec {
         fair_share_target: q.fair_share_target,
         gpu_hours_budget: q.gpu_hours_budget,
         max_concurrent_allocations: q.max_concurrent_allocations,
+        node_hours_budget: q.node_hours_budget,
+        burst_allowance: q.burst_allowance,
     }
 }
 
@@ -1103,6 +1105,8 @@ mod tests {
                 fair_share_target: 0.3,
                 gpu_hours_budget: Some(1000.0),
                 max_concurrent_allocations: Some(10),
+                node_hours_budget: None,
+                burst_allowance: None,
             }),
             isolation_level: "standard".to_string(),
         };
@@ -1113,6 +1117,38 @@ mod tests {
         let resp = tenant_to_response(&tenant);
         assert_eq!(resp.name, "physics");
         assert_eq!(resp.quota.unwrap().max_nodes, 50);
+    }
+
+    #[test]
+    fn roundtrip_tenant_with_node_hours_budget() {
+        let req = pb::CreateTenantRequest {
+            name: "ml-team".to_string(),
+            quota: Some(pb::TenantQuotaSpec {
+                max_nodes: 20,
+                fair_share_target: 0.2,
+                gpu_hours_budget: Some(5000.0),
+                max_concurrent_allocations: Some(5),
+                node_hours_budget: Some(10000.0),
+                burst_allowance: Some(1.5),
+            }),
+            isolation_level: "standard".to_string(),
+        };
+        let tenant = tenant_from_create(&req);
+        assert_eq!(tenant.quota.node_hours_budget, Some(10000.0));
+        assert_eq!(tenant.quota.burst_allowance, Some(1.5));
+        assert_eq!(tenant.quota.gpu_hours_budget, Some(5000.0));
+
+        // Round-trip through proto
+        let resp = tenant_to_response(&tenant);
+        let quota = resp.quota.unwrap();
+        assert_eq!(quota.node_hours_budget, Some(10000.0));
+        assert_eq!(quota.burst_allowance, Some(1.5));
+        assert_eq!(quota.gpu_hours_budget, Some(5000.0));
+
+        // And back from proto
+        let restored = quota_from_proto(&quota);
+        assert_eq!(restored.node_hours_budget, Some(10000.0));
+        assert_eq!(restored.burst_allowance, Some(1.5));
     }
 
     #[test]
