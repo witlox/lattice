@@ -24,7 +24,7 @@ pub async fn execute(
     config: &ClientConfig,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    if let Some(ref tenant) = args.tenant.as_ref().or(config.tenant.as_ref()) {
+    if let Some(tenant) = args.tenant.as_ref().or(config.tenant.as_ref()) {
         // Tenant-specific usage
         let resp = client.tenant_usage(tenant, args.days).await?;
 
