@@ -153,6 +153,18 @@ async fn main() -> Result<()> {
         }
     };
 
+    // ── Secret Resolution (INV-SEC1: before serving) ─────────────────────
+    // Uses reqwest::blocking internally — must run outside tokio's async
+    // context to avoid "cannot start runtime from within runtime" panic.
+    let config_clone = config.clone();
+    let secrets = tokio::task::spawn_blocking(move || {
+        let resolver = lattice_common::secrets::SecretResolver::new(&config_clone)?;
+        resolver.resolve_all(&config_clone)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("secret resolution task failed: {e}"))?
+    .map_err(|e| anyhow::anyhow!("secret resolution failed: {e}"))?;
+
     let grpc_addr = args
         .grpc_addr
         .unwrap_or_else(|| config.api.grpc_address.clone());
@@ -171,15 +183,24 @@ async fn main() -> Result<()> {
     // ── Raft Quorum ────────────────────────────────────────────────────────
     let (quorum, _raft_handle) = lattice_quorum::create_quorum_from_config(&config.quorum).await?;
 
-    // F10: Load persistent audit signing key if configured
-    if let Some(ref key_path) = config.quorum.audit_signing_key_path {
+    // Load audit signing key: resolved secret > file path > random (dev mode).
+    // When Vault is active, missing key already caused a fatal error above.
+    if let Some(ref key_bytes) = secrets.audit_signing_key {
         let mut state = quorum.state().write().await;
         state
-            .load_signing_key_from_file(key_path)
+            .load_signing_key_from_bytes(key_bytes)
             .map_err(|e| anyhow::anyhow!("audit signing key: {e}"))?;
-        info!("Audit signing key loaded from {}", key_path.display());
-    } else {
-        tracing::warn!("No audit_signing_key_path configured — using random key (dev mode only)");
+        info!("Audit signing key loaded from secret resolver");
+    } else if config.vault.is_none() {
+        if let Some(ref key_path) = config.quorum.audit_signing_key_path {
+            let mut state = quorum.state().write().await;
+            state
+                .load_signing_key_from_file(key_path)
+                .map_err(|e| anyhow::anyhow!("audit signing key: {e}"))?;
+            info!("Audit signing key loaded from {}", key_path.display());
+        } else {
+            tracing::warn!("No audit_signing_key configured — using random key (dev mode only)");
+        }
     }
 
     let quorum = Arc::new(quorum);
@@ -240,7 +261,11 @@ async fn main() -> Result<()> {
                 info!("Waldur accounting enabled: url={}", acct.waldur_api_url);
                 let waldur_config = lattice_common::clients::waldur::WaldurConfig {
                     api_url: acct.waldur_api_url.clone(),
-                    api_token: acct.waldur_token_secret_ref.clone(),
+                    api_token: secrets
+                        .waldur_token
+                        .as_ref()
+                        .map(|s| s.expose().to_string())
+                        .unwrap_or_default(),
                     flush_interval_secs: acct.push_interval_seconds,
                     max_buffer_size: acct.buffer_size as usize,
                 };
@@ -278,8 +303,16 @@ async fn main() -> Result<()> {
                 info!("VAST storage enabled: url={}", url);
                 let vast_config = lattice_common::clients::vast::VastConfig {
                     base_url: url.clone(),
-                    username: config.storage.vast_username.clone().unwrap_or_default(),
-                    password: config.storage.vast_password.clone().unwrap_or_default(),
+                    username: secrets
+                        .vast_username
+                        .as_ref()
+                        .map(|s| s.expose().to_string())
+                        .unwrap_or_default(),
+                    password: secrets
+                        .vast_password
+                        .as_ref()
+                        .map(|s| s.expose().to_string())
+                        .unwrap_or_default(),
                     timeout_secs: config.storage.vast_timeout_secs,
                 };
                 match lattice_common::clients::VastClient::new(vast_config) {

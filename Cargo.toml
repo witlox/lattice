@@ -72,7 +72,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 
 # HTTP (for REST gateway, storage API integration)
-reqwest = { version = "0.13", features = ["json", "query"] }
+reqwest = { version = "0.13", features = ["json", "query", "blocking"] }
 axum = "0.8"
 
 # JWT / OIDC
@@ -90,6 +90,12 @@ hex = "0.4"
 # Ed25519 signing (audit log)
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
+
+# Secret memory safety
+zeroize = "1"
+
+# Base64 encoding (secret resolution)
+base64 = "0.22"
 
 # Test cert generation
 rcgen = "0.14"

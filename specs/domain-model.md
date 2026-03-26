@@ -193,6 +193,28 @@ Lattice depends on four shared contract crates from the hpc-core workspace (publ
 | mTLS identity | IdentityCascade (same) | IdentityCascade (same, shared trust bundle) |
 | Resource limits | Lattice writes cgroup limits | PACT creates scopes, Lattice writes limits |
 
+## Cross-Cutting Infrastructure
+
+**SecretResolver** — Resolves operational secrets (API credentials, signing keys) at component startup. Not a bounded context — it is shared infrastructure in `lattice-common`, consumed by `lattice-api`, `lattice-node-agent`, and `lattice-quorum`. Three resolution backends:
+1. **Vault** (primary when configured): HashiCorp Vault KV v2 with AppRole auth. Convention-based paths: config field `{section}.{field}` maps to `GET {vault_prefix}/{section}` → key `{field}`. When Vault is globally configured (`vault.address` set), ALL secret fields are resolved from Vault — config literals and env vars for those fields are ignored.
+2. **Environment variable**: `LATTICE_{SECTION}_{FIELD}` (uppercase). Used when Vault is not configured.
+3. **Config literal**: Value from YAML config file. Lowest precedence.
+
+Resolution is startup-only — no hot reload. Vault unavailable at startup is fatal. TLS certificates are NOT handled by SecretResolver; they use the hpc-identity cascade (SPIRE → self-signed CA → bootstrap). Resolved values are never logged (INV-SEC2).
+
+Consumers: `lattice-api` and `lattice-quorum`. The CLI uses hpc-auth for token management and does not need secret resolution. The node agent currently has no operational secrets (TLS is handled by hpc-identity).
+
+Secrets managed by the resolver:
+| Field | Consumer | Type |
+|---|---|---|
+| `storage.vast_username` | lattice-api | API credential |
+| `storage.vast_password` | lattice-api | API credential |
+| `accounting.waldur_token` | lattice-api | Bearer token |
+| `quorum.audit_signing_key` | lattice-quorum | Ed25519 seed (32 bytes, base64 in Vault) |
+| `sovra.key_path` | lattice-api | Signing key (feature-gated) |
+
+**Secret rotation procedure:** Rotate the secret value in Vault (or env var / config file), then rolling-restart the consuming components. There is no hot-reload — the new value takes effect on next startup. For `vast_password` and `waldur_token`, restart `lattice-api` instances. For `audit_signing_key`, restart `lattice-quorum` members (one at a time to maintain Raft majority). Rotation of the audit signing key starts a new signature chain segment; the old key's signatures remain valid for verification.
+
 ## Cross-Context Coordination Mechanisms
 
 **Checkpoint Broker** — Reads scheduling state (queue depth, preemption demand, cost function) and node state (health, storage bandwidth). Evaluates `Value > Cost` per running allocation. Acts through node agents (sends CHECKPOINT_HINT). Stateless — crash recovery is re-evaluation on restart.

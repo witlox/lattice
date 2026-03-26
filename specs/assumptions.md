@@ -138,6 +138,44 @@ Assumptions surfaced from architecture docs, ADRs, and domain analysis. Categori
 **If wrong:** Network domain implementation needs a hardware abstraction layer. May need software fallback.
 **Investigation needed:** Monitor Ultra Ethernet specification progress.
 
+## Vault Integration Assumptions
+
+### A-V6: Vault KV v2 Engine Available
+**Source:** Secret resolution design
+**Assumption:** When Vault is configured, the KV v2 secrets engine is mounted at the configured prefix (default: `secret/`). The response format follows Vault KV v2 conventions (`data.data.{key}`).
+**If wrong:** Secret resolution fails at startup with a clear error. Operator enables KV v2 or adjusts mount path.
+**Critical:** No — Lattice works without Vault (INV-SEC6).
+
+### A-V7: AppRole Auth Method Available
+**Source:** Secret resolution design
+**Assumption:** Vault is configured with the AppRole auth method enabled. Lattice server components authenticate using a role ID + secret ID pair.
+**If wrong:** Authentication fails, startup fails (INV-SEC3). Operator configures AppRole or switches to non-Vault mode.
+**Critical:** No — Lattice works without Vault.
+
+### A-V8: Vault Prefix Convention Matches Operator Namespace
+**Source:** Secret resolution design, INV-SEC5
+**Assumption:** Operators organize their Vault namespace to match Lattice's convention: `{prefix}/storage`, `{prefix}/accounting`, `{prefix}/quorum`, `{prefix}/sovra`. This requires Vault-side setup.
+**If wrong:** Missing paths cause fatal startup errors. Clear error messages guide operators to create the correct paths.
+**Critical:** No — operational setup issue, not architectural.
+
+### A-V9: Vault Latency Acceptable at Startup
+**Source:** Secret resolution design
+**Assumption:** Vault KV v2 reads complete within a few hundred milliseconds. Startup reads ~5 secrets, so total Vault interaction is <2s.
+**If wrong:** Startup is slow but succeeds. No timeout beyond TCP connect timeout (configurable). Not a correctness issue.
+**Critical:** No.
+
+### A-V10: Restart-to-Rotate Is Operationally Acceptable
+**Source:** Secret resolution design, analyst interrogation
+**Assumption:** Operators accept that secret rotation requires a rolling restart of consuming components. There is no hot-reload mechanism. For lattice-api: restart instances behind load balancer (zero-downtime). For lattice-quorum: restart one member at a time (Raft tolerates minority loss).
+**If wrong:** Would need a secret watch/reload mechanism (Vault lease renewal, file watcher, or signal-based reload). Significant complexity increase.
+**Critical:** No — rolling restart is standard practice for credential rotation in HPC environments.
+
+### A-V11: SPIRE as Vault-TLS Bridge
+**Source:** Secret resolution design, hpc-identity cascade
+**Assumption:** When both Vault and SPIRE are deployed, SPIRE can use Vault's PKI secrets engine as an upstream authority for signing SVIDs. This provides Vault-backed TLS without Lattice needing to resolve TLS keys from Vault directly.
+**If wrong:** SPIRE uses its own CA (no Vault involvement in TLS). TLS still works; just not Vault-backed. No functional impact.
+**Critical:** No.
+
 ## Deployment Assumptions
 
 ### A-D1: Raft Co-location with PACT

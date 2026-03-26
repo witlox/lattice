@@ -64,6 +64,9 @@ Module boundaries, responsibilities, and ownership. Each module maps to a Rust c
 
 **Does NOT own:** Business logic. No command processing, no scheduling decisions, no state mutation.
 
+**Cross-cutting infrastructure:**
+- `SecretResolver`: Resolves operational secrets at startup via Vault KV v2, env vars, or config literals. Consumed by `lattice-api` and `lattice-quorum`. See `specs/architecture/interfaces/secret-resolution.md`.
+
 **Feature flags:** `federation` (Sovra), `accounting` (Waldur), `scheduler-core` (hpc-scheduler-core)
 
 **Note:** hpc-audit is an always-on dependency — the standardized audit event format is valuable regardless of PACT presence or SIEM integration.

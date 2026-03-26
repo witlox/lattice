@@ -232,6 +232,30 @@ Fail-safe defaults. Running allocations survive component failures. No silent fa
 | **Data loss** | None (allocation already completed/failed). |
 | **Unacceptable** | Silently ignoring orphaned scope. Must be tracked and alerted. |
 
+## Secret Resolution Failures
+
+### FM-25: Vault Unavailable at Startup
+
+| Aspect | Detail |
+|---|---|
+| **Detection** | `SecretResolver` Vault connection or auth failure during startup |
+| **Blast radius** | Component does not start. No running allocations affected (startup-only). |
+| **Degradation** | None — fatal. Component logs error with Vault address and failure reason, then exits. |
+| **Recovery** | Fix Vault (restore service, fix network, correct AppRole credentials) and restart component. Or remove `vault.address` from config to fall back to env/config mode. |
+| **Data loss** | None. Component never started. |
+| **Unacceptable** | Starting with partial secrets. Retrying indefinitely (blocks operator from diagnosing). Falling back to config literals when Vault is explicitly configured. |
+
+### FM-26: Vault Key Missing at Startup
+
+| Aspect | Detail |
+|---|---|
+| **Detection** | `SecretResolver` receives 404 from Vault KV v2 for a required secret path |
+| **Blast radius** | Component does not start. |
+| **Degradation** | None — fatal. Error message includes the missing Vault path and key name. |
+| **Recovery** | Operator creates the missing secret in Vault at the expected path, then restarts. |
+| **Data loss** | None. |
+| **Unacceptable** | Silently using empty/default values for missing secrets. |
+
 ## Allocation-Level Failures
 
 ### FM-15: Prologue Failure
@@ -301,3 +325,5 @@ Fail-safe defaults. Running allocations survive component failures. No silent fa
 | Readiness gate timeout | 30s | Immediate (proceed) | None | Possible early-start issues |
 | Cert rotation failure | Immediate | Next retry | None | None (current cert serves) |
 | Cgroup cleanup failure | Immediate | Manual | None | Reduced node capacity |
+| Vault unavailable (startup) | Immediate | Fix Vault + restart | None | Component won't start |
+| Vault key missing (startup) | Immediate | Add key + restart | None | Component won't start |

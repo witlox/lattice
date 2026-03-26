@@ -84,6 +84,17 @@ Maps every invariant from `specs/invariants.md` to its enforcement point(s) in t
 | **INV-ID2** Private key locality | lattice-node-agent, lattice-quorum | `IdentityProvider::get_identity()` generates keys in-process. CSR signing sends only public key. `WorkloadIdentity` Debug redacts `private_key_pem`. | Code review, unit tests (no key in logs) |
 | **INV-ID3** Cert rotation non-disruptive | lattice-node-agent, lattice-quorum | `CertRotator::rotate()` uses dual-channel swap: build → health-check → swap → drain. Failure leaves active channel unchanged. | Integration tests (rotation under load) |
 
+## Secret Resolution Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-SEC1** Resolution before serving | lattice-api, lattice-quorum (`main()`) | `SecretResolver::resolve_all()` called before server construction. `Err` → `process::exit(1)`. | Acceptance tests (secret_resolution.feature), unit tests |
+| **INV-SEC2** Secrets never logged | lattice-common (`SecretValue`) | `SecretValue` wrapper: `Debug`/`Display` emit `[REDACTED]`. Only `expose()` reveals value. No `Serialize` impl. | Unit tests (debug output), code review (grep for `.expose()` usage) |
+| **INV-SEC3** Vault down = fatal at startup | lattice-common (`VaultBackend::new()`) | AppRole auth and first read attempted at construction. Failure → `SecretResolutionError::ConnectionFailed` or `AuthenticationFailed`. No retry. | Integration tests (Vault mock down), acceptance tests |
+| **INV-SEC4** Vault global override | lattice-common (`SecretResolver::new()`) | If `config.vault.is_some()`, backend is `VaultBackend` only. `FallbackChain` not constructed. | Unit tests (backend selection), acceptance tests |
+| **INV-SEC5** Convention-based paths | lattice-common (`VaultBackend::fetch()`) | Path = `{prefix}/{section}`, key = `{field}`. Pure function. No lookup tables. | Unit tests (path mapping), acceptance tests |
+| **INV-SEC6** Functional without Vault | lattice-common (`FallbackChain`) | When `config.vault.is_none()`, `EnvBackend` → `ConfigBackend` chain used. All tests run without Vault. | All existing tests (no Vault in CI), acceptance tests |
+
 ## Cross-Context Enforcement
 
 Some invariants require coordination across modules:

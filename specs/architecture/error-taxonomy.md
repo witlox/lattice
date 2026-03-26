@@ -99,6 +99,23 @@ LatticeError
         HTTP: 500    gRPC: INTERNAL
 ```
 
+## Startup Errors (not propagated to API)
+
+### lattice-common: SecretResolutionError
+
+```
+SecretResolutionError
+  ├── ConnectionFailed { address, source }   — Vault TCP/TLS connection failed
+  ├── AuthenticationFailed { address, detail } — Vault AppRole auth rejected
+  ├── PathNotFound { path }                   — Vault KV v2 path does not exist
+  ├── KeyNotFound { path, key }               — Path exists, field missing
+  ├── NotFound { section, field }             — Env var unset AND config empty
+  ├── InvalidFormat { section, field, reason } — Base64 decode failed (binary secret)
+  └── VaultError { path, status, body }       — Unexpected Vault response
+```
+
+All variants are fatal startup errors. Not part of `LatticeError` — never reaches API layer. Used in `main()` to print descriptive error and exit. No variant contains resolved secret values (INV-SEC2).
+
 ## Module-Specific Errors
 
 ### lattice-node-agent: RuntimeError

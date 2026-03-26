@@ -56,6 +56,12 @@ pub struct LatticeConfig {
     /// Identity cascade configuration for workload mTLS
     #[serde(default)]
     pub identity: Option<IdentityConfig>,
+
+    /// HashiCorp Vault integration for secret resolution.
+    /// When present, all secret fields are resolved from Vault KV v2.
+    /// When absent, secrets fall back to env vars → config literals.
+    #[serde(default)]
+    pub vault: Option<VaultConfig>,
 }
 
 impl Default for LatticeConfig {
@@ -97,6 +103,7 @@ impl Default for LatticeConfig {
             rate_limit: None,
             compat: None,
             identity: None,
+            vault: None,
         }
     }
 }
@@ -382,7 +389,7 @@ pub struct AccountingConfig {
     /// Waldur API URL
     pub waldur_api_url: String,
     /// Kubernetes secret reference for Waldur API token
-    pub waldur_token_secret_ref: String,
+    pub waldur_token: String,
     /// Interval for pushing accounting events to Waldur (seconds)
     pub push_interval_seconds: u64,
     /// Local buffer size for accounting events before push
@@ -394,7 +401,7 @@ impl Default for AccountingConfig {
         Self {
             enabled: false,
             waldur_api_url: String::new(),
-            waldur_token_secret_ref: String::new(),
+            waldur_token: String::new(),
             push_interval_seconds: 60,
             buffer_size: 1000,
         }
@@ -499,6 +506,68 @@ impl Default for IdentityConfig {
             bootstrap_key: None,
             bootstrap_ca: None,
             cert_lifetime_seconds: default_cert_lifetime(),
+        }
+    }
+}
+
+// ─── Vault ─────────────────────────────────────────────────
+
+/// HashiCorp Vault integration for secret resolution.
+///
+/// When this section is present in configuration, ALL secret fields
+/// (VAST credentials, Waldur token, audit signing key, Sovra key) are
+/// resolved from Vault KV v2. Config file literals and environment
+/// variables for those fields are ignored (INV-SEC4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultConfig {
+    /// Vault server URL (e.g., "https://vault.example.com:8200").
+    pub address: String,
+
+    /// KV v2 mount + path prefix. Convention-based paths: field
+    /// `{section}.{field}` maps to `GET {prefix}/{section}` key `{field}`.
+    #[serde(default = "default_vault_prefix")]
+    pub prefix: String,
+
+    /// AppRole role ID. Not secret — safe in config files.
+    pub role_id: String,
+
+    /// Name of environment variable containing the AppRole secret ID.
+    /// The secret ID value itself is NEVER stored in config files.
+    #[serde(default = "default_vault_secret_id_env")]
+    pub secret_id_env: String,
+
+    /// CA certificate bundle for verifying Vault's TLS certificate.
+    /// When None, the system trust store is used (may include SPIRE-provisioned CAs).
+    /// TLS verification is never disabled.
+    #[serde(default)]
+    pub tls_ca_path: Option<PathBuf>,
+
+    /// HTTP client timeout for Vault requests in seconds.
+    #[serde(default = "default_vault_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_vault_prefix() -> String {
+    "secret/data/lattice".to_string()
+}
+
+fn default_vault_secret_id_env() -> String {
+    "VAULT_SECRET_ID".to_string()
+}
+
+fn default_vault_timeout() -> u64 {
+    10
+}
+
+impl Default for VaultConfig {
+    fn default() -> Self {
+        Self {
+            address: String::new(),
+            prefix: default_vault_prefix(),
+            role_id: String::new(),
+            secret_id_env: default_vault_secret_id_env(),
+            tls_ca_path: None,
+            timeout_secs: default_vault_timeout(),
         }
     }
 }

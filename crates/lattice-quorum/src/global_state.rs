@@ -170,6 +170,12 @@ impl GlobalState {
         Self::default()
     }
 
+    /// Load signing key from a 32-byte seed (from SecretResolver).
+    pub fn load_signing_key_from_bytes(&mut self, seed: &[u8; 32]) -> Result<(), String> {
+        self.audit_signing_key = SigningKey::from_bytes(seed);
+        Ok(())
+    }
+
     /// Load signing key from a 32-byte seed file (F10).
     /// Returns Ok(()) if loaded, Err if file missing or invalid.
     pub fn load_signing_key_from_file(&mut self, path: &std::path::Path) -> Result<(), String> {

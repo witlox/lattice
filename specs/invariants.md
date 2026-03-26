@@ -449,6 +449,68 @@ The cascade tries each provider's `is_available()` before calling `get_identity(
 
 ---
 
+## Secret Resolution Invariants
+
+### INV-SEC1: Secret Resolution Before Service Start
+
+**Statement:** All secret references must be resolved before the component begins serving requests or accepting connections. A resolution failure for any required secret is a fatal startup error — the component refuses to start.
+
+**Enforcement:** `SecretResolver::resolve_all()` called in `main()` before constructing any client or server. Returns `Result` — `Err` triggers `process::exit(1)` with descriptive error.
+
+**Violation consequence:** Component starts with missing or stale credentials. Runtime failures (401/403) that are harder to diagnose than a clear startup error.
+
+---
+
+### INV-SEC2: Secrets Never Logged
+
+**Statement:** Resolved secret values must never appear in log output, error messages, debug dumps, tracing spans, or Raft state. Secret references (Vault paths, config field names, env var names) may be logged; resolved values may not.
+
+**Enforcement:** `SecretValue` wrapper type that implements `Debug` and `Display` as `"[REDACTED]"`. Secret fields stored as `SecretValue`, not `String`. Review via `cargo clippy` custom lint or adversary review.
+
+**Violation consequence:** Credentials exposed in log aggregation systems (ELK, Loki, stdout captured by systemd journal). Credential rotation required.
+
+---
+
+### INV-SEC3: Vault Unavailable at Startup Is Fatal
+
+**Statement:** If Vault is configured (`vault.address` is set) and Vault is unreachable or authentication fails at startup, the component fails to start. There is no retry loop, no cached-last-known-good fallback, and no degraded mode.
+
+**Enforcement:** `VaultClient::authenticate()` called during `SecretResolver` construction. Connection failure or auth failure returns `Err`, propagated to `main()`.
+
+**Violation consequence:** Component runs with no secrets resolved (all empty). Immediate runtime failures.
+
+---
+
+### INV-SEC4: Vault Global Override
+
+**Statement:** When `vault.address` is configured, ALL secret fields are resolved from Vault KV v2. Config file literals and environment variables for those fields are ignored. A missing key in Vault is a fatal startup error (not a fallback to config).
+
+**Enforcement:** `SecretResolver` checks `vault_config.is_some()` and routes all resolution through the Vault backend. No fallback chain when Vault is active.
+
+**Violation consequence:** Mixed secret sources (some from Vault, some from config). Inconsistent security posture. Operator believes secrets are in Vault but component uses stale config values.
+
+---
+
+### INV-SEC5: Convention-Based Vault Paths
+
+**Statement:** Secret field `{section}.{field}` maps deterministically to Vault path `{vault_prefix}/{section}` with response key `{field}`. No per-secret path configuration exists. The default prefix is `secret/data/lattice`.
+
+**Enforcement:** Path construction in `SecretResolver::vault_path()` is a pure function of section name, field name, and prefix. No lookup tables or overrides.
+
+**Violation consequence:** Operator cannot predict which Vault path a secret maps to. Operational confusion.
+
+---
+
+### INV-SEC6: Fully Functional Without Vault
+
+**Statement:** Every secret field has a non-Vault resolution path (environment variable → config literal, or file path for binary secrets). Vault is never a runtime dependency. All cryptographic operations (audit signing, TLS) use locally-held key material.
+
+**Enforcement:** `SecretResolver` always has env/config fallback logic. No code path requires Vault to be present. Integration tests run without Vault.
+
+**Violation consequence:** Lattice cannot be deployed without Vault infrastructure. Violates design principle that external systems are optional.
+
+---
+
 ## Service Lifecycle Invariants
 
 ### INV-SVC1: Reconciliation Only For Service Lifecycles

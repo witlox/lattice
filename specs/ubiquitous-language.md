@@ -169,6 +169,18 @@ Configured with: `period_secs`, `initial_delay_secs`, `failure_threshold`, `time
 
 **AuthClient** — hpc-auth struct providing OAuth2 token management. Cascading flow selection (Auth Code + PKCE → Device Code → Manual Paste → Client Credentials), per-server token caching (`~/.config/{app}/tokens.json`), automatic refresh, OIDC discovery. Used by lattice-cli.
 
+## Secret Management
+
+**SecretResolver** — Cross-cutting infrastructure that resolves operational secrets at component startup. Owned by `lattice-common`, consumed by `lattice-api`, `lattice-node-agent`, and `lattice-quorum`. Resolution is startup-only (restart to rotate). Three backends in precedence order when Vault is not configured: environment variable → config literal. When Vault is configured, it overrides all other sources globally.
+
+**Vault Global Override** — When `vault.address` is set in configuration, all secret fields are resolved exclusively from HashiCorp Vault KV v2. Config file literals and environment variables for secret fields are ignored. Missing keys in Vault are fatal startup errors. This is an all-or-nothing mode: either all secrets come from Vault, or none do.
+
+**Convention-Based Vault Path** — The deterministic mapping from a config field name to a Vault KV v2 path. The config field `{section}.{field}` maps to `GET {vault_prefix}/{section}` with response key `{field}`. The default Vault prefix is `secret/data/lattice`. No per-secret path configuration exists — operators organize their Vault namespace to match Lattice's config structure.
+
+**Secret Field** — A configuration field whose value is a credential, token, or key material. Secret fields are: `storage.vast_username`, `storage.vast_password`, `accounting.waldur_token`, `quorum.audit_signing_key`, `sovra.key_path`. TLS certificates and private keys are NOT secret fields — they are managed by the hpc-identity cascade.
+
+**AppRole** — The Vault authentication method used by Lattice server components. A role ID and secret ID are provided via config or environment variables to obtain a Vault token at startup. Not used by lattice-cli (which uses hpc-auth for OIDC).
+
 ## External Systems
 
 **OpenCHAMI** — Infrastructure management system. Handles node boot/reimage (BSS), hardware discovery (Magellan/Redfish), state management (SMD), identity (OPAAL), and configuration injection (cloud-init). Lattice integrates but does not own.

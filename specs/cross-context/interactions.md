@@ -30,6 +30,9 @@ Cross-context coordinators (stateless):
   Accounting (Waldur): Scheduling ──events──► Waldur ──quotas──► Tenant & Access
   Data Staging:        Scheduling ──declares──► Node Management ──executes──► VAST
 
+Cross-cutting infrastructure:
+  SecretResolver: Config/Vault/Env ──secrets──► lattice-api, lattice-quorum (startup-only)
+
 hpc-core integration (trait-based, no code coupling):
   Node Mgmt ──hpc-node──► PACT (namespace handoff, mount sharing) OR self-service
   Consensus ──hpc-audit──► SIEM (standardized audit events)
@@ -395,6 +398,40 @@ These constants supplement (not replace) hpc-audit's well-known actions. Shared 
 - No browser (SSH session) → Device Code or Manual Paste flow selected automatically.
 
 **Ordering:** Login must precede all authenticated commands (INV-A1).
+
+### IP-15: SecretResolver → All Server Components (Startup Secret Injection)
+
+**Direction:** SecretResolver provides resolved secrets to lattice-api and lattice-quorum at startup.
+
+**Contract:**
+- `SecretResolver` constructed early in `main()`, before any server or client
+- When Vault configured: authenticates via AppRole, fetches all secrets from KV v2 using convention-based paths (INV-SEC5)
+- When Vault not configured: resolves from env vars (`LATTICE_{SECTION}_{FIELD}`), then config literals
+- Returns `ResolvedSecrets` struct consumed by component initialization code
+- Binary secrets (audit signing key) are base64-decoded after fetch
+
+**Consumers:**
+| Component | Secrets consumed | Used for |
+|---|---|---|
+| lattice-api | vast_username, vast_password, waldur_token, sovra key | External client construction (VAST, Waldur, Sovra) |
+| lattice-quorum | audit_signing_key | Ed25519 signing of audit entries |
+
+**Relationship to hpc-identity (IP-13):**
+- SecretResolver handles API credentials and signing keys
+- hpc-identity handles TLS certificates and private keys
+- No overlap. SPIRE may use Vault PKI as upstream CA (A-V10), but that is SPIRE's concern, not Lattice's
+
+**Failure modes:**
+- Vault unreachable → FM-25. Component does not start.
+- Vault key missing → FM-26. Component does not start.
+- Env var unset + config empty → fatal error naming the field.
+- All failures are startup-only. No runtime Vault dependency.
+
+**Ordering:** SecretResolver must complete before any gRPC server starts, any external client is constructed, or any audit entry is signed. Sequenced before hpc-identity cascade (identity cascade may depend on resolved config, e.g., quorum CA endpoint address).
+
+**Duplication:** Resolution is idempotent. Same input → same output. No caching concerns (startup-only).
+
+---
 
 ## Cross-Context Race Conditions
 

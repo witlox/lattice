@@ -85,7 +85,7 @@ scheduling:
 accounting:
   enabled: true
   waldur_api_url: "https://waldur.example.com/api"
-  waldur_token_secret_ref: "changeme"
+  waldur_token: "changeme"
   push_interval_seconds: 60
   buffer_size: 1000
 

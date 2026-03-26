@@ -206,3 +206,4 @@ lattice-quorum ─── gRPC ──► lattice-quorum (Raft AppendEntries, Vote
 | lattice-node-agent | PACT agent | Unix socket (SCM_RIGHTS) | IP-11, namespace handoff (optional) |
 | lattice-node-agent | SPIRE agent | Unix socket | IP-13, workload identity (optional) |
 | lattice-cli | OIDC Provider | REST/OAuth2 | IP-14, user authentication |
+| lattice-common (SecretResolver) | HashiCorp Vault | REST (KV v2 + AppRole) | IP-15, INV-SEC1-6 (optional, startup-only) |
