@@ -21,7 +21,7 @@ examples/
 │
 ├── config/                     # Configuration examples
 │   ├── single-node-dev.yaml    # Minimal development setup
-│   ├── agent-nvidia.yaml       # NVIDIA GPU node agent config
+│   ├── agent.yaml              # Node agent config (auto-detects GPUs)
 │   └── weight-profiles/        # Cost function weight tuning
 │       ├── baseline.yaml       # Default balanced weights
 │       ├── fairness-tuned.yaml # Fair-share emphasis

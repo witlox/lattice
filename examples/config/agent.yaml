@@ -1,14 +1,14 @@
-# agent-nvidia.yaml — Node agent configuration for NVIDIA GPU nodes
+# agent.yaml — Node agent configuration
 #
 # The node agent runs on each compute node. It handles:
 #   - Node registration and heartbeat with the quorum
-#   - GPU discovery (NVIDIA via nvml-wrapper)
+#   - GPU discovery (auto-detects NVIDIA via nvml-wrapper, AMD via rocm-smi)
 #   - Telemetry collection (proc/sys collectors, optional eBPF)
 #   - uenv/Sarus lifecycle management
 #   - Checkpoint signal forwarding
 #
 # Start the agent with:
-#   lattice-agent --config examples/config/agent-nvidia.yaml
+#   lattice-agent --config examples/config/agent.yaml
 
 # Unique node name (typically the hostname)
 node_name: "nid001234"
@@ -22,7 +22,8 @@ heartbeat_interval_seconds: 30
 # GPU discovery configuration
 gpu:
   # Provider: "nvidia", "amd", or "auto" (auto-detects available hardware)
-  provider: "nvidia"
+  # "auto" tries NVIDIA first, then AMD, then reports no GPUs.
+  provider: "auto"
 
 # Memory topology discovery
 memory:

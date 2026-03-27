@@ -35,12 +35,8 @@ sudo cp infra/systemd/lattice-server.service /etc/systemd/system/
 sudo cp config/production.yaml /etc/lattice/config.yaml
 sudo systemctl enable --now lattice-server
 
-# Agent (compute nodes) — pick the variant for your GPU hardware
-#   lattice-agent-${ARCH}-cpu.tar.gz      — CPU-only nodes
-#   lattice-agent-${ARCH}-nvidia.tar.gz   — NVIDIA H100/A100/GH200
-#   lattice-agent-x86_64-rocm.tar.gz      — AMD MI300X/MI250 (x86_64 only)
-GPU=cpu  # or: nvidia, rocm
-curl -sSfL "https://github.com/witlox/lattice/releases/latest/download/lattice-agent-${ARCH}-${GPU}.tar.gz" | tar xz
+# Agent (compute nodes) — single binary per architecture, all GPU support included
+curl -sSfL "https://github.com/witlox/lattice/releases/latest/download/lattice-agent-${ARCH}.tar.gz" | tar xz
 sudo mv lattice-agent /usr/local/bin/
 sudo cp infra/systemd/lattice-agent.service /etc/systemd/system/
 sudo systemctl enable --now lattice-agent
@@ -193,15 +189,33 @@ Compile-time features control optional integrations:
 | `rocm` | lattice-node-agent | AMD GPU discovery (rocm-smi) |
 | `ebpf` | lattice-node-agent | eBPF kernel telemetry (Linux only) |
 
-Pre-built release binaries include the appropriate GPU features. To build from source:
+Pre-built release binaries ship with **all features enabled**. GPU libraries are loaded at runtime — nodes without GPUs simply report no GPU hardware. To build from source:
 
 ```bash
-# Server (no GPU features needed)
-cargo build --release -p lattice-api --features oidc
+# Server with all features
+cargo build --release -p lattice-api --all-features
 
-# Agent for NVIDIA nodes
-cargo build --release -p lattice-node-agent --features nvidia
-
-# Agent for AMD ROCm nodes
-cargo build --release -p lattice-node-agent --features rocm
+# Agent with all features
+cargo build --release -p lattice-node-agent --all-features
 ```
+
+### Release Artifacts
+
+| Artifact | Architecture | GPU Support |
+|----------|-------------|-------------|
+| `lattice-server-x86_64.tar.gz` | x86_64 | n/a |
+| `lattice-server-arm64.tar.gz` | arm64 | n/a |
+| `lattice-x86_64.tar.gz` | x86_64 | n/a (CLI) |
+| `lattice-arm64.tar.gz` | arm64 | n/a (CLI) |
+| `lattice-agent-x86_64.tar.gz` | x86_64 | NVIDIA + AMD ROCm + eBPF |
+| `lattice-agent-arm64.tar.gz` | arm64 | NVIDIA + AMD ROCm + eBPF |
+| `rm-replay-x86_64.tar.gz` | x86_64 | n/a |
+| `rm-replay-arm64.tar.gz` | arm64 | n/a |
+
+GPU discovery is automatic at runtime. The agent detects available hardware and uses the appropriate provider:
+
+| Hardware | Discovery Method | Runtime Dependency |
+|----------|-----------------|-------------------|
+| NVIDIA (H100, A100, GH200) | nvml-wrapper (`libnvidia-ml.so` via dlopen) | NVIDIA driver installed |
+| AMD (MI300X, MI250) | rocm-smi CLI | ROCm toolkit installed |
+| CPU-only nodes | No GPU discovery runs | None |
