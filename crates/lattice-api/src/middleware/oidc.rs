@@ -130,6 +130,144 @@ impl OidcValidator for StubOidcValidator {
     }
 }
 
+// ─── HMAC validator ─────────────────────────────────────────────────────────
+
+/// JWT claims for HMAC token deserialization.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct HmacJwtClaims {
+    sub: String,
+    exp: i64,
+    #[serde(default)]
+    iss: String,
+    #[serde(default)]
+    aud: HmacAudience,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+}
+
+/// Audience can be a single string or an array of strings.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(untagged)]
+enum HmacAudience {
+    Single(String),
+    Multiple(Vec<String>),
+    #[default]
+    None,
+}
+
+impl HmacAudience {
+    fn primary(&self) -> String {
+        match self {
+            HmacAudience::Single(s) => s.clone(),
+            HmacAudience::Multiple(v) => v.first().cloned().unwrap_or_default(),
+            HmacAudience::None => String::new(),
+        }
+    }
+}
+
+/// An OIDC-compatible validator that uses HMAC-SHA256 (HS256) with a shared
+/// secret. Useful for dev/testing/internal deployments where a full OIDC
+/// provider is not available.
+///
+/// Token format: standard JWT signed with HS256. Claims must include `sub`
+/// and `exp`. Optional: `iss`, `aud`, `scope` (space-separated string) or
+/// `scopes` (string array).
+#[derive(Clone)]
+pub struct HmacOidcValidator {
+    /// The shared secret used to verify HS256 signatures.
+    decoding_key: jsonwebtoken::DecodingKey,
+    /// Expected audience (empty = no audience check).
+    audience: String,
+    /// Expected issuer (empty = no issuer check).
+    issuer: String,
+    /// Required scopes.
+    required_scopes: Vec<String>,
+}
+
+impl HmacOidcValidator {
+    /// Create a new HMAC validator from a shared secret and optional config.
+    pub fn new(secret: &str, config: Option<&OidcConfig>) -> Self {
+        let decoding_key = jsonwebtoken::DecodingKey::from_secret(secret.as_bytes());
+        let (audience, issuer, required_scopes) = match config {
+            Some(c) => (
+                c.audience.clone(),
+                c.issuer_url.clone(),
+                c.required_scopes.clone(),
+            ),
+            None => (String::new(), String::new(), vec![]),
+        };
+        Self {
+            decoding_key,
+            audience,
+            issuer,
+            required_scopes,
+        }
+    }
+
+    /// Synchronous token validation — useful for gRPC interceptors.
+    pub fn validate_token_sync(&self, token: &str) -> Result<TokenClaims, OidcError> {
+        let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+
+        if self.audience.is_empty() {
+            validation.validate_aud = false;
+        } else {
+            validation.set_audience(&[&self.audience]);
+        }
+
+        if !self.issuer.is_empty() {
+            validation.set_issuer(&[&self.issuer]);
+        }
+
+        validation.validate_exp = true;
+
+        let token_data = jsonwebtoken::decode::<HmacJwtClaims>(token, &self.decoding_key, &validation)
+            .map_err(|e| match e.kind() {
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => OidcError::Expired,
+                jsonwebtoken::errors::ErrorKind::InvalidIssuer => OidcError::WrongIssuer,
+                jsonwebtoken::errors::ErrorKind::InvalidAudience => OidcError::WrongIssuer,
+                _ => OidcError::InvalidToken,
+            })?;
+
+        let claims = token_data.claims;
+
+        // Extract scopes
+        let scopes: Vec<String> = if let Some(scope_str) = &claims.scope {
+            scope_str
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect()
+        } else if let Some(scope_vec) = &claims.scopes {
+            scope_vec.clone()
+        } else {
+            vec![]
+        };
+
+        // Check required scopes
+        for required in &self.required_scopes {
+            if !scopes.contains(required) {
+                return Err(OidcError::MissingScope(required.clone()));
+            }
+        }
+
+        Ok(TokenClaims {
+            sub: claims.sub,
+            exp: claims.exp,
+            iss: claims.iss,
+            aud: claims.aud.primary(),
+            scopes,
+        })
+    }
+}
+
+#[async_trait]
+impl OidcValidator for HmacOidcValidator {
+    async fn validate_token(&self, token: &str) -> Result<TokenClaims, OidcError> {
+        self.validate_token_sync(token)
+    }
+}
+
 // ─── JWKS cache ──────────────────────────────────────────────────────────────
 
 /// Cached JWKS keyset with a time-to-live for automatic refresh.
@@ -726,5 +864,109 @@ mod tests {
             OidcError::IntrospectionFailed("timeout".to_string()).to_string(),
             "token introspection failed: timeout"
         );
+    }
+
+    // ─── HmacOidcValidator tests ────────────────────────────────────────
+
+    /// Helper: create an HS256 JWT with the given claims.
+    fn make_hmac_token(
+        secret: &str,
+        sub: &str,
+        exp_offset_secs: i64,
+        scopes: Option<&str>,
+    ) -> String {
+        use jsonwebtoken::{encode, EncodingKey, Header};
+
+        let now = chrono::Utc::now().timestamp();
+        let mut claims = serde_json::json!({
+            "sub": sub,
+            "exp": now + exp_offset_secs,
+            "iat": now,
+        });
+        if let Some(s) = scopes {
+            claims["scope"] = serde_json::Value::String(s.to_string());
+        }
+
+        let header = Header::new(jsonwebtoken::Algorithm::HS256);
+        let key = EncodingKey::from_secret(secret.as_bytes());
+        encode(&header, &claims, &key).unwrap()
+    }
+
+    // 14. HmacOidcValidator accepts a valid HS256 token.
+    #[tokio::test]
+    async fn hmac_validator_accepts_valid_token() {
+        let secret = "test-secret-key-for-hmac-validation";
+        let validator = HmacOidcValidator::new(secret, None);
+        let token = make_hmac_token(secret, "alice", 3600, Some("jobs:read jobs:write"));
+
+        let claims = validator.validate_token(&token).await.unwrap();
+        assert_eq!(claims.sub, "alice");
+        assert!(claims.scopes.contains(&"jobs:read".to_string()));
+        assert!(claims.scopes.contains(&"jobs:write".to_string()));
+    }
+
+    // 15. HmacOidcValidator rejects an expired token.
+    #[tokio::test]
+    async fn hmac_validator_rejects_expired_token() {
+        let secret = "test-secret-key-for-hmac-validation";
+        let validator = HmacOidcValidator::new(secret, None);
+        let token = make_hmac_token(secret, "alice", -3600, None);
+
+        let err = validator.validate_token(&token).await.unwrap_err();
+        assert_eq!(err, OidcError::Expired);
+    }
+
+    // 16. HmacOidcValidator rejects a token signed with a different secret.
+    #[tokio::test]
+    async fn hmac_validator_rejects_wrong_secret() {
+        let validator = HmacOidcValidator::new("correct-secret", None);
+        let token = make_hmac_token("wrong-secret", "alice", 3600, None);
+
+        let err = validator.validate_token(&token).await.unwrap_err();
+        assert_eq!(err, OidcError::InvalidToken);
+    }
+
+    // 17. HmacOidcValidator rejects garbage input.
+    #[tokio::test]
+    async fn hmac_validator_rejects_garbage() {
+        let validator = HmacOidcValidator::new("secret", None);
+        let err = validator.validate_token("not.a.jwt").await.unwrap_err();
+        assert_eq!(err, OidcError::InvalidToken);
+    }
+
+    // 18. HmacOidcValidator enforces required scopes.
+    #[tokio::test]
+    async fn hmac_validator_enforces_required_scopes() {
+        let secret = "test-secret-key";
+        let config = OidcConfig {
+            issuer_url: String::new(),
+            audience: String::new(),
+            required_scopes: vec!["admin:write".to_string()],
+        };
+        let validator = HmacOidcValidator::new(secret, Some(&config));
+        let token = make_hmac_token(secret, "bob", 3600, Some("jobs:read"));
+
+        let err = validator.validate_token(&token).await.unwrap_err();
+        assert_eq!(err, OidcError::MissingScope("admin:write".to_string()));
+    }
+
+    // 19. HmacOidcValidator sync validation works.
+    #[test]
+    fn hmac_validator_sync_validation() {
+        let secret = "sync-test-secret";
+        let validator = HmacOidcValidator::new(secret, None);
+        let token = make_hmac_token(secret, "carol", 3600, Some("admin"));
+
+        let claims = validator.validate_token_sync(&token).unwrap();
+        assert_eq!(claims.sub, "carol");
+        assert_eq!(claims.scopes, vec!["admin"]);
+    }
+
+    // 20. HmacOidcValidator sync rejects invalid tokens.
+    #[test]
+    fn hmac_validator_sync_rejects_invalid() {
+        let validator = HmacOidcValidator::new("secret", None);
+        let err = validator.validate_token_sync("garbage").unwrap_err();
+        assert_eq!(err, OidcError::InvalidToken);
     }
 }

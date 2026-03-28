@@ -56,27 +56,51 @@ async fn rest_auth_middleware(
         }
     }
 
-    // Extract and validate Bearer token
+    // Extract Bearer token
     let auth_header = request
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
 
-    match auth_header {
-        Some(_token) => {
-            // Token is present. Full async OIDC validation would happen here
-            // with state.oidc_config. For now, token presence is enforced;
-            // the service handlers perform the actual validation.
-            next.run(request).await
+    let token = match auth_header {
+        Some(t) => t.to_string(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "missing or invalid Authorization header".into(),
+                }),
+            )
+                .into_response();
         }
-        None => (
+    };
+
+    // Validate token using the configured OIDC validator
+    if let Some(ref validator) = state.oidc {
+        match validator.validate_token(&token).await {
+            Ok(claims) => {
+                let mut request = request;
+                request.extensions_mut().insert(claims);
+                next.run(request).await
+            }
+            Err(e) => (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: format!("authentication failed: {e}"),
+                }),
+            )
+                .into_response(),
+        }
+    } else {
+        // Validator not available (e.g. oidc_config set but no validator) — reject
+        (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
-                error: "missing or invalid Authorization header".into(),
+                error: "authentication not configured correctly".into(),
             }),
         )
-            .into_response(),
+            .into_response()
     }
 }
 

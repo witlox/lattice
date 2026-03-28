@@ -181,6 +181,8 @@ pub fn build_interceptor(
 ) -> impl Fn(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> + Clone + Send + Sync
 {
     let rate_limiter = state.rate_limiter.clone();
+    let oidc_config = state.oidc_config.clone();
+    let hmac_validator = build_hmac_validator(&state);
 
     move |mut req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
         // ── Step 1: Rate limiting ────────────────────────────────────────
@@ -204,14 +206,31 @@ pub fn build_interceptor(
             }
         }
 
-        // ── Step 2: Extract bearer token (stash for service handler) ─────
+        // ── Step 2: Extract and validate bearer token ───────────────────
         let bearer_token = req
             .metadata()
             .get("authorization")
             .and_then(|auth| auth.to_str().ok())
             .and_then(|val| val.strip_prefix("Bearer "))
             .map(|token| BearerToken(token.to_string()));
-        if let Some(token) = bearer_token {
+
+        if oidc_config.is_some() {
+            // Auth is required — reject if no token
+            let token = bearer_token.ok_or_else(|| {
+                tonic::Status::unauthenticated("missing Bearer token")
+            })?;
+
+            // Synchronous HMAC validation if available
+            if let Some(ref validator) = hmac_validator {
+                let claims = validator.validate_token_sync(&token.0).map_err(|e| {
+                    tonic::Status::unauthenticated(format!("authentication failed: {e}"))
+                })?;
+                req.extensions_mut().insert(claims);
+            }
+
+            req.extensions_mut().insert(token);
+        } else if let Some(token) = bearer_token {
+            // No auth required but token provided — stash it
             req.extensions_mut().insert(token);
         }
 
@@ -229,6 +248,21 @@ pub fn build_interceptor(
 
         Ok(req)
     }
+}
+
+/// Build an HMAC validator if HMAC secret is available, for synchronous
+/// gRPC interceptor token validation.
+fn build_hmac_validator(
+    state: &ApiState,
+) -> Option<crate::middleware::oidc::HmacOidcValidator> {
+    // Check if the OIDC validator is an HmacOidcValidator by trying to
+    // create one from env or config. The actual Arc<dyn OidcValidator>
+    // in state is already set by main.rs — but for the sync interceptor
+    // we need a separate instance.
+    let secret = std::env::var("LATTICE_OIDC_HMAC_SECRET").ok();
+    secret.map(|s| {
+        crate::middleware::oidc::HmacOidcValidator::new(&s, state.oidc_config.as_ref())
+    })
 }
 
 /// Extension type: the raw bearer token extracted from the `authorization` header.
@@ -407,6 +441,7 @@ mod tests {
             tls_ca: Some(PathBuf::from("/etc/lattice/tls/ca.crt")),
             oidc_client_id: None,
             bind_network: lattice_common::config::BindNetwork::Any,
+            oidc_hmac_secret: None,
         };
 
         let tls = tls_config_from_api(&api).expect("should produce TlsConfig");
@@ -450,6 +485,7 @@ mod tests {
             tls_key: None,
             tls_ca: None,
             bind_network: lattice_common::config::BindNetwork::Any,
+            oidc_hmac_secret: None,
         };
 
         let tls = tls_config_from_api(&api);
@@ -595,6 +631,7 @@ mod tests {
             tls_key: Some(PathBuf::from("/tls/key.pem")),
             tls_ca: Some(PathBuf::from("/tls/ca.pem")),
             bind_network: lattice_common::config::BindNetwork::Any,
+            oidc_hmac_secret: None,
         };
 
         let cfg = ServerConfig::from_api_config(&api).unwrap();

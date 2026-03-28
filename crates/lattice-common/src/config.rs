@@ -78,6 +78,7 @@ impl Default for LatticeConfig {
                 tls_key: None,
                 tls_ca: None,
                 bind_network: BindNetwork::Any,
+                oidc_hmac_secret: None,
             },
             storage: StorageConfig {
                 vast_api_url: None,
@@ -229,6 +230,11 @@ pub struct ApiConfig {
     /// Network to bind to (see [`BindNetwork`]).
     #[serde(default = "default_bind_network")]
     pub bind_network: BindNetwork,
+    /// HMAC shared secret for dev/testing JWT validation (HS256).
+    /// When set (or env `LATTICE_OIDC_HMAC_SECRET` is set), enables
+    /// HMAC-based JWT validation as an alternative to JWKS.
+    #[serde(default)]
+    pub oidc_hmac_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

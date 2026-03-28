@@ -243,13 +243,19 @@ async fn main() -> Result<()> {
     }
 
     // ── OIDC ──────────────────────────────────────────────────────────────
+    let hmac_secret = config
+        .api
+        .oidc_hmac_secret
+        .clone()
+        .or_else(|| std::env::var("LATTICE_OIDC_HMAC_SECRET").ok());
+
     #[cfg(feature = "oidc")]
     let oidc: Option<Arc<dyn lattice_api::middleware::oidc::OidcValidator>> =
         if !config.api.oidc_issuer.is_empty() {
             info!("OIDC enabled: issuer={}", config.api.oidc_issuer);
             let oidc_config = lattice_api::middleware::oidc::OidcConfig {
                 issuer_url: config.api.oidc_issuer.clone(),
-                audience: String::new(),
+                audience: config.api.oidc_client_id.clone().unwrap_or_default(),
                 required_scopes: vec![],
             };
             Some(
@@ -257,11 +263,36 @@ async fn main() -> Result<()> {
                     oidc_config,
                 )) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>,
             )
+        } else if let Some(ref secret) = hmac_secret {
+            info!("HMAC token validation enabled (dev/internal mode)");
+            Some(
+                Arc::new(lattice_api::middleware::oidc::HmacOidcValidator::new(
+                    secret,
+                    None,
+                )) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>,
+            )
         } else {
+            tracing::warn!(
+                "No OIDC authentication configured -- API is unauthenticated (dev mode only)"
+            );
             None
         };
     #[cfg(not(feature = "oidc"))]
-    let oidc: Option<Arc<dyn lattice_api::middleware::oidc::OidcValidator>> = None;
+    let oidc: Option<Arc<dyn lattice_api::middleware::oidc::OidcValidator>> =
+        if let Some(ref secret) = hmac_secret {
+            info!("HMAC token validation enabled (dev/internal mode)");
+            Some(
+                Arc::new(lattice_api::middleware::oidc::HmacOidcValidator::new(
+                    secret,
+                    None,
+                )) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>,
+            )
+        } else {
+            tracing::warn!(
+                "No OIDC authentication configured -- API is unauthenticated (dev mode only)"
+            );
+            None
+        };
 
     // ── Sovra ─────────────────────────────────────────────────────────────
     #[cfg(feature = "federation")]
@@ -406,6 +437,13 @@ async fn main() -> Result<()> {
             Some(lattice_api::middleware::oidc::OidcConfig {
                 issuer_url: config.api.oidc_issuer.clone(),
                 audience: config.api.oidc_client_id.clone().unwrap_or_default(),
+                required_scopes: vec![],
+            })
+        } else if hmac_secret.is_some() {
+            // HMAC mode: create a minimal OidcConfig so auth enforcement is enabled
+            Some(lattice_api::middleware::oidc::OidcConfig {
+                issuer_url: String::new(),
+                audience: String::new(),
                 required_scopes: vec![],
             })
         } else {
