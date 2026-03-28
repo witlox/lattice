@@ -147,6 +147,12 @@ pub struct QuorumConfig {
     /// Production deployments MUST set this to a persistent key file.
     #[serde(default)]
     pub audit_signing_key_path: Option<PathBuf>,
+    /// Initialize a new Raft cluster. Must be true only on the very first
+    /// startup of node 1. Subsequent restarts MUST set this to false (the
+    /// default), otherwise the Raft engine rejects re-initialization when
+    /// log entries already exist.
+    #[serde(default)]
+    pub bootstrap: bool,
 }
 
 fn default_raft_listen_address() -> String {
@@ -189,6 +195,7 @@ impl Default for QuorumConfig {
             data_dir: None,
             bind_network: BindNetwork::Any,
             audit_signing_key_path: None,
+            bootstrap: false,
         }
     }
 }

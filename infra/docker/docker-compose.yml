@@ -9,6 +9,11 @@
 services:
   # ── Quorum Nodes (3-node Raft cluster) ────────────────────
 
+  # On first-ever start, bootstrap the Raft cluster:
+  #   docker compose run --rm lattice-server-1 --config /etc/lattice/config.yaml --bootstrap
+  # Then start normally (without --bootstrap):
+  #   docker compose up -d
+
   lattice-server-1:
     build:
       context: ../..

@@ -146,8 +146,11 @@ pub async fn create_quorum_from_config(
     // Give server time to start
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Node 1 initializes the cluster; others wait for membership
-    if node_id == 1 {
+    // Initialize the Raft cluster only when explicitly requested via the
+    // bootstrap flag.  This MUST only be set on the very first startup of the
+    // first node.  Subsequent restarts skip initialization — the persisted
+    // Raft state (WAL + snapshots) is sufficient to rejoin the cluster.
+    if config.bootstrap {
         raft.initialize(members).await?;
     }
 
@@ -370,6 +373,116 @@ mod tests {
             .unwrap();
         let got = client.get_node(&"cfg-test".to_string()).await.unwrap();
         assert_eq!(got.id, "cfg-test");
+    }
+
+    /// Verify that a persistent single-node quorum can be bootstrapped, stopped,
+    /// and restarted without the bootstrap flag — the exact crash-loop scenario
+    /// that was broken before the fix.
+    #[tokio::test]
+    async fn persistent_restart_without_bootstrap_succeeds() {
+        use lattice_common::config::QuorumConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener); // release port so quorum can bind
+
+        // First boot: bootstrap=true to initialize
+        let config = QuorumConfig {
+            node_id: 1,
+            data_dir: Some(dir.path().to_path_buf()),
+            raft_listen_address: addr.clone(),
+            bootstrap: true,
+            ..Default::default()
+        };
+        let (client, handle) = create_quorum_from_config(&config).await.unwrap();
+
+        // Write something so the Raft log is non-empty
+        let node = NodeBuilder::new().id("persist-test").build();
+        client
+            .propose(commands::Command::RegisterNode(node))
+            .await
+            .unwrap();
+
+        // Shut down
+        drop(client);
+        if let Some(h) = handle {
+            h.abort();
+            let _ = h.await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Second boot: bootstrap=false (simulating systemd restart).
+        // Before the fix, this would fail with "not allowed to initialize".
+        let config2 = QuorumConfig {
+            node_id: 1,
+            data_dir: Some(dir.path().to_path_buf()),
+            raft_listen_address: addr,
+            bootstrap: false,
+            ..Default::default()
+        };
+        let result = create_quorum_from_config(&config2).await;
+        assert!(
+            result.is_ok(),
+            "Restart without bootstrap must succeed; got: {:?}",
+            result.err()
+        );
+
+        let (client2, handle2) = result.unwrap();
+        drop(client2);
+        if let Some(h) = handle2 {
+            h.abort();
+        }
+    }
+
+    /// Verify that re-bootstrapping an already-initialized cluster fails
+    /// (the Raft engine rejects double-init).
+    #[tokio::test]
+    async fn re_bootstrap_existing_cluster_fails() {
+        use lattice_common::config::QuorumConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+
+        // First boot: bootstrap
+        let config = QuorumConfig {
+            node_id: 1,
+            data_dir: Some(dir.path().to_path_buf()),
+            raft_listen_address: addr.clone(),
+            bootstrap: true,
+            ..Default::default()
+        };
+        let (client, handle) = create_quorum_from_config(&config).await.unwrap();
+
+        // Write data so log is non-empty
+        let node = NodeBuilder::new().id("double-init").build();
+        client
+            .propose(commands::Command::RegisterNode(node))
+            .await
+            .unwrap();
+
+        drop(client);
+        if let Some(h) = handle {
+            h.abort();
+            let _ = h.await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Second boot with bootstrap=true again — should fail
+        let config2 = QuorumConfig {
+            node_id: 1,
+            data_dir: Some(dir.path().to_path_buf()),
+            raft_listen_address: addr,
+            bootstrap: true,
+            ..Default::default()
+        };
+        let result = create_quorum_from_config(&config2).await;
+        assert!(
+            result.is_err(),
+            "Re-bootstrapping an existing cluster must fail"
+        );
     }
 
     #[tokio::test]

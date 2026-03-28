@@ -150,16 +150,20 @@ Node (dual-homed):
 
 ### First-Time Bootstrap
 
-The first quorum member initializes a single-node Raft cluster:
+The first quorum member initializes a new Raft cluster using the `--bootstrap`
+flag. This flag must only be passed **once** — on the very first startup of
+node 1. All subsequent restarts omit it; the persisted Raft state (WAL +
+snapshots) is sufficient to rejoin.
 
 ```bash
-lattice-quorum --bootstrap \
-  --node-id=quorum-1 \
-  --listen=0.0.0.0:4001 \
-  --data-dir=/var/lib/lattice/raft
+# First-ever start of node 1:
+lattice-server --config /etc/lattice/server.yaml --bootstrap
+
+# All subsequent restarts (including systemd):
+lattice-server --config /etc/lattice/server.yaml
 ```
 
-This creates an empty Raft log and elects itself as leader.
+This creates an empty Raft log and elects node 1 as leader.
 
 ### Adding Members
 

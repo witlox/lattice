@@ -6,7 +6,13 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/lattice-server --config /etc/lattice/server.yaml
+ExecStartPre=+/bin/bash -c 'mkdir -p /var/lib/lattice/raft'
+ExecStart=/usr/local/bin/lattice-server \
+    --config /etc/lattice/server.yaml
+# NOTE: --bootstrap is intentionally NOT passed here.
+# Use it only once during initial cluster deployment:
+#   lattice-server --config /etc/lattice/server.yaml --bootstrap
+# After cluster initialization, systemd restarts without --bootstrap.
 EnvironmentFile=-/etc/lattice/server.env
 Restart=on-failure
 RestartSec=5

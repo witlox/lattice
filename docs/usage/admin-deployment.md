@@ -75,7 +75,18 @@ See the [production config](https://github.com/witlox/lattice/blob/main/config/p
 
 ### Initial Bootstrap
 
-The first quorum member starts as a single-node cluster. Add peers by listing them in each node's config:
+The first quorum member initializes the Raft cluster using the `--bootstrap` flag. This flag must only be passed **once** — on the very first startup of node 1. All subsequent restarts (including systemd restarts) omit it.
+
+```bash
+# First-ever start of node 1 — initializes the Raft cluster:
+lattice-server --config /etc/lattice/server.yaml --bootstrap
+
+# All subsequent restarts — no --bootstrap:
+lattice-server --config /etc/lattice/server.yaml
+# (or via systemd, which never passes --bootstrap)
+```
+
+Configure peers in each node's config:
 
 ```yaml
 quorum:
@@ -87,6 +98,8 @@ quorum:
     - id: 3
       address: "lattice-03:9000"
 ```
+
+Nodes 2 and 3 never need `--bootstrap` — they join via Raft membership replication from the leader.
 
 ### Raft Status
 

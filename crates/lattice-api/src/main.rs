@@ -39,6 +39,11 @@ struct Args {
     /// REST listen address (overrides config)
     #[arg(long)]
     rest_addr: Option<String>,
+
+    /// Initialize a new Raft cluster. Use only on the very first startup of
+    /// node 1. All subsequent restarts must omit this flag.
+    #[arg(long, default_value_t = false)]
+    bootstrap: bool,
 }
 
 // ─── Scheduler ↔ Quorum adapters ─────────────────────────────────────────────
@@ -181,7 +186,12 @@ async fn main() -> Result<()> {
     info!("REST address: {}", rest_addr);
 
     // ── Raft Quorum ────────────────────────────────────────────────────────
-    let (quorum, _raft_handle) = lattice_quorum::create_quorum_from_config(&config.quorum).await?;
+    let mut quorum_config = config.quorum.clone();
+    if args.bootstrap {
+        quorum_config.bootstrap = true;
+        info!("Bootstrap mode: will initialize new Raft cluster");
+    }
+    let (quorum, _raft_handle) = lattice_quorum::create_quorum_from_config(&quorum_config).await?;
 
     // Load audit signing key: resolved secret > file path > random (dev mode).
     // When Vault is active, missing key already caused a fatal error above.
