@@ -125,17 +125,26 @@ curl -X POST http://lattice-01:8080/api/v1/admin/restore \
 
 ### Agent Registration
 
-Agents register automatically on startup:
+Agents register automatically on startup. Authentication uses mTLS (production) or Bearer token (dev/testing):
 
 ```bash
+# Production: mTLS via bootstrap certs (SPIRE preferred when available)
 lattice-agent \
   --node-id=nid001234 \
+  --quorum-endpoint=https://lattice-01:50051 \
+  --bootstrap-cert=/etc/lattice/tls/agent.crt \
+  --bootstrap-key=/etc/lattice/tls/agent.key \
+  --bootstrap-ca=/etc/lattice/tls/ca.crt \
+  --gpu-count=4 --gpu-type=GH200 --cpu-cores=72 --memory-gb=512
+
+# Dev/testing: Bearer token auth (no certs needed)
+LATTICE_AGENT_TOKEN="eyJ..." lattice-agent \
+  --node-id=nid001234 \
   --quorum-endpoint=http://lattice-01:50051 \
-  --gpu-count=4 \
-  --gpu-type=GH200 \
-  --cpu-cores=72 \
-  --memory-gb=512
+  --gpu-count=4 --gpu-type=GH200 --cpu-cores=72 --memory-gb=512
 ```
+
+The agent tries the identity cascade (SPIRE → SelfSigned → Bootstrap) first. If no mTLS identity is available, it falls back to `LATTICE_AGENT_TOKEN`.
 
 ### Draining Nodes
 

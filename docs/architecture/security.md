@@ -78,15 +78,21 @@ Federation (optional):
 
 ## Internal Service Authentication
 
-All inter-component communication uses mTLS:
+All inter-component communication uses mTLS in production. Node agents acquire certificates via the identity cascade (SPIRE → SelfSigned CA → Bootstrap certs). When no mTLS identity is available (dev, testing, break-glass), agents fall back to Bearer token auth via `LATTICE_AGENT_TOKEN`.
 
-| Component | Certificate Source | Rotation |
-|-----------|--------------------|----------|
-| Quorum members | Pre-provisioned during deployment | Annual rotation, Raft membership change for re-keying |
-| Node agents | OpenCHAMI OPAAL (issued during node boot via cloud-init) | On every node reboot (new cert) |
-| API servers | Pre-provisioned or OPAAL | Annual rotation |
-| vCluster schedulers | Pre-provisioned or OPAAL | Annual rotation |
-| Checkpoint broker | Pre-provisioned or OPAAL | Annual rotation |
+| Component | Certificate Source | Rotation | Fallback |
+|-----------|--------------------|----------|----------|
+| Quorum members | Pre-provisioned during deployment | Annual rotation, Raft membership change for re-keying | — |
+| Node agents | Identity cascade: SPIRE SVID → SelfSigned (quorum CA) → Bootstrap certs | CertRotator at 2/3 lifetime | `LATTICE_AGENT_TOKEN` Bearer token |
+| API servers | Pre-provisioned or OPAAL | Annual rotation | — |
+| vCluster schedulers | Pre-provisioned or OPAAL | Annual rotation | — |
+| Checkpoint broker | Pre-provisioned or OPAAL | Annual rotation | — |
+
+**Agent authentication priority:**
+1. **mTLS** (production) — agent acquires a `WorkloadIdentity` via the identity cascade and configures the gRPC channel with `ClientTlsConfig`. Server verifies the client certificate. No Bearer token needed.
+2. **Bearer token** (dev/testing/break-glass) — when no mTLS identity is available, agent reads `LATTICE_AGENT_TOKEN` from the environment and injects it as `Authorization: Bearer <token>` on all gRPC calls. Server validates via HMAC or JWKS.
+
+Both paths coexist — mTLS takes priority. The `LATTICE_AGENT_TOKEN` path should be disabled in production (env var unset).
 
 Certificate CN format: `{component}.{site}.lattice.internal` (e.g., `node-042.alps.lattice.internal`).
 

@@ -229,9 +229,11 @@ T+0.2s  cascade.get_identity():
           - [yes] generate keypair, submit CSR, receive signed cert
           - [no]  StaticProvider.is_available() → check bootstrap cert files
             - [yes] read cert/key from disk (bootstrap identity)
-            - [no]  IdentityError::NoProviderAvailable → agent fails to start
+            - [no]  No mTLS identity available → fall back to Bearer token
+                    (LATTICE_AGENT_TOKEN env var, dev/testing/break-glass only)
 T+0.3s  Configure tonic TLS with WorkloadIdentity cert/key/trust_bundle
-T+0.4s  Connect to lattice-quorum on HSN (mTLS)
+        (or plaintext + Bearer token if no identity acquired)
+T+0.4s  Connect to lattice-quorum on HSN (mTLS or token auth)
 T+0.5s  Schedule CertRotator at 2/3 certificate lifetime
 
 Boot window upgrade (if started with StaticProvider):

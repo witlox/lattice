@@ -451,7 +451,17 @@ The cascade tries each provider's `is_available()` before calling `get_identity(
 
 ---
 
-### INV-A6: FirecREST Is Not Part of the Architecture
+### INV-A6: Agent-to-Server Authentication
+
+**Statement:** Node agents authenticate to lattice-server via mTLS (production) or Bearer token (dev/testing/break-glass). mTLS identity is acquired via the identity cascade (SPIRE → SelfSigned CA → Bootstrap certs). When no mTLS identity is available, the agent falls back to `LATTICE_AGENT_TOKEN` Bearer auth. Both paths coexist; mTLS takes priority.
+
+**Enforcement:** Agent gRPC client configures `ClientTlsConfig` when identity is available. `AgentAuthInterceptor` injects Bearer token as fallback. Server validates via mTLS client cert verification or OIDC/HMAC token validation.
+
+**Violation consequence:** Agents cannot register or heartbeat. Nodes remain in Unknown state and are never scheduled.
+
+---
+
+### INV-A7: FirecREST Is Not Part of the Architecture
 
 **Statement:** FirecREST is not part of the Lattice architecture. Lattice authenticates directly against the institutional IdP via hpc-auth. If FirecREST is present as a legacy compatibility gateway for hybrid Slurm deployments, it is transparent — it does not participate in authentication, authorization, or any Lattice-specific logic.
 
