@@ -127,6 +127,7 @@ services:
     environment:
       RUST_LOG: "info,lattice=debug"
       LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
+      # LATTICE_AGENT_TOKEN: "..." # Required when server auth is enabled
     networks:
       - lattice-net
     depends_on:
@@ -155,6 +156,7 @@ services:
     environment:
       RUST_LOG: "info,lattice=debug"
       LATTICE_TELEMETRY_TSDB_ENDPOINT: "http://victoriametrics:8428"
+      # LATTICE_AGENT_TOKEN: "..." # Required when server auth is enabled
     networks:
       - lattice-net
     depends_on:

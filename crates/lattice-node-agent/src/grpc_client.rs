@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 use tracing::{debug, warn};
 
@@ -22,19 +23,64 @@ use lattice_common::types::{
 use crate::heartbeat::Heartbeat;
 use crate::heartbeat_loop::HeartbeatSink;
 
+// ─── Auth interceptor ──────────────────────────────────────────────────────
+
+/// Injects a Bearer token into outgoing gRPC requests.
+///
+/// Read from `LATTICE_AGENT_TOKEN` env var at construction time.
+/// When no token is set, requests pass through without auth metadata.
+#[derive(Clone)]
+pub struct AgentAuthInterceptor {
+    token: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
+}
+
+impl AgentAuthInterceptor {
+    /// Create an interceptor from an optional token string.
+    pub fn new(token: Option<&str>) -> Self {
+        Self {
+            token: token.and_then(|t| {
+                format!("Bearer {t}")
+                    .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+                    .ok()
+            }),
+        }
+    }
+
+    /// Create from the `LATTICE_AGENT_TOKEN` environment variable.
+    pub fn from_env() -> Self {
+        Self::new(std::env::var("LATTICE_AGENT_TOKEN").ok().as_deref())
+    }
+}
+
+impl tonic::service::Interceptor for AgentAuthInterceptor {
+    fn call(&mut self, mut req: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        if let Some(ref token) = self.token {
+            req.metadata_mut().insert("authorization", token.clone());
+        }
+        Ok(req)
+    }
+}
+
+/// Type alias for an authenticated NodeService client.
+type AuthNodeServiceClient = NodeServiceClient<InterceptedService<Channel, AgentAuthInterceptor>>;
+
 // ─── GrpcHeartbeatSink ──────────────────────────────────────────────────────
 
 /// Delivers heartbeats to the quorum via the `NodeService.Heartbeat` RPC.
 pub struct GrpcHeartbeatSink {
-    client: NodeServiceClient<Channel>,
+    client: AuthNodeServiceClient,
 }
 
 impl GrpcHeartbeatSink {
     /// Connect to the quorum endpoint with retry.
+    ///
+    /// Reads `LATTICE_AGENT_TOKEN` from the environment and attaches it as
+    /// a Bearer token on every outgoing RPC.
     pub async fn connect(endpoint: &str) -> Result<Self, String> {
         let channel = connect_with_retry(endpoint).await?;
+        let interceptor = AgentAuthInterceptor::from_env();
         Ok(Self {
-            client: NodeServiceClient::new(channel),
+            client: NodeServiceClient::with_interceptor(channel, interceptor),
         })
     }
 }
@@ -75,15 +121,19 @@ impl HeartbeatSink for GrpcHeartbeatSink {
 /// `update_node_state`. `claim_node`/`release_node` return `Unimplemented`
 /// since only the scheduler calls those.
 pub struct GrpcNodeRegistry {
-    client: NodeServiceClient<Channel>,
+    client: AuthNodeServiceClient,
 }
 
 impl GrpcNodeRegistry {
     /// Connect to the quorum endpoint with retry.
+    ///
+    /// Reads `LATTICE_AGENT_TOKEN` from the environment and attaches it as
+    /// a Bearer token on every outgoing RPC.
     pub async fn connect(endpoint: &str) -> Result<Self, String> {
         let channel = connect_with_retry(endpoint).await?;
+        let interceptor = AgentAuthInterceptor::from_env();
         Ok(Self {
-            client: NodeServiceClient::new(channel),
+            client: NodeServiceClient::with_interceptor(channel, interceptor),
         })
     }
 
@@ -392,6 +442,30 @@ fn memory_topology_from_proto(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_interceptor_injects_bearer_token() {
+        let interceptor = AgentAuthInterceptor::new(Some("test-token-123"));
+        let mut interceptor = interceptor.clone();
+        let req = tonic::Request::new(());
+        let req = tonic::service::Interceptor::call(&mut interceptor, req).unwrap();
+        let auth = req
+            .metadata()
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(auth, "Bearer test-token-123");
+    }
+
+    #[test]
+    fn auth_interceptor_passthrough_without_token() {
+        let interceptor = AgentAuthInterceptor::new(None);
+        let mut interceptor = interceptor.clone();
+        let req = tonic::Request::new(());
+        let req = tonic::service::Interceptor::call(&mut interceptor, req).unwrap();
+        assert!(req.metadata().get("authorization").is_none());
+    }
 
     #[test]
     fn node_from_status_ready() {
