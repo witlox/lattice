@@ -125,9 +125,23 @@ Three base roles, plus a sensitive-specific role:
 
 Role assignment:
 - `user` role derived from OIDC token (any authenticated user)
-- `tenant-admin` assigned per-tenant in quorum state
-- `system-admin` assigned via quorum configuration
+- `tenant-admin` assigned per-tenant in quorum state, or via `tenant-admin` role claim
+- `system-admin` assigned via quorum configuration, or via `admin`/`system:admin` scope
 - `claiming-user` assigned per-tenant by tenant-admin (sensitive tenants only)
+- `operator` assigned via `operator` scope or role claim
+
+**Cross-system role mapping (pact+lattice co-deployment):**
+
+When pact delegates operations to lattice (e.g., drain, cordon), the pact admin's token carries a `pact_role` claim instead of lattice scopes. Lattice recognizes these cross-system role claims:
+
+| Token claim | Value | Lattice role |
+|-------------|-------|--------------|
+| `pact_role` | `pact-platform-admin` | SystemAdmin |
+| `pact_role` or `lattice_role` | `system-admin` | SystemAdmin |
+| `pact_role` or `lattice_role` | `tenant-admin` | TenantAdmin |
+| `pact_role` or `lattice_role` | `operator` | Operator |
+
+Standard OIDC scopes take precedence over role claims. Both are checked by `derive_role()`.
 
 ## Network Security
 
@@ -240,6 +254,8 @@ REST and gRPC endpoints require authentication when OIDC or HMAC is configured:
 
 - Bearer token required in `Authorization` header (validated on every request)
 - Two validation modes: **JWKS** (production, via `oidc_issuer`) or **HMAC-SHA256** (dev/testing, via `LATTICE_OIDC_HMAC_SECRET`)
+- REST middleware validates asynchronously (supports JWKS network fetch on cache miss)
+- gRPC interceptor validates synchronously using cached JWKS keys (pre-fetched at startup) or HMAC
 - Rate limiting applied per-user
 - Public endpoints exempt: `/healthz`, `/api/v1/auth/discovery`
 - OIDC discovery client disables HTTP redirects (JWKS cache poisoning prevention)

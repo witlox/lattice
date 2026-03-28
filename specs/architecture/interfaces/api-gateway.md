@@ -103,11 +103,13 @@ Incoming request
   │       429 Too Many Requests on exhaustion.
   │
   ├─2─► OIDC Validator (if enabled)
-  │       Bearer token → JWKS verification → claims extraction.
+  │       Bearer token → JWKS (RS256/ES256) or HMAC (HS256) verification → claims extraction.
+  │       REST: async validation. gRPC: sync validation with cached JWKS keys.
   │       401 Unauthorized on invalid/expired token.
   │
   ├─3─► RBAC Enforcer (follows OIDC)
   │       Claims → role derivation → permission check (38 operations).
+  │       Derives role from OIDC scopes + cross-system role claims (pact_role, lattice_role).
   │       403 Forbidden on insufficient role.
   │       Roles: user, tenant-admin, system-admin, claiming-user, operator, read-only.
   │

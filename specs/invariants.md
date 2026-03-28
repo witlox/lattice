@@ -443,9 +443,9 @@ The cascade tries each provider's `is_available()` before calling `get_identity(
 
 ### INV-A5: API Authentication Enforcement
 
-**Statement:** All REST and gRPC API endpoints except `/healthz` and `/api/v1/auth/discovery` require a valid Bearer token in the `Authorization` header. Tokens are validated via JWKS (production) or HMAC-SHA256 (dev/testing via `LATTICE_OIDC_HMAC_SECRET`). Requests without a valid token receive `401 Unauthenticated`.
+**Statement:** All REST and gRPC API endpoints except `/healthz` and `/api/v1/auth/discovery` require a valid Bearer token in the `Authorization` header. Tokens are validated via JWKS (production, RS256/ES256) or HMAC-SHA256 (dev/testing via `LATTICE_OIDC_HMAC_SECRET`). Requests without a valid token receive `401 Unauthenticated`. Role derivation checks both OIDC scopes and cross-system role claims (`pact_role`, `lattice_role`) for pact+lattice co-deployment.
 
-**Enforcement:** REST auth middleware and gRPC interceptor validate tokens before routing to handlers. HMAC validation is synchronous in the gRPC interceptor; JWKS uses cached keys.
+**Enforcement:** REST auth middleware validates asynchronously; gRPC interceptor validates synchronously using cached JWKS keys (pre-fetched at startup) or HMAC. Cross-system `pact-platform-admin` role maps to `SystemAdmin`.
 
 **Violation consequence:** Unauthenticated network access to scheduler state — any host on the network can query and mutate allocations, nodes, and tenants.
 
