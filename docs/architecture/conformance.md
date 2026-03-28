@@ -80,7 +80,7 @@ When the scheduler detects that a node's conformance fingerprint has changed (or
 1. **Continue running workloads.** Existing allocations are not disrupted — the drift already happened, and disrupting would make things worse.
 2. **Stop scheduling new work.** The node is deprioritized for new allocations (it now belongs to a smaller conformance group, scoring lower on f₉).
 3. **Signal OpenCHAMI.** The scheduler (or node agent) notifies OpenCHAMI that the node has drifted, triggering remediation (firmware update, reboot into correct image, etc.).
-4. **For sensitive nodes:** additionally flag the drift in the audit log and set the node to `Draining` — no new sensitive claims until remediated and verified.
+4. **For sensitive nodes:** additionally flag the drift in the audit log and set the node to `Draining` (transitioning to `Drained` once active allocations complete) — no new sensitive claims until remediated and verified. After remediation, an operator undoes the drain (`Drained` → `Ready`).
 
 The scheduler does **not** attempt to remediate drift itself. It only avoids scheduling on drifted nodes and signals the infrastructure layer to fix them.
 
