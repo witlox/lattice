@@ -27,8 +27,10 @@ pub mod probe_manager;
 pub mod process_launcher;
 pub mod prologue;
 pub mod pty;
+pub mod reattach;
 pub mod runtime;
 pub mod signal;
+pub mod state;
 pub mod telemetry;
 
 pub use agent::NodeAgent;

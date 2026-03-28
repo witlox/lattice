@@ -14,6 +14,12 @@ TimeoutStartSec=20
 TimeoutStopSec=30
 WatchdogSec=60
 
+# Only kill the agent process on stop/restart, not workload children.
+# Workloads run in their own cgroup scopes (alloc-{id}.scope) and
+# survive agent restart. The new agent instance reattaches via the
+# persisted state file in /var/lib/lattice/agent-state.json.
+KillMode=process
+
 # Agent needs root for nsenter/mount namespace operations,
 # uenv SquashFS mounts, and eBPF program loading.
 # Drop to lattice user only if these are not needed.

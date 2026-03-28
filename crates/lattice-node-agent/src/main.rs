@@ -2,18 +2,26 @@
 //!
 //! Connects to the Lattice quorum, registers the node, and runs the
 //! heartbeat loop, allocation lifecycle, and telemetry collection.
+//!
+//! On startup the agent loads a persisted state file and reattaches to
+//! any workload processes that survived a previous agent restart (see
+//! `state.rs` and `reattach.rs`). On shutdown (SIGTERM / SIGINT) the
+//! agent persists its state and exits *without* killing workloads.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 
 use lattice_common::types::NodeCapabilities;
 use lattice_node_agent::grpc_client::{GrpcHeartbeatSink, GrpcNodeRegistry};
 use lattice_node_agent::health::ObservedHealth;
 use lattice_node_agent::heartbeat_loop::StaticHealthObserver;
+use lattice_node_agent::reattach;
+use lattice_node_agent::state;
 use lattice_node_agent::NodeAgent;
 
 #[derive(Parser)]
@@ -54,6 +62,10 @@ struct Args {
     /// gRPC listen address for incoming RPCs (LaunchProcesses, PmiFence, etc.)
     #[arg(long, default_value = "0.0.0.0:50052")]
     grpc_addr: String,
+
+    /// Path to the agent state file for workload persistence across restarts.
+    #[arg(long, default_value = state::STATE_FILE_PATH, env = "LATTICE_STATE_FILE")]
+    state_file: PathBuf,
 }
 
 #[tokio::main]
@@ -108,6 +120,60 @@ async fn main() -> Result<()> {
 
     let registry = Arc::new(grpc_registry);
     let mut agent = NodeAgent::new(args.node_id.clone(), capabilities.clone(), registry);
+
+    // ── Reattach to surviving workloads from a previous run ──────
+    let state_path = args.state_file.clone();
+    match state::load_state(&state_path) {
+        Ok(Some(prev)) => {
+            info!(
+                allocations = prev.allocations.len(),
+                updated_at = %prev.updated_at,
+                "loaded persisted agent state"
+            );
+            let result = reattach::reattach(&prev);
+            info!(
+                recovered = result.recovered.len(),
+                orphans = result.orphans.len(),
+                "reattach complete"
+            );
+
+            // Re-register recovered allocations in the agent's AllocationManager.
+            for rec in &result.recovered {
+                let p = &rec.persisted;
+                if let Err(e) = agent.allocations_mut().start(p.id, p.entrypoint.clone()) {
+                    warn!(alloc_id = %p.id, error = %e, "failed to re-register recovered allocation");
+                } else {
+                    // Advance from Prologue → Running (they were running before restart).
+                    let _ = agent.allocations_mut().advance(&p.id);
+                }
+            }
+
+            // Clean up orphan cgroups from dead workloads.
+            for orphan in &result.orphans {
+                if let Some(ref cg) = orphan.cgroup_path {
+                    reattach::cleanup_orphan_cgroup(cg);
+                }
+            }
+
+            // Scan for stray cgroup scopes not in the state file.
+            let known_ids: Vec<_> = prev.allocations.iter().map(|a| a.id).collect();
+            let stray = reattach::scan_orphan_cgroups(&known_ids);
+            for path in &stray {
+                warn!(path = %path, "cleaning up stray cgroup scope");
+                reattach::cleanup_orphan_cgroup(path);
+            }
+        }
+        Ok(None) => {
+            info!(path = %state_path.display(), "no previous agent state found (first boot)");
+        }
+        Err(e) => {
+            warn!(
+                path = %state_path.display(),
+                error = %e,
+                "failed to load agent state — starting fresh"
+            );
+        }
+    }
 
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(64);
@@ -192,11 +258,11 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Handle Ctrl+C for graceful shutdown
+    // Handle Ctrl+C / SIGTERM for graceful shutdown
     let cancel_tx_clone = cancel_tx.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        info!("Received SIGINT, shutting down");
+        info!("Received shutdown signal");
         let _ = cancel_tx_clone.send(true);
     });
 
@@ -214,6 +280,54 @@ async fn main() -> Result<()> {
             cmd_rx,
         )
         .await;
+
+    // ── Persist state before exit ────────────────────────────────
+    // Collect active allocations and write the state file so the next
+    // agent instance can reattach. We intentionally do NOT kill
+    // workloads — they run in their own cgroup scopes and survive.
+    let active_ids = agent.allocations().list_ids();
+    let active_allocs: Vec<state::PersistedAllocation> = active_ids
+        .iter()
+        .filter_map(|id| {
+            agent.allocations().get(id).and_then(|la| {
+                if la.is_active() {
+                    Some(state::PersistedAllocation {
+                        id: la.id,
+                        pid: None,       // PIDs not tracked in AllocationManager yet
+                        container_id: None,
+                        cgroup_path: None,
+                        entrypoint: la.entrypoint.clone(),
+                        started_at: la.started_at,
+                        runtime_type: state::RuntimeType::Uenv, // default
+                        mount_point: None,
+                    })
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    if active_allocs.is_empty() {
+        info!("no active allocations — removing state file");
+        if let Err(e) = state::remove_state(&state_path) {
+            warn!(error = %e, "failed to remove state file");
+        }
+    } else {
+        let agent_state = state::AgentState {
+            node_id: args.node_id.clone(),
+            updated_at: chrono::Utc::now(),
+            allocations: active_allocs,
+        };
+        info!(
+            allocations = agent_state.allocations.len(),
+            path = %state_path.display(),
+            "persisting agent state before shutdown"
+        );
+        if let Err(e) = state::save_state(&state_path, &agent_state) {
+            warn!(error = %e, "failed to persist agent state");
+        }
+    }
 
     info!("Shutting down lattice-agent");
     drop(cancel_tx);
