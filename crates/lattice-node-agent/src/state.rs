@@ -106,9 +106,7 @@ mod tests {
                     id: uuid::Uuid::new_v4(),
                     pid: Some(42000),
                     container_id: None,
-                    cgroup_path: Some(
-                        "/sys/fs/cgroup/workload.slice/alloc-abc.scope".to_string(),
-                    ),
+                    cgroup_path: Some("/sys/fs/cgroup/workload.slice/alloc-abc.scope".to_string()),
                     entrypoint: "python train.py".to_string(),
                     started_at: Utc::now(),
                     runtime_type: RuntimeType::Uenv,

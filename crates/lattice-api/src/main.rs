@@ -267,8 +267,7 @@ async fn main() -> Result<()> {
             info!("HMAC token validation enabled (dev/internal mode)");
             Some(
                 Arc::new(lattice_api::middleware::oidc::HmacOidcValidator::new(
-                    secret,
-                    None,
+                    secret, None,
                 )) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>,
             )
         } else {
@@ -283,8 +282,7 @@ async fn main() -> Result<()> {
             info!("HMAC token validation enabled (dev/internal mode)");
             Some(
                 Arc::new(lattice_api::middleware::oidc::HmacOidcValidator::new(
-                    secret,
-                    None,
+                    secret, None,
                 )) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>,
             )
         } else {

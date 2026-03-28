@@ -1786,11 +1786,7 @@ async fn drain_node(
 
     // If no active allocations, immediately complete: Draining → Drained
     if active_count == 0 {
-        if let Err(e) = state
-            .nodes
-            .update_node_state(&id, NodeState::Drained)
-            .await
-        {
+        if let Err(e) = state.nodes.update_node_state(&id, NodeState::Drained).await {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {

@@ -216,9 +216,8 @@ pub fn build_interceptor(
 
         if oidc_config.is_some() {
             // Auth is required — reject if no token
-            let token = bearer_token.ok_or_else(|| {
-                tonic::Status::unauthenticated("missing Bearer token")
-            })?;
+            let token = bearer_token
+                .ok_or_else(|| tonic::Status::unauthenticated("missing Bearer token"))?;
 
             // Synchronous HMAC validation if available
             if let Some(ref validator) = hmac_validator {
@@ -252,17 +251,13 @@ pub fn build_interceptor(
 
 /// Build an HMAC validator if HMAC secret is available, for synchronous
 /// gRPC interceptor token validation.
-fn build_hmac_validator(
-    state: &ApiState,
-) -> Option<crate::middleware::oidc::HmacOidcValidator> {
+fn build_hmac_validator(state: &ApiState) -> Option<crate::middleware::oidc::HmacOidcValidator> {
     // Check if the OIDC validator is an HmacOidcValidator by trying to
     // create one from env or config. The actual Arc<dyn OidcValidator>
     // in state is already set by main.rs — but for the sync interceptor
     // we need a separate instance.
     let secret = std::env::var("LATTICE_OIDC_HMAC_SECRET").ok();
-    secret.map(|s| {
-        crate::middleware::oidc::HmacOidcValidator::new(&s, state.oidc_config.as_ref())
-    })
+    secret.map(|s| crate::middleware::oidc::HmacOidcValidator::new(&s, state.oidc_config.as_ref()))
 }
 
 /// Extension type: the raw bearer token extracted from the `authorization` header.

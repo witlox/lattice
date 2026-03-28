@@ -81,9 +81,7 @@ impl NodeService for LatticeNodeService {
             .map_err(|e| Status::internal(e.to_string()))?;
         let active_count = all_allocs
             .iter()
-            .filter(|a| {
-                a.assigned_nodes.contains(&req.node_id) && !a.state.is_terminal()
-            })
+            .filter(|a| a.assigned_nodes.contains(&req.node_id) && !a.state.is_terminal())
             .count() as u32;
 
         // Always transition Ready → Draining first (valid state machine edge).
@@ -345,7 +343,11 @@ mod tests {
         assert_eq!(resp.get_ref().active_allocations, 0);
 
         // Should be Drained (not stuck in Draining)
-        let node = state.nodes.get_node(&"x1000c0s0b0n0".to_string()).await.unwrap();
+        let node = state
+            .nodes
+            .get_node(&"x1000c0s0b0n0".to_string())
+            .await
+            .unwrap();
         assert!(
             matches!(node.state, NodeState::Drained),
             "Expected Drained, got {:?}",
@@ -359,9 +361,7 @@ mod tests {
         use lattice_test_harness::fixtures::AllocationBuilder;
 
         let node_batch = create_node_batch(3, 0);
-        let mut alloc_with_node = AllocationBuilder::new()
-            .tenant("t1")
-            .build();
+        let mut alloc_with_node = AllocationBuilder::new().tenant("t1").build();
 
         // Insert a running allocation assigned to node 0
         alloc_with_node.assigned_nodes = vec!["x1000c0s0b0n0".to_string()];
@@ -403,7 +403,11 @@ mod tests {
         assert_eq!(resp.get_ref().active_allocations, 1);
 
         // Should be Draining (waiting for allocation to complete)
-        let node = state.nodes.get_node(&"x1000c0s0b0n0".to_string()).await.unwrap();
+        let node = state
+            .nodes
+            .get_node(&"x1000c0s0b0n0".to_string())
+            .await
+            .unwrap();
         assert!(
             matches!(node.state, NodeState::Draining),
             "Expected Draining, got {:?}",
@@ -540,7 +544,11 @@ mod tests {
         assert!(resp.get_ref().success);
 
         // Verify back to Ready
-        let node = state.nodes.get_node(&"x1000c0s0b0n0".to_string()).await.unwrap();
+        let node = state
+            .nodes
+            .get_node(&"x1000c0s0b0n0".to_string())
+            .await
+            .unwrap();
         assert!(
             matches!(node.state, NodeState::Ready),
             "Expected Ready, got {:?}",
@@ -598,10 +606,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().code(),
-            tonic::Code::FailedPrecondition
-        );
+        assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
     }
 
     #[tokio::test]

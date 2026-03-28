@@ -222,13 +222,15 @@ impl HmacOidcValidator {
 
         validation.validate_exp = true;
 
-        let token_data = jsonwebtoken::decode::<HmacJwtClaims>(token, &self.decoding_key, &validation)
-            .map_err(|e| match e.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => OidcError::Expired,
-                jsonwebtoken::errors::ErrorKind::InvalidIssuer => OidcError::WrongIssuer,
-                jsonwebtoken::errors::ErrorKind::InvalidAudience => OidcError::WrongIssuer,
-                _ => OidcError::InvalidToken,
-            })?;
+        let token_data =
+            jsonwebtoken::decode::<HmacJwtClaims>(token, &self.decoding_key, &validation).map_err(
+                |e| match e.kind() {
+                    jsonwebtoken::errors::ErrorKind::ExpiredSignature => OidcError::Expired,
+                    jsonwebtoken::errors::ErrorKind::InvalidIssuer => OidcError::WrongIssuer,
+                    jsonwebtoken::errors::ErrorKind::InvalidAudience => OidcError::WrongIssuer,
+                    _ => OidcError::InvalidToken,
+                },
+            )?;
 
         let claims = token_data.claims;
 

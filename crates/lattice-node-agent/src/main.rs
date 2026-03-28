@@ -293,7 +293,7 @@ async fn main() -> Result<()> {
                 if la.is_active() {
                     Some(state::PersistedAllocation {
                         id: la.id,
-                        pid: None,       // PIDs not tracked in AllocationManager yet
+                        pid: None, // PIDs not tracked in AllocationManager yet
                         container_id: None,
                         cgroup_path: None,
                         entrypoint: la.entrypoint.clone(),
