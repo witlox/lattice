@@ -71,6 +71,105 @@ See the [production config](https://github.com/witlox/lattice/blob/main/config/p
 - **`federation`** — Sovra cross-site federation (requires `federation` feature)
 - **`compat`** — Slurm compatibility settings
 
+## Authentication & Authorization
+
+### Overview
+
+Lattice authenticates three types of callers:
+
+| Caller | Auth method | Token source |
+|--------|-------------|-------------|
+| **Humans** (CLI) | OIDC (PKCE flow) → RS256 JWT | IdP (Keycloak, Dex) |
+| **Agents** (node agent) | mTLS (production) or Bearer token (dev) | SPIRE SVID / bootstrap certs / `LATTICE_AGENT_TOKEN` |
+| **Services** (AI/MCP) | OIDC (client_credentials) → RS256 JWT | IdP service account |
+
+### Server OIDC Configuration
+
+```yaml
+api:
+  oidc_issuer: "https://keycloak.example.com/realms/hpc"   # IdP discovery URL
+  oidc_client_id: "lattice"                                 # Expected `aud` claim
+  # oidc_hmac_secret: "dev-secret-only"                     # HMAC fallback (dev only)
+```
+
+| Config field | Env var | Purpose |
+|-------------|---------|---------|
+| `api.oidc_issuer` | — | OIDC provider URL. Enables JWKS (RS256/ES256) validation. |
+| `api.oidc_client_id` | — | Expected `aud` claim. Returned by auth discovery endpoint. |
+| `api.oidc_hmac_secret` | `LATTICE_OIDC_HMAC_SECRET` | Shared secret for HS256 validation (dev/testing/break-glass). |
+
+**Priority:** JWKS (if `oidc_issuer` set) > HMAC (if secret set) > no auth (warning logged).
+
+The auth discovery endpoint `GET /api/v1/auth/discovery` is public (no auth required) and returns `{idp_url, client_id, issuer}` so the CLI can bootstrap login.
+
+### Roles
+
+Role derivation checks OIDC scopes first, then cross-system role claims (`pact_role`, `lattice_role`). First match wins.
+
+| Role | OIDC scope | Cross-system claim | Permissions |
+|------|------------|-------------------|-------------|
+| **SystemAdmin** | `admin` or `system:admin` | `pact-platform-admin` or `system-admin` | Unrestricted — all operations |
+| **TenantAdmin** | `tenant:admin` | `tenant-admin` | Manage own tenant's allocations, vClusters, quotas. Drain nodes. Query audit. |
+| **Operator** | `operator` | `operator` | Drain/undrain/disable/enable nodes. Cannot create tenants or manage federation. |
+| **ClaimingUser** | `sensitive:claim` | — | User + claim/release sensitive nodes |
+| **ReadOnly** | `readonly` | — | GET/LIST/WATCH only, no mutations |
+| **User** | *(default — any authenticated user)* | — | Submit/cancel own allocations, view nodes, create sessions |
+
+### IdP Setup (Keycloak / Dex)
+
+Configure your IdP to include the appropriate scopes in issued tokens:
+
+**Keycloak:**
+1. Create client `lattice` with PKCE (Authorization Code) flow
+2. Create client scopes: `admin`, `tenant:admin`, `operator`, `sensitive:claim`, `readonly`
+3. Assign scopes to users/groups via role mappings
+4. For pact+lattice co-deployment: add `pact_role` as a custom claim in the token mapper
+
+**Dex:**
+```yaml
+staticClients:
+  - id: lattice
+    name: Lattice Scheduler
+    redirectURIs: ['http://localhost:8400/callback']
+    public: true   # PKCE, no client secret
+```
+
+Dex passes through upstream IdP claims. Configure `pact_role` / scopes in the upstream IdP (LDAP groups, SAML attributes, etc.).
+
+### Agent Authentication
+
+Node agents authenticate to lattice-server for registration and heartbeats.
+
+**Production (mTLS):** Agent acquires identity via the cascade: SPIRE → SelfSigned CA → Bootstrap certs. The gRPC channel uses `ClientTlsConfig` with the acquired cert/key/CA. Server verifies the client certificate.
+
+```bash
+# Bootstrap cert path (used until SPIRE is available)
+lattice-agent \
+  --quorum-endpoint=https://lattice-01:50051 \
+  --bootstrap-cert=/etc/lattice/tls/agent.crt \
+  --bootstrap-key=/etc/lattice/tls/agent.key \
+  --bootstrap-ca=/etc/lattice/tls/ca.crt \
+  ...
+```
+
+**Dev/testing (Bearer token):** When no mTLS identity is available, agent falls back to `LATTICE_AGENT_TOKEN`.
+
+```bash
+LATTICE_AGENT_TOKEN="eyJ..." lattice-agent \
+  --quorum-endpoint=http://lattice-01:50051 \
+  ...
+```
+
+| Env var | Purpose |
+|---------|---------|
+| `LATTICE_AGENT_TOKEN` | Bearer token for agent→server auth (dev/testing/break-glass) |
+| `LATTICE_SPIRE_SOCKET` | SPIRE agent socket path (default: `/run/spire/agent.sock`) |
+| `LATTICE_BOOTSTRAP_CERT` | Bootstrap cert PEM path |
+| `LATTICE_BOOTSTRAP_KEY` | Bootstrap key PEM path |
+| `LATTICE_BOOTSTRAP_CA` | Bootstrap CA PEM path |
+
+mTLS takes priority. Token auth is the fallback. In production, leave `LATTICE_AGENT_TOKEN` unset.
+
 ## Quorum Management
 
 ### Initial Bootstrap
