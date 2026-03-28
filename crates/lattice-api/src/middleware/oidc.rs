@@ -46,6 +46,10 @@ pub struct TokenClaims {
     pub aud: String,
     /// Space-separated scopes present in the token.
     pub scopes: Vec<String>,
+    /// Cross-system role claims (e.g., `pact_role: "pact-platform-admin"`).
+    /// Used for co-deployed pact+lattice where pact admin tokens carry
+    /// `pact_role` instead of lattice scopes.
+    pub extra_roles: Vec<String>,
 }
 
 // ─── Error ───────────────────────────────────────────────────────────────────
@@ -77,6 +81,15 @@ pub enum OidcError {
 pub trait OidcValidator: Send + Sync {
     /// Parse and validate `token`, returning the set of claims on success.
     async fn validate_token(&self, token: &str) -> Result<TokenClaims, OidcError>;
+}
+
+/// Synchronous token validation for use in gRPC interceptors.
+///
+/// Implemented by validators that can validate without async I/O
+/// (HMAC always, JWKS when keys are cached).
+pub trait SyncOidcValidator: Send + Sync {
+    /// Validate `token` synchronously, returning claims on success.
+    fn validate_token_sync(&self, token: &str) -> Result<TokenClaims, OidcError>;
 }
 
 // ─── Stub implementation ──────────────────────────────────────────────────────
@@ -124,6 +137,7 @@ impl OidcValidator for StubOidcValidator {
                 iss: self.config.issuer_url.clone(),
                 aud: self.config.audience.clone(),
                 scopes: self.config.required_scopes.clone(),
+                extra_roles: vec![],
             });
         }
         Err(OidcError::InvalidToken)
@@ -145,6 +159,12 @@ struct HmacJwtClaims {
     scope: Option<String>,
     #[serde(default)]
     scopes: Option<Vec<String>>,
+    /// Cross-system role claim from pact tokens.
+    #[serde(default)]
+    pact_role: Option<String>,
+    /// Generic lattice role claim (alternative to scopes).
+    #[serde(default)]
+    lattice_role: Option<String>,
 }
 
 /// Audience can be a single string or an array of strings.
@@ -207,7 +227,7 @@ impl HmacOidcValidator {
     }
 
     /// Synchronous token validation — useful for gRPC interceptors.
-    pub fn validate_token_sync(&self, token: &str) -> Result<TokenClaims, OidcError> {
+    fn validate_token_sync_impl(&self, token: &str) -> Result<TokenClaims, OidcError> {
         let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
 
         if self.audience.is_empty() {
@@ -253,20 +273,36 @@ impl HmacOidcValidator {
             }
         }
 
+        // Extract cross-system role claims
+        let mut extra_roles = Vec::new();
+        if let Some(ref role) = claims.pact_role {
+            extra_roles.push(role.clone());
+        }
+        if let Some(ref role) = claims.lattice_role {
+            extra_roles.push(role.clone());
+        }
+
         Ok(TokenClaims {
             sub: claims.sub,
             exp: claims.exp,
             iss: claims.iss,
             aud: claims.aud.primary(),
             scopes,
+            extra_roles,
         })
+    }
+}
+
+impl SyncOidcValidator for HmacOidcValidator {
+    fn validate_token_sync(&self, token: &str) -> Result<TokenClaims, OidcError> {
+        self.validate_token_sync_impl(token)
     }
 }
 
 #[async_trait]
 impl OidcValidator for HmacOidcValidator {
     async fn validate_token(&self, token: &str) -> Result<TokenClaims, OidcError> {
-        self.validate_token_sync(token)
+        self.validate_token_sync_impl(token)
     }
 }
 
@@ -303,6 +339,12 @@ struct JwtClaims {
     scope: Option<String>,
     #[serde(default)]
     scopes: Option<Vec<String>>,
+    /// Cross-system role claim from pact tokens.
+    #[serde(default)]
+    pact_role: Option<String>,
+    /// Generic lattice role claim (alternative to scopes).
+    #[serde(default)]
+    lattice_role: Option<String>,
 }
 
 /// Audience can be a single string or an array of strings.
@@ -374,6 +416,94 @@ impl JwtOidcValidator {
             client,
             jwks_cache: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Pre-fetch and cache the JWKS keyset. Call this once at startup so that
+    /// subsequent synchronous validation in the gRPC interceptor has keys
+    /// available without an async fetch.
+    pub async fn prefetch_jwks(&self) -> Result<(), OidcError> {
+        let _keys = self.get_jwks().await?;
+        tracing::info!("JWKS keyset pre-fetched and cached");
+        Ok(())
+    }
+
+    /// Synchronous token validation using cached JWKS keys.
+    ///
+    /// Returns `OidcError::IntrospectionFailed` if the JWKS cache is empty
+    /// (call `prefetch_jwks()` at startup to avoid this).
+    pub fn validate_token_sync(&self, token: &str) -> Result<TokenClaims, OidcError> {
+        // Try to read cached keys without blocking.
+        let cache_guard = self
+            .jwks_cache
+            .try_read()
+            .map_err(|_| OidcError::IntrospectionFailed("JWKS cache locked — try again".into()))?;
+        let cached = cache_guard.as_ref().ok_or_else(|| {
+            OidcError::IntrospectionFailed("JWKS cache empty — awaiting prefetch".into())
+        })?;
+
+        // Decode header
+        let header = decode_header(token).map_err(|_| OidcError::InvalidToken)?;
+        let kid = header.kid.ok_or(OidcError::InvalidToken)?;
+        let alg = header.alg;
+
+        if !matches!(alg, Algorithm::RS256 | Algorithm::ES256) {
+            return Err(OidcError::InvalidToken);
+        }
+
+        let jwk = cached.keys.find(&kid).ok_or(OidcError::InvalidToken)?;
+        let decoding_key = DecodingKey::from_jwk(jwk).map_err(|_| OidcError::InvalidToken)?;
+
+        let mut validation = Validation::new(alg);
+        if self.audience.is_empty() {
+            validation.validate_aud = false;
+        } else {
+            validation.set_audience(&[&self.audience]);
+        }
+        validation.set_issuer(&[&self.issuer_url]);
+        validation.validate_exp = true;
+
+        let token_data =
+            decode::<JwtClaims>(token, &decoding_key, &validation).map_err(|e| match e.kind() {
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => OidcError::Expired,
+                jsonwebtoken::errors::ErrorKind::InvalidIssuer => OidcError::WrongIssuer,
+                jsonwebtoken::errors::ErrorKind::InvalidAudience => OidcError::WrongIssuer,
+                _ => OidcError::InvalidToken,
+            })?;
+
+        let claims = token_data.claims;
+        let scopes: Vec<String> = if let Some(scope_str) = &claims.scope {
+            scope_str
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect()
+        } else if let Some(scope_vec) = &claims.scopes {
+            scope_vec.clone()
+        } else {
+            vec![]
+        };
+
+        for required in &self.required_scopes {
+            if !scopes.contains(required) {
+                return Err(OidcError::MissingScope(required.clone()));
+            }
+        }
+
+        let mut extra_roles = Vec::new();
+        if let Some(ref role) = claims.pact_role {
+            extra_roles.push(role.clone());
+        }
+        if let Some(ref role) = claims.lattice_role {
+            extra_roles.push(role.clone());
+        }
+
+        Ok(TokenClaims {
+            sub: claims.sub,
+            exp: claims.exp,
+            iss: claims.iss,
+            aud: claims.aud.primary(),
+            scopes,
+            extra_roles,
+        })
     }
 
     /// Create with a custom reqwest client (for testing with mock servers).
@@ -464,6 +594,13 @@ impl JwtOidcValidator {
 }
 
 #[cfg(feature = "oidc")]
+impl SyncOidcValidator for JwtOidcValidator {
+    fn validate_token_sync(&self, token: &str) -> Result<TokenClaims, OidcError> {
+        JwtOidcValidator::validate_token_sync(self, token)
+    }
+}
+
+#[cfg(feature = "oidc")]
 #[async_trait]
 impl OidcValidator for JwtOidcValidator {
     async fn validate_token(&self, token: &str) -> Result<TokenClaims, OidcError> {
@@ -522,12 +659,22 @@ impl OidcValidator for JwtOidcValidator {
             }
         }
 
+        // 7. Extract cross-system role claims.
+        let mut extra_roles = Vec::new();
+        if let Some(ref role) = claims.pact_role {
+            extra_roles.push(role.clone());
+        }
+        if let Some(ref role) = claims.lattice_role {
+            extra_roles.push(role.clone());
+        }
+
         Ok(TokenClaims {
             sub: claims.sub,
             exp: claims.exp,
             iss: claims.iss,
             aud: claims.aud.primary(),
             scopes,
+            extra_roles,
         })
     }
 }

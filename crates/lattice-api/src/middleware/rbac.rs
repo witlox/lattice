@@ -273,22 +273,39 @@ impl RbacPolicy {
 
 // ---- Role derivation from OIDC claims ------------------------------------
 
-/// Determine the [`Role`] from the scopes embedded in validated OIDC
-/// [`TokenClaims`].
+/// Determine the [`Role`] from the scopes and extra role claims in validated
+/// OIDC [`TokenClaims`].
+///
+/// Checks both standard OIDC scopes and cross-system role claims
+/// (`pact_role`, `lattice_role`) for co-deployed pact+lattice environments.
 ///
 /// Precedence (first match wins):
-/// 1. `"admin"` or `"system:admin"` --> `SystemAdmin`
+/// 1. `"admin"` / `"system:admin"` scope or `"pact-platform-admin"` role --> `SystemAdmin`
 /// 2. `"tenant:admin"` --> `TenantAdmin`
 /// 3. `"sensitive:claim"` --> `ClaimingUser`
-/// 4. Anything else --> `User`
+/// 4. `"operator"` --> `Operator`
+/// 5. `"readonly"` --> `ReadOnly`
+/// 6. Anything else --> `User`
 pub fn derive_role(claims: &TokenClaims) -> Role {
+    // Check scopes first
     for scope in &claims.scopes {
         if scope == "admin" || scope == "system:admin" {
             return Role::SystemAdmin;
         }
     }
+    // Check cross-system role claims (pact_role, lattice_role)
+    for role in &claims.extra_roles {
+        if role == "pact-platform-admin" || role == "system-admin" {
+            return Role::SystemAdmin;
+        }
+    }
     for scope in &claims.scopes {
         if scope == "tenant:admin" {
+            return Role::TenantAdmin;
+        }
+    }
+    for role in &claims.extra_roles {
+        if role == "tenant-admin" {
             return Role::TenantAdmin;
         }
     }
@@ -299,6 +316,11 @@ pub fn derive_role(claims: &TokenClaims) -> Role {
     }
     for scope in &claims.scopes {
         if scope == "operator" {
+            return Role::Operator;
+        }
+    }
+    for role in &claims.extra_roles {
+        if role == "operator" {
             return Role::Operator;
         }
     }
@@ -418,6 +440,7 @@ mod tests {
             iss: "https://auth.example.com".to_string(),
             aud: "lattice-api".to_string(),
             scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            extra_roles: vec![],
         }
     }
 
@@ -663,6 +686,54 @@ mod tests {
         assert_eq!(
             derive_role(&claims_with_scopes(&["openid", "profile"])),
             Role::User
+        );
+    }
+
+    fn claims_with_roles(scopes: &[&str], extra_roles: &[&str]) -> TokenClaims {
+        TokenClaims {
+            sub: "testuser".to_string(),
+            exp: i64::MAX,
+            iss: "https://auth.example.com".to_string(),
+            aud: "lattice-api".to_string(),
+            scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            extra_roles: extra_roles.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // 13. pact-platform-admin role maps to SystemAdmin.
+    #[test]
+    fn pact_platform_admin_maps_to_system_admin() {
+        assert_eq!(
+            derive_role(&claims_with_roles(&[], &["pact-platform-admin"])),
+            Role::SystemAdmin
+        );
+    }
+
+    // 14. tenant-admin role claim maps to TenantAdmin.
+    #[test]
+    fn tenant_admin_role_claim_maps_to_tenant_admin() {
+        assert_eq!(
+            derive_role(&claims_with_roles(&[], &["tenant-admin"])),
+            Role::TenantAdmin
+        );
+    }
+
+    // 15. operator role claim maps to Operator.
+    #[test]
+    fn operator_role_claim_maps_to_operator() {
+        assert_eq!(
+            derive_role(&claims_with_roles(&[], &["operator"])),
+            Role::Operator
+        );
+    }
+
+    // 16. Scopes take precedence over role claims.
+    #[test]
+    fn scopes_take_precedence_over_role_claims() {
+        // scope says tenant:admin, role says operator → TenantAdmin wins
+        assert_eq!(
+            derive_role(&claims_with_roles(&["tenant:admin"], &["operator"])),
+            Role::TenantAdmin
         );
     }
 }

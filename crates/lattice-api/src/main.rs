@@ -258,11 +258,12 @@ async fn main() -> Result<()> {
                 audience: config.api.oidc_client_id.clone().unwrap_or_default(),
                 required_scopes: vec![],
             };
-            Some(
-                Arc::new(lattice_api::middleware::oidc::JwtOidcValidator::new(
-                    oidc_config,
-                )) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>,
-            )
+            let validator = lattice_api::middleware::oidc::JwtOidcValidator::new(oidc_config);
+            // Pre-fetch JWKS so the gRPC sync interceptor can validate immediately
+            if let Err(e) = validator.prefetch_jwks().await {
+                tracing::warn!("JWKS prefetch failed (will retry on first request): {e}");
+            }
+            Some(Arc::new(validator) as Arc<dyn lattice_api::middleware::oidc::OidcValidator>)
         } else if let Some(ref secret) = hmac_secret {
             info!("HMAC token validation enabled (dev/internal mode)");
             Some(
