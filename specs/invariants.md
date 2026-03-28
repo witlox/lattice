@@ -441,7 +441,17 @@ The cascade tries each provider's `is_available()` before calling `get_identity(
 
 ---
 
-### INV-A5: FirecREST Is Not Part of the Architecture
+### INV-A5: API Authentication Enforcement
+
+**Statement:** All REST and gRPC API endpoints except `/healthz` and `/api/v1/auth/discovery` require a valid Bearer token in the `Authorization` header. Tokens are validated via JWKS (production) or HMAC-SHA256 (dev/testing via `LATTICE_OIDC_HMAC_SECRET`). Requests without a valid token receive `401 Unauthenticated`.
+
+**Enforcement:** REST auth middleware and gRPC interceptor validate tokens before routing to handlers. HMAC validation is synchronous in the gRPC interceptor; JWKS uses cached keys.
+
+**Violation consequence:** Unauthenticated network access to scheduler state — any host on the network can query and mutate allocations, nodes, and tenants.
+
+---
+
+### INV-A6: FirecREST Is Not Part of the Architecture
 
 **Statement:** FirecREST is not part of the Lattice architecture. Lattice authenticates directly against the institutional IdP via hpc-auth. If FirecREST is present as a legacy compatibility gateway for hybrid Slurm deployments, it is transparent — it does not participate in authentication, authorization, or any Lattice-specific logic.
 

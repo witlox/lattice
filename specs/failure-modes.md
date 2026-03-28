@@ -47,9 +47,9 @@ Fail-safe defaults. Running allocations survive component failures. No silent fa
 |---|---|
 | **Detection** | Heartbeat timeout (30s) → Degraded → grace period (60s standard, 5min sensitive) → Down |
 | **Blast radius** | Allocations on that node. Other nodes unaffected. |
-| **Degradation** | Node removed from scheduling during Degraded. Allocations continue if agent restarts within grace period. |
-| **Recovery** | Agent restart → re-register → health check → Ready. |
-| **Data loss** | Running allocation output since last checkpoint. |
+| **Degradation** | Node removed from scheduling during Degraded. Workloads survive in their own cgroup scopes (`KillMode=process` in systemd). |
+| **Recovery** | Agent restart → load persisted state from `/var/lib/lattice/agent-state.json` → reattach to surviving processes (PID liveness check) → clean up orphaned cgroups → re-register with quorum → health check → Ready. |
+| **Data loss** | Running allocation output since last checkpoint. Agent state file is persisted on graceful shutdown and periodically during operation. |
 | **Unacceptable** | Silent Down transition without alert. Sensitive allocation auto-requeued (requires operator intervention). |
 
 ### FM-05: Node Hardware Failure

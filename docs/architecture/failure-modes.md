@@ -38,7 +38,9 @@ Fail-safe defaults. Running allocations survive component failures. Modeled afte
 1. Quorum marks node as `Degraded` after first missed heartbeat
 2. After grace period (default: 60s), node transitions to `Down`
 3. Allocations on the node are requeued (if `requeue` policy allows) or marked `Failed`
-4. Node agent restarts → re-registers with quorum → health check → re-enters scheduling pool
+4. Node agent restarts → loads persisted state from `/var/lib/lattice/agent-state.json` → reattaches to surviving workload processes (PID liveness check via `kill(pid, 0)`) → cleans up orphaned cgroups → re-registers with quorum → health check → re-enters scheduling pool
+
+Workloads survive agent restart because the systemd unit uses `KillMode=process` (only the agent process is killed, not children in their own cgroup scopes).
 
 **Sensitive nodes:** Longer grace period (default: 5 minutes) to avoid false positives from transient issues. Sensitive allocations are never automatically requeued — operator intervention required.
 

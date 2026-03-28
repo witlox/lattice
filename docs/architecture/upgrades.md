@@ -32,12 +32,12 @@ This order ensures that core components (quorum) speak the old protocol until al
 
 For each batch of nodes:
 
-1. **Drain:** Stop scheduling new allocations to the node. Node enters `Draining` state.
-2. **Wait:** Running allocations complete naturally. For urgent upgrades: checkpoint running allocations and migrate (cross-ref: [checkpoint-broker.md](checkpoint-broker.md)).
-3. **Upgrade:** Replace node agent binary. Configuration is preserved.
+1. **Drain:** Stop scheduling new allocations to the node. Node enters `Draining` state. If no allocations are running, it transitions directly to `Drained`.
+2. **Wait:** Running allocations complete naturally. The scheduler loop transitions the node from `Draining` to `Drained` once all allocations finish. For urgent upgrades: checkpoint running allocations and migrate (cross-ref: [checkpoint-broker.md](checkpoint-broker.md)).
+3. **Upgrade:** Replace node agent binary while node is `Drained`. Configuration is preserved.
 4. **Restart:** Node agent starts, re-registers with quorum using new protocol version.
 5. **Health check:** Node passes health check (heartbeat, GPU detection, network test).
-6. **Re-enter pool:** Node transitions to `Ready` and is available for scheduling.
+6. **Undrain:** Operator runs `undrain`. Node transitions from `Drained` to `Ready` and is available for scheduling.
 
 ### Canary Strategy
 

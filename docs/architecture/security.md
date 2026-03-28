@@ -236,13 +236,15 @@ The Ed25519 signing key for audit log entries is loaded from a persistent file c
 
 ### REST API Authentication
 
-REST endpoints are protected by the same auth stack as gRPC when OIDC is configured:
+REST and gRPC endpoints require authentication when OIDC or HMAC is configured:
 
-- Bearer token required in `Authorization` header
+- Bearer token required in `Authorization` header (validated on every request)
+- Two validation modes: **JWKS** (production, via `oidc_issuer`) or **HMAC-SHA256** (dev/testing, via `LATTICE_OIDC_HMAC_SECRET`)
 - Rate limiting applied per-user
 - Public endpoints exempt: `/healthz`, `/api/v1/auth/discovery`
 - OIDC discovery client disables HTTP redirects (JWKS cache poisoning prevention)
 - Non-HTTPS issuer URLs produce a warning (MITM risk)
+- Server logs a prominent warning on startup if no authentication is configured
 
 ### Service Discovery Isolation
 

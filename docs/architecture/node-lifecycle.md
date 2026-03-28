@@ -219,6 +219,24 @@ Heartbeats include:
 
 Heartbeats are lightweight (~200 bytes) and sent over the management traffic class (cross-ref: [security.md](security.md)).
 
+## Agent Restart and State Recovery
+
+The node agent persists active allocation state to `/var/lib/lattice/agent-state.json` (configurable via `--state-file`). This enables workload survival across agent restarts.
+
+**On graceful shutdown (SIGTERM):**
+1. Agent writes current allocation state (PIDs, cgroup paths, runtime type, mount points) to the state file
+2. Agent exits without killing workloads (systemd `KillMode=process`)
+
+**On startup:**
+1. Agent reads the persisted state file
+2. For each allocation, checks if the process is still alive (`kill(pid, 0)`)
+3. Alive processes are reattached — agent resumes heartbeating their status
+4. Dead processes are treated as orphans — cgroup scopes are destroyed, mounts cleaned up
+5. Stray cgroup scopes under `workload.slice/alloc-*.scope` with no matching state entry are also cleaned up
+6. Agent re-registers with quorum and resumes normal operation
+
+**Crash recovery:** If the agent crashes without writing the state file, the startup scan of cgroup scopes under `workload.slice/` provides a fallback discovery mechanism for orphaned workloads.
+
 ## Cross-References
 
 - [failure-modes.md](failure-modes.md) — Allocation requeue on node failure

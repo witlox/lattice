@@ -139,13 +139,21 @@ lattice-agent \
 
 ### Draining Nodes
 
+The drain lifecycle is: **Ready → Draining → Drained → Ready**.
+
 ```bash
 # Drain a node (existing jobs complete, no new jobs scheduled)
 lattice admin drain nid001234 --reason="maintenance"
 
-# Undrain
+# If no active allocations, node goes directly to Drained.
+# If allocations are running, node stays in Draining until they complete.
+# The scheduler loop automatically transitions Draining → Drained.
+
+# Undrain (only works from Drained state)
 lattice admin undrain nid001234
 ```
+
+Undrain only works when the node is in `Drained` state. If the node is still `Draining` (allocations running), wait for them to complete or cancel them first.
 
 ### Node States
 
