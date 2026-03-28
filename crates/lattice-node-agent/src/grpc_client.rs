@@ -74,10 +74,13 @@ pub struct GrpcHeartbeatSink {
 impl GrpcHeartbeatSink {
     /// Connect to the quorum endpoint with retry.
     ///
-    /// Reads `LATTICE_AGENT_TOKEN` from the environment and attaches it as
-    /// a Bearer token on every outgoing RPC.
-    pub async fn connect(endpoint: &str) -> Result<Self, String> {
-        let channel = connect_with_retry(endpoint).await?;
+    /// When `tls` is provided, the channel uses mTLS (production path).
+    /// Otherwise, falls back to `LATTICE_AGENT_TOKEN` Bearer token auth.
+    pub async fn connect(
+        endpoint: &str,
+        tls: Option<tonic::transport::ClientTlsConfig>,
+    ) -> Result<Self, String> {
+        let channel = connect_with_retry(endpoint, tls).await?;
         let interceptor = AgentAuthInterceptor::from_env();
         Ok(Self {
             client: NodeServiceClient::with_interceptor(channel, interceptor),
@@ -127,10 +130,13 @@ pub struct GrpcNodeRegistry {
 impl GrpcNodeRegistry {
     /// Connect to the quorum endpoint with retry.
     ///
-    /// Reads `LATTICE_AGENT_TOKEN` from the environment and attaches it as
-    /// a Bearer token on every outgoing RPC.
-    pub async fn connect(endpoint: &str) -> Result<Self, String> {
-        let channel = connect_with_retry(endpoint).await?;
+    /// When `tls` is provided, the channel uses mTLS (production path).
+    /// Otherwise, falls back to `LATTICE_AGENT_TOKEN` Bearer token auth.
+    pub async fn connect(
+        endpoint: &str,
+        tls: Option<tonic::transport::ClientTlsConfig>,
+    ) -> Result<Self, String> {
+        let channel = connect_with_retry(endpoint, tls).await?;
         let interceptor = AgentAuthInterceptor::from_env();
         Ok(Self {
             client: NodeServiceClient::with_interceptor(channel, interceptor),
@@ -268,17 +274,29 @@ impl NodeRegistry for GrpcNodeRegistry {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /// Connect to a gRPC endpoint with exponential backoff retry.
-async fn connect_with_retry(endpoint: &str) -> Result<Channel, String> {
+///
+/// When `tls` is provided, configures mutual TLS on the channel (production
+/// path: SPIRE/bootstrap certs). Without TLS, connects plaintext (the
+/// `AgentAuthInterceptor` handles Bearer token auth as fallback).
+async fn connect_with_retry(
+    endpoint: &str,
+    tls: Option<tonic::transport::ClientTlsConfig>,
+) -> Result<Channel, String> {
     let mut delay = Duration::from_millis(100);
     let max_delay = Duration::from_secs(5);
     let max_attempts = 10;
 
     for attempt in 1..=max_attempts {
-        match Channel::from_shared(endpoint.to_string())
-            .map_err(|e| format!("invalid endpoint: {e}"))?
-            .connect()
-            .await
-        {
+        let mut channel_builder = Channel::from_shared(endpoint.to_string())
+            .map_err(|e| format!("invalid endpoint: {e}"))?;
+
+        if let Some(ref tls_config) = tls {
+            channel_builder = channel_builder
+                .tls_config(tls_config.clone())
+                .map_err(|e| format!("TLS config error: {e}"))?;
+        }
+
+        match channel_builder.connect().await {
             Ok(channel) => return Ok(channel),
             Err(e) => {
                 warn!(

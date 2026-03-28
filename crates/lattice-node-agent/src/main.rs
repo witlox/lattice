@@ -16,10 +16,12 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::{info, warn};
 
+use lattice_common::config::IdentityConfig;
 use lattice_common::types::NodeCapabilities;
 use lattice_node_agent::grpc_client::{GrpcHeartbeatSink, GrpcNodeRegistry};
 use lattice_node_agent::health::ObservedHealth;
 use lattice_node_agent::heartbeat_loop::StaticHealthObserver;
+use lattice_node_agent::identity;
 use lattice_node_agent::reattach;
 use lattice_node_agent::state;
 use lattice_node_agent::NodeAgent;
@@ -66,6 +68,26 @@ struct Args {
     /// Path to the agent state file for workload persistence across restarts.
     #[arg(long, default_value = state::STATE_FILE_PATH, env = "LATTICE_STATE_FILE")]
     state_file: PathBuf,
+
+    /// Bootstrap certificate for mTLS (PEM file path).
+    #[arg(long, env = "LATTICE_BOOTSTRAP_CERT")]
+    bootstrap_cert: Option<String>,
+
+    /// Bootstrap private key for mTLS (PEM file path).
+    #[arg(long, env = "LATTICE_BOOTSTRAP_KEY")]
+    bootstrap_key: Option<String>,
+
+    /// Bootstrap CA trust bundle for mTLS (PEM file path).
+    #[arg(long, env = "LATTICE_BOOTSTRAP_CA")]
+    bootstrap_ca: Option<String>,
+
+    /// SPIRE agent socket path.
+    #[arg(
+        long,
+        default_value = "/run/spire/agent.sock",
+        env = "LATTICE_SPIRE_SOCKET"
+    )]
+    spire_socket: String,
 }
 
 #[tokio::main]
@@ -92,8 +114,48 @@ async fn main() -> Result<()> {
         memory_topology: None,
     };
 
+    // ── Identity acquisition (mTLS) ────────────────────────────────
+    // Try the identity cascade: SPIRE → SelfSigned → Bootstrap.
+    // If an identity is available, use mTLS for gRPC connections.
+    // Otherwise, fall back to LATTICE_AGENT_TOKEN Bearer auth.
+    let identity_config = IdentityConfig {
+        spire_socket: args.spire_socket.clone(),
+        bootstrap_cert: args.bootstrap_cert.clone(),
+        bootstrap_key: args.bootstrap_key.clone(),
+        bootstrap_ca: args.bootstrap_ca.clone(),
+        ..Default::default()
+    };
+
+    let tls_config = {
+        let cascade = identity::build_cascade(&identity_config);
+        match cascade.get_identity().await {
+            Ok(id) => {
+                info!(
+                    source = ?id.source,
+                    expires = %id.expires_at,
+                    "acquired workload identity for mTLS"
+                );
+                match identity::tls_config_from_identity(&id) {
+                    Ok(tls) => Some(tls),
+                    Err(e) => {
+                        warn!(error = %e, "failed to build TLS config from identity — falling back to token auth");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                if std::env::var("LATTICE_AGENT_TOKEN").is_ok() {
+                    info!("no mTLS identity available ({e}) — using LATTICE_AGENT_TOKEN");
+                } else {
+                    warn!("no mTLS identity available ({e}) and no LATTICE_AGENT_TOKEN set — gRPC calls may be rejected");
+                }
+                None
+            }
+        }
+    };
+
     // Connect to the quorum
-    let grpc_registry = GrpcNodeRegistry::connect(&args.quorum_endpoint)
+    let grpc_registry = GrpcNodeRegistry::connect(&args.quorum_endpoint, tls_config.clone())
         .await
         .map_err(|e| anyhow::anyhow!("failed to connect registry: {e}"))?;
     info!("Connected to quorum");
@@ -106,7 +168,7 @@ async fn main() -> Result<()> {
     info!("Node {} registered", args.node_id);
 
     // Set up heartbeat sink
-    let heartbeat_sink = GrpcHeartbeatSink::connect(&args.quorum_endpoint)
+    let heartbeat_sink = GrpcHeartbeatSink::connect(&args.quorum_endpoint, tls_config)
         .await
         .map_err(|e| anyhow::anyhow!("failed to connect heartbeat sink: {e}"))?;
 
