@@ -1728,26 +1728,93 @@ async fn drain_node(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state
+    // Count active (non-terminal) allocations assigned to this node
+    let active_count = match state.allocations.list(&Default::default()).await {
+        Ok(allocs) => allocs
+            .iter()
+            .filter(|a| a.assigned_nodes.contains(&id) && !a.state.is_terminal())
+            .count() as u32,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    // Always transition Ready → Draining first
+    if let Err(e) = state
         .nodes
         .update_node_state(&id, NodeState::Draining)
         .await
     {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"success": true}))).into_response(),
-        Err(e) => (
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: e.to_string(),
             }),
         )
-            .into_response(),
+            .into_response();
     }
+
+    // If no active allocations, immediately complete: Draining → Drained
+    if active_count == 0 {
+        if let Err(e) = state
+            .nodes
+            .update_node_state(&id, NodeState::Drained)
+            .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"success": true, "active_allocations": active_count})),
+    )
+        .into_response()
 }
 
 async fn undrain_node(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Check current state — undrain is only valid from Drained
+    let node = match state.nodes.get_node(&id).await {
+        Ok(n) => n,
+        Err(e) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    if !matches!(node.state, NodeState::Drained) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: format!(
+                    "Cannot undrain node in state {:?} — must be Drained first",
+                    node.state
+                ),
+            }),
+        )
+            .into_response();
+    }
+
     match state.nodes.update_node_state(&id, NodeState::Ready).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"success": true}))).into_response(),
         Err(e) => (

@@ -85,6 +85,16 @@ impl SchedulerStateReader for QuorumStateReader {
             .collect())
     }
 
+    async fn draining_nodes(&self) -> Result<Vec<Node>, LatticeError> {
+        let state = self.quorum.state().read().await;
+        Ok(state
+            .nodes
+            .values()
+            .filter(|n| matches!(n.state, NodeState::Draining))
+            .cloned()
+            .collect())
+    }
+
     async fn tenants(&self) -> Result<Vec<Tenant>, LatticeError> {
         let state = self.quorum.state().read().await;
         Ok(state.tenants.values().cloned().collect())
@@ -134,6 +144,13 @@ impl SchedulerCommandSink for QuorumCommandSink {
         use lattice_common::traits::AllocationStore;
         self.quorum
             .update_state(&alloc_id, AllocationState::Suspended)
+            .await
+    }
+
+    async fn complete_drain(&self, node_id: String) -> Result<(), LatticeError> {
+        use lattice_common::traits::NodeRegistry;
+        self.quorum
+            .update_node_state(&node_id, NodeState::Drained)
             .await
     }
 }

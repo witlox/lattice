@@ -72,15 +72,41 @@ impl NodeService for LatticeNodeService {
     ) -> Result<Response<pb::DrainNodeResponse>, Status> {
         let req = request.into_inner();
 
+        // Count active (non-terminal) allocations assigned to this node.
+        let all_allocs = self
+            .state
+            .allocations
+            .list(&Default::default())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let active_count = all_allocs
+            .iter()
+            .filter(|a| {
+                a.assigned_nodes.contains(&req.node_id) && !a.state.is_terminal()
+            })
+            .count() as u32;
+
+        // Always transition Ready → Draining first (valid state machine edge).
         self.state
             .nodes
             .update_node_state(&req.node_id, NodeState::Draining)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        // If no active allocations, immediately complete: Draining → Drained.
+        // Otherwise the scheduler loop will transition to Drained once all
+        // allocations finish.
+        if active_count == 0 {
+            self.state
+                .nodes
+                .update_node_state(&req.node_id, NodeState::Drained)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+
         Ok(Response::new(pb::DrainNodeResponse {
             success: true,
-            active_allocations: 0, // Would be computed from allocation store
+            active_allocations: active_count,
         }))
     }
 
@@ -89,6 +115,23 @@ impl NodeService for LatticeNodeService {
         request: Request<pb::UndrainNodeRequest>,
     ) -> Result<Response<pb::UndrainNodeResponse>, Status> {
         let req = request.into_inner();
+
+        // Check current state — undrain is only valid from Drained.
+        // Draining → Ready is not a valid state machine transition;
+        // the drain must complete first.
+        let node = self
+            .state
+            .nodes
+            .get_node(&req.node_id)
+            .await
+            .map_err(|e| Status::not_found(e.to_string()))?;
+
+        if !matches!(node.state, NodeState::Drained) {
+            return Err(Status::failed_precondition(format!(
+                "Cannot undrain node in state {:?} — node must be in Drained state (drain must complete first)",
+                node.state
+            )));
+        }
 
         self.state
             .nodes
@@ -213,6 +256,7 @@ impl NodeService for LatticeNodeService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lattice_common::traits::AllocationStore;
     use lattice_test_harness::fixtures::create_node_batch;
     use lattice_test_harness::mocks::{
         MockAllocationStore, MockAuditLog, MockCheckpointBroker, MockNodeRegistry,
@@ -285,9 +329,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_node_succeeds() {
+    async fn drain_node_with_no_allocations_goes_to_drained() {
         let state = test_state(3);
-        let svc = LatticeNodeService::new(state);
+        let svc = LatticeNodeService::new(state.clone());
 
         let resp = svc
             .drain_node(Request::new(pb::DrainNodeRequest {
@@ -298,6 +342,73 @@ mod tests {
             .unwrap();
 
         assert!(resp.get_ref().success);
+        assert_eq!(resp.get_ref().active_allocations, 0);
+
+        // Should be Drained (not stuck in Draining)
+        let node = state.nodes.get_node(&"x1000c0s0b0n0".to_string()).await.unwrap();
+        assert!(
+            matches!(node.state, NodeState::Drained),
+            "Expected Drained, got {:?}",
+            node.state
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_node_with_active_allocations_stays_draining() {
+        use lattice_common::types::AllocationState;
+        use lattice_test_harness::fixtures::AllocationBuilder;
+
+        let node_batch = create_node_batch(3, 0);
+        let mut alloc_with_node = AllocationBuilder::new()
+            .tenant("t1")
+            .build();
+
+        // Insert a running allocation assigned to node 0
+        alloc_with_node.assigned_nodes = vec!["x1000c0s0b0n0".to_string()];
+        alloc_with_node.state = AllocationState::Running;
+
+        let alloc_store = MockAllocationStore::new();
+        alloc_store.insert(alloc_with_node).await.unwrap();
+
+        let state = Arc::new(ApiState {
+            allocations: Arc::new(alloc_store),
+            nodes: Arc::new(MockNodeRegistry::new().with_nodes(node_batch)),
+            audit: Arc::new(MockAuditLog::new()),
+            checkpoint: Arc::new(MockCheckpointBroker::new()),
+            quorum: None,
+            events: crate::events::new_event_bus(),
+            tsdb: None,
+            storage: None,
+            accounting: None,
+            oidc: None,
+            rate_limiter: None,
+            sovra: None,
+            pty: None,
+            agent_pool: None,
+            data_dir: None,
+            oidc_config: None,
+        });
+
+        let svc = LatticeNodeService::new(state.clone());
+
+        let resp = svc
+            .drain_node(Request::new(pb::DrainNodeRequest {
+                node_id: "x1000c0s0b0n0".to_string(),
+                reason: "maintenance".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        assert!(resp.get_ref().success);
+        assert_eq!(resp.get_ref().active_allocations, 1);
+
+        // Should be Draining (waiting for allocation to complete)
+        let node = state.nodes.get_node(&"x1000c0s0b0n0".to_string()).await.unwrap();
+        assert!(
+            matches!(node.state, NodeState::Draining),
+            "Expected Draining, got {:?}",
+            node.state
+        );
     }
 
     async fn test_state_with_quorum() -> Arc<ApiState> {
@@ -406,11 +517,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn undrain_node_succeeds() {
+    async fn undrain_drained_node_succeeds() {
         let state = test_state(3);
-        let svc = LatticeNodeService::new(state);
+        let svc = LatticeNodeService::new(state.clone());
 
-        // First drain, then undrain
+        // Drain (no allocations → goes directly to Drained)
         svc.drain_node(Request::new(pb::DrainNodeRequest {
             node_id: "x1000c0s0b0n0".to_string(),
             reason: "maintenance".to_string(),
@@ -418,6 +529,7 @@ mod tests {
         .await
         .unwrap();
 
+        // Now undrain from Drained → Ready
         let resp = svc
             .undrain_node(Request::new(pb::UndrainNodeRequest {
                 node_id: "x1000c0s0b0n0".to_string(),
@@ -426,6 +538,70 @@ mod tests {
             .unwrap();
 
         assert!(resp.get_ref().success);
+
+        // Verify back to Ready
+        let node = state.nodes.get_node(&"x1000c0s0b0n0".to_string()).await.unwrap();
+        assert!(
+            matches!(node.state, NodeState::Ready),
+            "Expected Ready, got {:?}",
+            node.state
+        );
+    }
+
+    #[tokio::test]
+    async fn undrain_draining_node_fails() {
+        use lattice_common::types::AllocationState;
+        use lattice_test_harness::fixtures::AllocationBuilder;
+
+        let node_batch = create_node_batch(3, 0);
+        let mut alloc = AllocationBuilder::new().tenant("t1").build();
+        alloc.assigned_nodes = vec!["x1000c0s0b0n0".to_string()];
+        alloc.state = AllocationState::Running;
+
+        let alloc_store = MockAllocationStore::new();
+        alloc_store.insert(alloc).await.unwrap();
+
+        let state = Arc::new(ApiState {
+            allocations: Arc::new(alloc_store),
+            nodes: Arc::new(MockNodeRegistry::new().with_nodes(node_batch)),
+            audit: Arc::new(MockAuditLog::new()),
+            checkpoint: Arc::new(MockCheckpointBroker::new()),
+            quorum: None,
+            events: crate::events::new_event_bus(),
+            tsdb: None,
+            storage: None,
+            accounting: None,
+            oidc: None,
+            rate_limiter: None,
+            sovra: None,
+            pty: None,
+            agent_pool: None,
+            data_dir: None,
+            oidc_config: None,
+        });
+
+        let svc = LatticeNodeService::new(state);
+
+        // Drain with active allocations → stays in Draining
+        svc.drain_node(Request::new(pb::DrainNodeRequest {
+            node_id: "x1000c0s0b0n0".to_string(),
+            reason: "maintenance".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        // Undrain while Draining should fail
+        let result = svc
+            .undrain_node(Request::new(pb::UndrainNodeRequest {
+                node_id: "x1000c0s0b0n0".to_string(),
+            }))
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().code(),
+            tonic::Code::FailedPrecondition
+        );
     }
 
     #[tokio::test]

@@ -2285,14 +2285,14 @@ async fn admin_drain_and_node_list_filters_correctly() {
         .unwrap();
     assert_eq!(list_resp.get_ref().nodes.len(), 4);
 
-    // Verify exactly 2 are draining
-    let draining_count = list_resp
+    // Verify exactly 2 are drained (no active allocations → immediate drain completion)
+    let drained_count = list_resp
         .get_ref()
         .nodes
         .iter()
-        .filter(|n| n.state == "draining")
+        .filter(|n| n.state == "drained")
         .count();
-    assert_eq!(draining_count, 2);
+    assert_eq!(drained_count, 2);
 }
 
 // ─── Test 48: Admin update nonexistent tenant → NOT_FOUND ────

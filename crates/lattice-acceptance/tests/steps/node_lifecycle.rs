@@ -80,7 +80,11 @@ fn drain_node(world: &mut LatticeWorld, idx: usize) {
         "Can only drain a Ready node, got {:?}",
         node.state
     );
-    node.state = NodeState::Draining;
+    // Follows the real drain path: Ready → Draining, then if no active
+    // allocations → Drained immediately.  BDD tests have no allocations
+    // so drain completes directly.
+    let final_state = NodeState::Drained;
+    node.state = final_state.clone();
     world
         .registry
         .nodes
@@ -88,15 +92,15 @@ fn drain_node(world: &mut LatticeWorld, idx: usize) {
         .unwrap()
         .get_mut(&node.id)
         .unwrap()
-        .state = NodeState::Draining;
+        .state = final_state;
 }
 
 #[when(regex = r#"^I undrain node (\d+)$"#)]
 fn undrain_node(world: &mut LatticeWorld, idx: usize) {
     let node = &mut world.nodes[idx];
     assert!(
-        matches!(node.state, NodeState::Draining | NodeState::Drained),
-        "Can only undrain a Draining/Drained node, got {:?}",
+        matches!(node.state, NodeState::Drained),
+        "Can only undrain a Drained node, got {:?}",
         node.state
     );
     node.state = NodeState::Ready;
@@ -260,7 +264,9 @@ fn drain_two_nodes(world: &mut LatticeWorld, idx_a: usize, idx_b: usize) {
             "Can only drain a Ready node, got {:?}",
             node.state
         );
-        node.state = NodeState::Draining;
+        // No active allocations in BDD tests → immediate drain completion
+        let final_state = NodeState::Drained;
+        node.state = final_state.clone();
         world
             .registry
             .nodes
@@ -268,7 +274,7 @@ fn drain_two_nodes(world: &mut LatticeWorld, idx_a: usize, idx_b: usize) {
             .unwrap()
             .get_mut(&node.id)
             .unwrap()
-            .state = NodeState::Draining;
+            .state = final_state;
     }
 }
 

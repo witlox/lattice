@@ -1,13 +1,13 @@
 Feature: Node Lifecycle
   Nodes can be drained, undrained, disabled, enabled, and claimed for tenants.
 
-  Scenario: Drain transitions node to Draining
+  Scenario: Drain with no active allocations transitions to Drained
     Given 5 ready nodes in group 0
     When I drain node 0
-    Then node 0 should be in state "Draining"
+    Then node 0 should be in state "Drained"
     And nodes 1 through 4 should be in state "Ready"
 
-  Scenario: Undrain returns node to Ready
+  Scenario: Undrain returns drained node to Ready
     Given 5 ready nodes in group 0
     When I drain node 0
     And I undrain node 0
@@ -75,6 +75,6 @@ Feature: Node Lifecycle
   Scenario: Multiple nodes drained simultaneously
     Given 5 ready nodes in group 0
     When I drain node 0 and node 1 simultaneously
-    Then node 0 should be in state "Draining"
-    And node 1 should be in state "Draining"
+    Then node 0 should be in state "Drained"
+    And node 1 should be in state "Drained"
     And nodes 2 through 4 should be in state "Ready"

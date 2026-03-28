@@ -47,6 +47,15 @@ pub trait SchedulerStateReader: Send + Sync {
     ) -> Result<Vec<lattice_common::types::Allocation>, lattice_common::error::LatticeError> {
         Ok(vec![])
     }
+    /// Read nodes currently in Draining state.
+    /// Used by the drain completion check to transition nodes to Drained
+    /// once all their allocations finish.
+    /// Default returns empty (opt-in for drain completion).
+    async fn draining_nodes(
+        &self,
+    ) -> Result<Vec<lattice_common::types::Node>, lattice_common::error::LatticeError> {
+        Ok(vec![])
+    }
     /// Read completed/failed/cancelled allocations within a time window.
     /// Used by the budget ledger to compute GPU-hours consumed.
     /// Default returns empty (opt-in for budget tracking).
@@ -97,6 +106,14 @@ pub trait SchedulerCommandSink: Send + Sync {
     }
     /// Notify of a scale-down decision (default: no-op).
     async fn scale_down(&self, _count: u32) -> Result<(), lattice_common::error::LatticeError> {
+        Ok(())
+    }
+    /// Transition a node from Draining to Drained.
+    /// Called when all allocations on a draining node have completed.
+    async fn complete_drain(
+        &self,
+        _node_id: String,
+    ) -> Result<(), lattice_common::error::LatticeError> {
         Ok(())
     }
     /// Requeue a failed allocation back to Pending (service reconciliation).
@@ -182,6 +199,23 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                     warn!(alloc_id = %alloc.id, error = %e, "Reconciler: failed to requeue");
                 } else {
                     requeued_ids.insert(alloc.id);
+                }
+            }
+        }
+
+        // ── Drain completion: transition Draining → Drained when empty ──
+        let draining = self.reader.draining_nodes().await?;
+        if !draining.is_empty() {
+            let all_running = self.reader.running_allocations().await?;
+            for node in &draining {
+                let has_active = all_running
+                    .iter()
+                    .any(|a| a.assigned_nodes.contains(&node.id));
+                if !has_active {
+                    info!(node_id = %node.id, "Drain complete: no active allocations, transitioning to Drained");
+                    if let Err(e) = self.sink.complete_drain(node.id.clone()).await {
+                        warn!(node_id = %node.id, error = %e, "Failed to complete drain");
+                    }
                 }
             }
         }
@@ -580,6 +614,7 @@ mod tests {
         pending: Vec<Allocation>,
         running: Vec<Allocation>,
         failed: Vec<Allocation>,
+        draining: Vec<Node>,
         nodes: Vec<Node>,
         tenants: Vec<Tenant>,
         topology: TopologyModel,
@@ -595,6 +630,9 @@ mod tests {
         }
         async fn failed_allocations(&self) -> Result<Vec<Allocation>, LatticeError> {
             Ok(self.failed.clone())
+        }
+        async fn draining_nodes(&self) -> Result<Vec<Node>, LatticeError> {
+            Ok(self.draining.clone())
         }
         async fn available_nodes(&self) -> Result<Vec<Node>, LatticeError> {
             Ok(self.nodes.clone())
@@ -645,6 +683,7 @@ mod tests {
             pending,
             running: vec![],
             failed: vec![],
+            draining: vec![],
             nodes: create_node_batch(nodes, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, nodes),
@@ -920,6 +959,7 @@ mod tests {
                     .build(),
             ],
             failed: vec![],
+            draining: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1047,6 +1087,7 @@ mod tests {
             pending: vec![],
             running: vec![],
             failed: vec![failed_svc],
+            draining: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1074,6 +1115,7 @@ mod tests {
             pending: vec![],
             running: vec![],
             failed: vec![failed_batch],
+            draining: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1100,6 +1142,7 @@ mod tests {
             pending: vec![],
             running: vec![],
             failed: vec![failed_svc],
+            draining: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1128,6 +1171,7 @@ mod tests {
             pending: vec![],
             running: vec![],
             failed: vec![failed_svc],
+            draining: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1155,6 +1199,7 @@ mod tests {
             pending: vec![],
             running: vec![],
             failed: vec![failed_reactive],
+            draining: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1167,5 +1212,112 @@ mod tests {
         let requeued = sink.requeued.lock().await;
         assert_eq!(requeued.len(), 1);
         assert_eq!(requeued[0], alloc_id);
+    }
+
+    // ─── Drain completion tests ─────────────────────────────────────
+
+    struct DrainTrackingSink {
+        drained: Mutex<Vec<String>>,
+        assigned: Mutex<Vec<(AllocId, Vec<String>)>>,
+        running: Mutex<Vec<AllocId>>,
+        assign_count: AtomicUsize,
+    }
+
+    impl DrainTrackingSink {
+        fn new() -> Self {
+            Self {
+                drained: Mutex::new(Vec::new()),
+                assigned: Mutex::new(Vec::new()),
+                running: Mutex::new(Vec::new()),
+                assign_count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SchedulerCommandSink for DrainTrackingSink {
+        async fn assign_nodes(
+            &self,
+            alloc_id: AllocId,
+            nodes: Vec<String>,
+        ) -> Result<(), LatticeError> {
+            self.assigned.lock().await.push((alloc_id, nodes));
+            self.assign_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        async fn set_running(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
+            self.running.lock().await.push(alloc_id);
+            Ok(())
+        }
+        async fn complete_drain(&self, node_id: String) -> Result<(), LatticeError> {
+            self.drained.lock().await.push(node_id);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_completion_transitions_empty_draining_node() {
+        use lattice_test_harness::fixtures::NodeBuilder;
+
+        let draining_node = NodeBuilder::new()
+            .id("drain-node")
+            .state(NodeState::Draining)
+            .build();
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![], // no allocations on the draining node
+            failed: vec![],
+            draining: vec![draining_node],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(DrainTrackingSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let drained = sink.drained.lock().await;
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0], "drain-node");
+    }
+
+    #[tokio::test]
+    async fn drain_completion_skips_node_with_active_allocations() {
+        use lattice_test_harness::fixtures::NodeBuilder;
+
+        let draining_node = NodeBuilder::new()
+            .id("busy-node")
+            .state(NodeState::Draining)
+            .build();
+
+        let running_alloc = AllocationBuilder::new()
+            .tenant("t1")
+            .state(AllocationState::Running)
+            .build();
+        // Assign the allocation to the draining node
+        let mut alloc = running_alloc;
+        alloc.assigned_nodes = vec!["busy-node".to_string()];
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![alloc],
+            failed: vec![],
+            draining: vec![draining_node],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(DrainTrackingSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let drained = sink.drained.lock().await;
+        assert!(
+            drained.is_empty(),
+            "Should not complete drain while allocations are active"
+        );
     }
 }

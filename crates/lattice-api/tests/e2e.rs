@@ -299,12 +299,12 @@ async fn drain_scheduler_avoids_drained_nodes() {
         .await
         .unwrap();
 
-    // Verify 2 are draining
-    let draining: Vec<_> = all_nodes
+    // Verify 2 are drained (no active allocations → immediate Draining → Drained)
+    let drained: Vec<_> = all_nodes
         .iter()
-        .filter(|n| matches!(n.state, NodeState::Draining))
+        .filter(|n| matches!(n.state, NodeState::Drained))
         .collect();
-    assert_eq!(draining.len(), 2);
+    assert_eq!(drained.len(), 2);
 
     // Run scheduler with the nodes — only ready nodes should be used
     let alloc = AllocationBuilder::new().tenant("physics").nodes(2).build();
@@ -548,8 +548,8 @@ async fn concurrent_submit_and_cancel_race() {
     assert_eq!(pending, 5, "5 should remain pending");
 }
 
-// ─── Test 8: Node drain + undrain lifecycle via gRPC ─────────
-// Drain, verify drained, undrain, verify ready.
+// ─── Test 8: Node drain + undrain lifecycle via gRPC ────────���
+// Drain with no active allocations → immediate Drained, then undrain → Ready.
 
 #[tokio::test]
 async fn node_drain_undrain_lifecycle_via_grpc() {
@@ -557,7 +557,7 @@ async fn node_drain_undrain_lifecycle_via_grpc() {
     let state = e2e_state_with_nodes(nodes.clone());
     let node_svc = LatticeNodeService::new(state.clone());
 
-    // Drain node 0
+    // Drain node 0 (no active allocations → goes directly to Drained)
     let drain_resp = node_svc
         .drain_node(Request::new(pb::DrainNodeRequest {
             node_id: nodes[0].id.clone(),
@@ -566,21 +566,21 @@ async fn node_drain_undrain_lifecycle_via_grpc() {
         .await
         .unwrap();
     assert!(drain_resp.get_ref().success);
+    assert_eq!(drain_resp.get_ref().active_allocations, 0);
 
-    // Verify node 0 is Draining
+    // Verify node 0 is Drained (not stuck in Draining)
     let node0 = state.nodes.get_node(&nodes[0].id).await.unwrap();
-    assert!(matches!(node0.state, NodeState::Draining));
+    assert!(
+        matches!(node0.state, NodeState::Drained),
+        "node with no allocations should be Drained, got {:?}",
+        node0.state
+    );
 
     // Verify other nodes unaffected
     let node1 = state.nodes.get_node(&nodes[1].id).await.unwrap();
     assert!(matches!(node1.state, NodeState::Ready));
 
-    // Undrain node 0 (Draining → Drained → Ready)
-    state
-        .nodes
-        .update_node_state(&nodes[0].id, NodeState::Drained)
-        .await
-        .unwrap();
+    // Undrain node 0 (Drained → Ready)
     let undrain_resp = node_svc
         .undrain_node(Request::new(pb::UndrainNodeRequest {
             node_id: nodes[0].id.clone(),
