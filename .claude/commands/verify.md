@@ -1,8 +1,5 @@
 Pre-commit verification. Run this before every commit claim.
 
-CI runs on Linux with `--all-features`. On macOS, `aya` (eBPF) fails because
-it needs Linux libc. Use the macOS-safe feature set below.
-
 ## Steps
 
 1. Format:
@@ -10,9 +7,18 @@ it needs Linux libc. Use the macOS-safe feature set below.
    cargo fmt --all
    ```
 
-2. Clippy (must match CI — 0 errors):
-   - **Linux/CI**: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-   - **macOS**: `cargo clippy --workspace --all-targets --features oidc,federation,accounting,nvidia,rocm -- -D warnings`
+2. Clippy (MUST match CI — use Linux container on macOS):
+   ```
+   ./scripts/clippy-linux.sh
+   ```
+   This runs `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+   inside a `rust:latest` Docker container. Catches Linux-only lints (`#[cfg(target_os = "linux")]`
+   blocks), aya/eBPF compilation, and feature-gated type inference that macOS clippy misses.
+
+   If Docker isn't available, use the macOS subset (LESS STRICT — CI may still catch issues):
+   ```
+   cargo clippy --workspace --all-targets --features oidc,federation,accounting,nvidia,rocm -- -D warnings
+   ```
 
 3. Deny (if cargo-deny installed):
    ```
@@ -34,11 +40,9 @@ it needs Linux libc. Use the macOS-safe feature set below.
 
 If ANY step fails, do NOT commit. Fix first, then re-run.
 
-## Common CI-only failures
+## Why Linux clippy matters
 
-- `unused_mut` / `dead_code` — code behind `#[cfg(target_os = "linux")]` compiles
-  differently on CI (Linux) vs dev (macOS). Use `#[allow(dead_code)]` for helpers
-  only used in one cfg branch.
-- `--all-features` type inference — feature flags change which impls are visible,
-  sometimes requiring explicit type annotations that aren't needed without flags.
-- `aya` crate — requires Linux libc symbols. Only compiles on Linux.
+Code behind `#[cfg(target_os = "linux")]` (UenvRuntime, PodmanRuntime, signal handling,
+waitpid, etc.) does NOT compile on macOS. Local `cargo clippy` never sees these blocks.
+Every lint in them can only be caught via the Linux container or CI. The container approach
+catches ALL lints in one pass instead of the one-fix-per-push cycle.
