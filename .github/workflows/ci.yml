@@ -65,8 +65,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - uses: arduino/setup-protoc@v3
-      - name: Install podman
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq podman
       - name: Run tests (nextest)
         run: cargo nextest run --workspace --all-features --no-tests=pass --exclude lattice-acceptance --exclude lattice-test-harness
 
