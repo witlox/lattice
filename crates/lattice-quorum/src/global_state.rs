@@ -2119,4 +2119,105 @@ mod tests {
         });
         assert!(matches!(resp, CommandResponse::Error(ref e) if e.contains("not found")));
     }
+
+    // ── Session lifecycle tests ──
+
+    #[test]
+    fn session_create_and_delete() {
+        let mut state = GlobalState::new();
+        let alloc = test_allocation("t1");
+        let alloc_id = alloc.id;
+        state.apply(Command::SubmitAllocation(alloc));
+        state.apply(Command::UpdateAllocationState {
+            id: alloc_id,
+            state: AllocationState::Running,
+            message: None,
+            exit_code: None,
+        });
+
+        let session = Session {
+            id: Uuid::new_v4(),
+            allocation_id: alloc_id,
+            user: "alice".into(),
+            created_at: Utc::now(),
+        };
+        let sid = session.id;
+
+        let resp = state.apply(Command::CreateSession(session));
+        assert!(
+            matches!(resp, CommandResponse::SessionId(id) if id == sid),
+            "expected SessionId, got {resp:?}"
+        );
+        assert!(state.sessions.contains_key(&sid));
+
+        let resp = state.apply(Command::DeleteSession { session_id: sid });
+        assert!(matches!(resp, CommandResponse::Ok));
+        assert!(!state.sessions.contains_key(&sid));
+    }
+
+    #[test]
+    fn session_create_on_non_running_rejected() {
+        let mut state = GlobalState::new();
+        let alloc = test_allocation("t1");
+        let alloc_id = alloc.id;
+        state.apply(Command::SubmitAllocation(alloc));
+        // allocation is Pending, not Running
+
+        let session = Session {
+            id: Uuid::new_v4(),
+            allocation_id: alloc_id,
+            user: "alice".into(),
+            created_at: Utc::now(),
+        };
+
+        let resp = state.apply(Command::CreateSession(session));
+        assert!(matches!(resp, CommandResponse::Error(_)));
+    }
+
+    #[test]
+    fn sensitive_allocation_single_session_enforced() {
+        let mut state = GlobalState::new();
+        let mut alloc = test_allocation("t1");
+        alloc.sensitive = true;
+        let alloc_id = alloc.id;
+        state.apply(Command::SubmitAllocation(alloc));
+        state.apply(Command::UpdateAllocationState {
+            id: alloc_id,
+            state: AllocationState::Running,
+            message: None,
+            exit_code: None,
+        });
+
+        // First session — should succeed
+        let s1 = Session {
+            id: Uuid::new_v4(),
+            allocation_id: alloc_id,
+            user: "alice".into(),
+            created_at: Utc::now(),
+        };
+        let resp = state.apply(Command::CreateSession(s1));
+        assert!(matches!(resp, CommandResponse::SessionId(_)));
+
+        // Second session on same sensitive allocation — should be rejected (INV-C2)
+        let s2 = Session {
+            id: Uuid::new_v4(),
+            allocation_id: alloc_id,
+            user: "bob".into(),
+            created_at: Utc::now(),
+        };
+        let resp = state.apply(Command::CreateSession(s2));
+        assert!(
+            matches!(resp, CommandResponse::Error(ref e) if e.contains("INV-C2")),
+            "expected INV-C2 rejection, got {resp:?}"
+        );
+    }
+
+    #[test]
+    fn delete_nonexistent_session_returns_error() {
+        let mut state = GlobalState::new();
+        let resp = state.apply(Command::DeleteSession {
+            session_id: Uuid::new_v4(),
+        });
+        assert!(matches!(resp, CommandResponse::Error(_)));
+    }
 }
