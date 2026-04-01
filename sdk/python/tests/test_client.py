@@ -1454,6 +1454,72 @@ class TestAllocationSpecSerialization:
         assert restored.tenant_id == "t1"
 
 
+    # ─── G-NEW-6: New field serialization tests ─────────────────
+
+    def test_uenv_with_view_serialization(self):
+        """uenv + view → correct environment.images structure."""
+        spec = AllocationSpec(
+            entrypoint="./run.sh",
+            uenv="prgenv-gnu/24.11:v1",
+            view="default",
+        )
+        d = spec.to_dict()
+        env = d["environment"]
+        assert len(env["images"]) == 1
+        assert env["images"][0]["spec"] == "prgenv-gnu/24.11:v1"
+        assert env["images"][0]["image_type"] == "uenv"
+        assert env["images"][0]["mount_point"] == "/user-environment"
+        assert env["views"] == ["default"]
+
+    def test_oci_image_with_devices_serialization(self):
+        """OCI image + devices → correct image + devices."""
+        spec = AllocationSpec(
+            entrypoint="python train.py",
+            image="pytorch:latest",
+            devices=["nvidia.com/gpu=all"],
+        )
+        d = spec.to_dict()
+        env = d["environment"]
+        assert len(env["images"]) == 1
+        assert env["images"][0]["spec"] == "pytorch:latest"
+        assert env["images"][0]["image_type"] == "oci"
+        assert env["devices"] == ["nvidia.com/gpu=all"]
+
+    def test_mounts_serialization(self):
+        """mounts → correct mounts structure with source/target/options."""
+        spec = AllocationSpec(
+            entrypoint="./run.sh",
+            mounts=["/scratch:/scratch:ro"],
+        )
+        d = spec.to_dict()
+        env = d["environment"]
+        assert len(env["mounts"]) == 1
+        assert env["mounts"][0]["source"] == "/scratch"
+        assert env["mounts"][0]["target"] == "/scratch"
+        assert env["mounts"][0]["options"] == "ro"
+
+    def test_uenv_roundtrip(self):
+        """to_dict → from_dict preserves uenv, view, image, devices, mounts."""
+        spec = AllocationSpec(
+            entrypoint="./run.sh",
+            uenv="prgenv-gnu/24.11:v1",
+            view="default",
+            image="pytorch:latest",
+            devices=["nvidia.com/gpu=all"],
+            mounts=["/scratch:/scratch:ro"],
+        )
+        d = spec.to_dict()
+        restored = AllocationSpec.from_dict(d)
+        assert restored.uenv == "prgenv-gnu/24.11:v1"
+        assert restored.view == "default"
+        assert restored.image == "pytorch:latest"
+        assert restored.devices == ["nvidia.com/gpu=all"]
+        assert restored.mounts is not None
+        assert len(restored.mounts) == 1
+        assert "/scratch" in restored.mounts[0]
+        assert "ro" in restored.mounts[0]
+
+
 class TestAllocationMetricsSerialization:
     """Tests for AllocationMetrics to_dict/from_dict."""
 

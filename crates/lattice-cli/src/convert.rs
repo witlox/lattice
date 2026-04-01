@@ -643,4 +643,121 @@ mod tests {
         assert_eq!(req.tenant, "physics");
         assert_eq!(req.vcluster, "");
     }
+
+    // ─── G-NEW-4: CLI flag parsing unit tests ────────────────────
+
+    #[test]
+    fn uenv_flag_produces_uenv_image_ref() {
+        let desc = SubmitDescription {
+            tenant: Some("physics".to_string()),
+            entrypoint: Some("./run.sh".to_string()),
+            nodes: Some(1),
+            uenvs: vec!["prgenv-gnu/24.11:v1".to_string()],
+            ..Default::default()
+        };
+
+        let req = build_submit_request(&desc, "alice", None);
+        match req.submission {
+            Some(pb::submit_request::Submission::Single(spec)) => {
+                let env = spec.environment.unwrap();
+                assert_eq!(env.images.len(), 1);
+                assert_eq!(env.images[0].spec, "prgenv-gnu/24.11:v1");
+                assert_eq!(env.images[0].image_type, "uenv");
+            }
+            _ => panic!("expected Single submission"),
+        }
+    }
+
+    #[test]
+    fn image_flag_produces_oci_image_ref() {
+        let desc = SubmitDescription {
+            tenant: Some("ml".to_string()),
+            entrypoint: Some("python train.py".to_string()),
+            nodes: Some(1),
+            image: Some("nvcr.io/nvidia/pytorch:24.01-py3".to_string()),
+            ..Default::default()
+        };
+
+        let req = build_submit_request(&desc, "alice", None);
+        match req.submission {
+            Some(pb::submit_request::Submission::Single(spec)) => {
+                let env = spec.environment.unwrap();
+                assert_eq!(env.images.len(), 1);
+                assert_eq!(env.images[0].spec, "nvcr.io/nvidia/pytorch:24.01-py3");
+                assert_eq!(env.images[0].image_type, "oci");
+            }
+            _ => panic!("expected Single submission"),
+        }
+    }
+
+    #[test]
+    fn mount_flag_produces_mount_spec() {
+        let desc = SubmitDescription {
+            tenant: Some("ml".to_string()),
+            entrypoint: Some("./run.sh".to_string()),
+            nodes: Some(1),
+            mounts: vec!["/scratch:/scratch:ro".to_string()],
+            ..Default::default()
+        };
+
+        let req = build_submit_request(&desc, "alice", None);
+        match req.submission {
+            Some(pb::submit_request::Submission::Single(spec)) => {
+                let env = spec.environment.unwrap();
+                assert_eq!(env.env_mounts.len(), 1);
+                assert_eq!(env.env_mounts[0].source, "/scratch");
+                assert_eq!(env.env_mounts[0].target, "/scratch");
+                assert_eq!(env.env_mounts[0].options, "ro");
+            }
+            _ => panic!("expected Single submission"),
+        }
+    }
+
+    #[test]
+    fn device_flag_produces_devices_list() {
+        let desc = SubmitDescription {
+            tenant: Some("ml".to_string()),
+            entrypoint: Some("./run.sh".to_string()),
+            nodes: Some(1),
+            devices: vec!["nvidia.com/gpu=all".to_string()],
+            ..Default::default()
+        };
+
+        let req = build_submit_request(&desc, "alice", None);
+        match req.submission {
+            Some(pb::submit_request::Submission::Single(spec)) => {
+                let env = spec.environment.unwrap();
+                assert_eq!(env.devices.len(), 1);
+                assert_eq!(env.devices[0], "nvidia.com/gpu=all");
+            }
+            _ => panic!("expected Single submission"),
+        }
+    }
+
+    #[test]
+    fn repeatable_uenv_flag_produces_multiple_image_refs() {
+        let desc = SubmitDescription {
+            tenant: Some("physics".to_string()),
+            entrypoint: Some("./run.sh".to_string()),
+            nodes: Some(1),
+            uenvs: vec![
+                "prgenv-gnu/24.11:v1".to_string(),
+                "cray-mpich/8.1:v2".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let req = build_submit_request(&desc, "alice", None);
+        match req.submission {
+            Some(pb::submit_request::Submission::Single(spec)) => {
+                let env = spec.environment.unwrap();
+                assert_eq!(env.images.len(), 2);
+                assert_eq!(env.images[0].spec, "prgenv-gnu/24.11:v1");
+                assert_eq!(env.images[0].image_type, "uenv");
+                assert_eq!(env.images[1].spec, "cray-mpich/8.1:v2");
+                assert_eq!(env.images[1].image_type, "uenv");
+            }
+            _ => panic!("expected Single submission"),
+        }
+    }
 }

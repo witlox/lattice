@@ -1493,4 +1493,203 @@ mod tests {
         let dt = prost_timestamp_to_datetime(&ts).unwrap();
         assert_eq!(dt.timestamp(), 0);
     }
+
+    // ─── G-NEW-7: Input validation edge cases ────────────────────
+
+    #[test]
+    fn reject_min_nodes_zero() {
+        let spec = pb::AllocationSpec {
+            tenant: "physics".to_string(),
+            entrypoint: "./run.sh".to_string(),
+            resources: Some(pb::ResourceSpec {
+                min_nodes: 0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = allocation_from_proto(&spec, "alice");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("min_nodes"),
+            "error should mention min_nodes"
+        );
+    }
+
+    #[test]
+    fn reject_walltime_zero_for_bounded() {
+        let spec = pb::AllocationSpec {
+            tenant: "physics".to_string(),
+            entrypoint: "./run.sh".to_string(),
+            resources: Some(pb::ResourceSpec {
+                min_nodes: 1,
+                ..Default::default()
+            }),
+            lifecycle: Some(pb::LifecycleSpec {
+                r#type: pb::lifecycle_spec::Type::Bounded as i32,
+                walltime: Some(prost_types::Duration {
+                    seconds: 0,
+                    nanos: 0,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = allocation_from_proto(&spec, "alice");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("walltime"),
+            "error should mention walltime"
+        );
+    }
+
+    #[test]
+    fn reject_negative_walltime_for_bounded() {
+        let spec = pb::AllocationSpec {
+            tenant: "physics".to_string(),
+            entrypoint: "./run.sh".to_string(),
+            resources: Some(pb::ResourceSpec {
+                min_nodes: 1,
+                ..Default::default()
+            }),
+            lifecycle: Some(pb::LifecycleSpec {
+                r#type: pb::lifecycle_spec::Type::Bounded as i32,
+                walltime: Some(prost_types::Duration {
+                    seconds: -10,
+                    nanos: 0,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = allocation_from_proto(&spec, "alice");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("walltime"),
+            "error should mention walltime"
+        );
+    }
+
+    #[test]
+    fn reject_preemption_class_above_10() {
+        let spec = pb::AllocationSpec {
+            tenant: "physics".to_string(),
+            entrypoint: "./run.sh".to_string(),
+            resources: Some(pb::ResourceSpec {
+                min_nodes: 1,
+                ..Default::default()
+            }),
+            lifecycle: Some(pb::LifecycleSpec {
+                preemption_class: 11,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = allocation_from_proto(&spec, "alice");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("preemption_class"),
+            "error should mention preemption_class"
+        );
+    }
+
+    #[test]
+    fn reject_reactive_min_nodes_greater_than_max_nodes() {
+        let spec = pb::AllocationSpec {
+            tenant: "physics".to_string(),
+            entrypoint: "./run.sh".to_string(),
+            resources: Some(pb::ResourceSpec {
+                min_nodes: 1,
+                ..Default::default()
+            }),
+            lifecycle: Some(pb::LifecycleSpec {
+                r#type: pb::lifecycle_spec::Type::Reactive as i32,
+                reactive_min_nodes: 5,
+                reactive_max_nodes: 2,
+                preemption_class: 3,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = allocation_from_proto(&spec, "alice");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("reactive") && err.contains("min_nodes"),
+            "error should mention reactive min_nodes, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_service_endpoint_port_zero() {
+        let spec = pb::AllocationSpec {
+            tenant: "physics".to_string(),
+            entrypoint: "./run.sh".to_string(),
+            resources: Some(pb::ResourceSpec {
+                min_nodes: 1,
+                ..Default::default()
+            }),
+            connectivity: Some(pb::ConnectivitySpec {
+                expose: vec![pb::EndpointSpec {
+                    name: "http".to_string(),
+                    port: 0,
+                    protocol: "tcp".to_string(),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = allocation_from_proto(&spec, "alice");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("port"),
+            "error should mention port"
+        );
+    }
+
+    #[test]
+    fn reject_service_endpoint_port_above_65535() {
+        let spec = pb::AllocationSpec {
+            tenant: "physics".to_string(),
+            entrypoint: "./run.sh".to_string(),
+            resources: Some(pb::ResourceSpec {
+                min_nodes: 1,
+                ..Default::default()
+            }),
+            connectivity: Some(pb::ConnectivitySpec {
+                expose: vec![pb::EndpointSpec {
+                    name: "http".to_string(),
+                    port: 70000,
+                    protocol: "tcp".to_string(),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = allocation_from_proto(&spec, "alice");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("port"),
+            "error should mention port"
+        );
+    }
+
+    #[test]
+    fn reject_max_requeue_above_100() {
+        let spec = pb::AllocationSpec {
+            tenant: "physics".to_string(),
+            entrypoint: "./run.sh".to_string(),
+            resources: Some(pb::ResourceSpec {
+                min_nodes: 1,
+                ..Default::default()
+            }),
+            max_requeue: 101,
+            ..Default::default()
+        };
+        let result = allocation_from_proto(&spec, "alice");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("max_requeue"),
+            "error should mention max_requeue"
+        );
+    }
 }

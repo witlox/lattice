@@ -906,3 +906,87 @@ async fn container_allocation_lifecycle_via_grpc() {
     assert_eq!(image.spec, "nvcr.io/nvidia/pytorch:24.01-py3");
     assert_eq!(image.name, "pytorch");
 }
+
+// ─── Test 14: Drain endpoint reports active allocation count ──
+// Drain a node with an active allocation → active_allocations=1,
+// then drain a node with no allocations → active_allocations=0.
+
+#[tokio::test]
+async fn drain_endpoint_reports_active_allocation_count() {
+    let nodes = create_node_batch(3, 0);
+
+    // Create a running allocation assigned to node 0
+    let mut alloc = AllocationBuilder::new().tenant("t1").build();
+    alloc.assigned_nodes = vec![nodes[0].id.clone()];
+    alloc.state = AllocationState::Running;
+
+    let alloc_store = MockAllocationStore::new();
+    alloc_store.insert(alloc).await.unwrap();
+
+    let state = Arc::new(ApiState {
+        allocations: Arc::new(alloc_store),
+        nodes: Arc::new(MockNodeRegistry::new().with_nodes(nodes.clone())),
+        audit: Arc::new(MockAuditLog::new()),
+        checkpoint: Arc::new(MockCheckpointBroker::new()),
+        quorum: None,
+        events: Arc::new(EventBus::new()),
+        tsdb: None,
+        storage: None,
+        accounting: None,
+        oidc: None,
+        rate_limiter: None,
+        sovra: None,
+        pty: None,
+        agent_pool: None,
+        data_dir: None,
+        oidc_config: None,
+    });
+
+    let node_svc = LatticeNodeService::new(state.clone());
+
+    // Drain node 0 (has 1 running allocation) → active_allocations=1
+    let drain_resp = node_svc
+        .drain_node(Request::new(pb::DrainNodeRequest {
+            node_id: nodes[0].id.clone(),
+            reason: "maintenance".to_string(),
+        }))
+        .await
+        .unwrap();
+    assert!(drain_resp.get_ref().success);
+    assert_eq!(
+        drain_resp.get_ref().active_allocations,
+        1,
+        "node with running allocation should report active_allocations=1"
+    );
+
+    // Node should be Draining (not Drained) because allocation is still running
+    let node0 = state.nodes.get_node(&nodes[0].id).await.unwrap();
+    assert!(
+        matches!(node0.state, NodeState::Draining),
+        "node with active allocation should be Draining, got {:?}",
+        node0.state
+    );
+
+    // Drain node 2 (no allocations) → active_allocations=0
+    let drain_resp2 = node_svc
+        .drain_node(Request::new(pb::DrainNodeRequest {
+            node_id: nodes[2].id.clone(),
+            reason: "upgrade".to_string(),
+        }))
+        .await
+        .unwrap();
+    assert!(drain_resp2.get_ref().success);
+    assert_eq!(
+        drain_resp2.get_ref().active_allocations,
+        0,
+        "node with no allocations should report active_allocations=0"
+    );
+
+    // Node 2 should go directly to Drained
+    let node2 = state.nodes.get_node(&nodes[2].id).await.unwrap();
+    assert!(
+        matches!(node2.state, NodeState::Drained),
+        "node with no allocations should be Drained, got {:?}",
+        node2.state
+    );
+}
