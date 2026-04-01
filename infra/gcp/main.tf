@@ -65,6 +65,12 @@ variable "lattice_version" {
   default     = "latest"
 }
 
+variable "use_packer_image" {
+  description = "Use Packer-built compute image (faster startup). Set to false if image not built."
+  type        = bool
+  default     = false
+}
+
 locals {
   ssh_key = file(pathexpand(var.ssh_public_key_file))
   prefix  = "lattice-test"
@@ -173,7 +179,10 @@ resource "google_compute_instance" "compute" {
 
   boot_disk {
     initialize_params {
-      image = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
+      # Use Packer-built image with podman + squashfs-tools pre-installed.
+      # Build: cd infra/gcp/packer && packer build -var project_id=... lattice-compute.pkr.hcl
+      # Falls back to Ubuntu if Packer image not built yet.
+      image = var.use_packer_image ? "projects/${var.project_id}/global/images/family/lattice-compute" : "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
       size  = 50
     }
   }
