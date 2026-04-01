@@ -110,7 +110,16 @@ fn submit_sensitive_unsigned_image(world: &mut LatticeWorld) {
     let mut alloc = AllocationBuilder::new().sensitive().build();
     // Override: image is unsigned.
     alloc.environment.sign_required = true;
-    alloc.environment.image = Some("untrusted/image:latest".into());
+    alloc
+        .environment
+        .images
+        .push(lattice_common::types::ImageRef {
+            spec: "untrusted/image:latest".into(),
+            image_type: lattice_common::types::ImageType::Oci,
+            name: "untrusted/image".into(),
+            original_tag: "latest".into(),
+            ..lattice_common::types::ImageRef::default()
+        });
     // Simulate verification failure: mark as rejected.
     let image_signed = false;
     if !image_signed {

@@ -93,8 +93,15 @@ pub fn build_submit_request(
         vcluster: vcluster.unwrap_or_default().to_string(),
         entrypoint: desc.entrypoint.clone().unwrap_or_default(),
         environment: Some(pb::EnvironmentSpec {
-            uenv: desc.uenv.clone().unwrap_or_default(),
-            view: desc.view.clone().unwrap_or_default(),
+            images: desc
+                .uenv
+                .iter()
+                .map(|u| pb::ImageRefProto {
+                    spec: u.clone(),
+                    image_type: "uenv".to_string(),
+                    ..Default::default()
+                })
+                .collect(),
             ..Default::default()
         }),
         resources: Some(pb::ResourceSpec {
@@ -288,7 +295,8 @@ mod tests {
                 let res = spec.resources.unwrap();
                 assert_eq!(res.min_nodes, 4);
                 let env = spec.environment.unwrap();
-                assert_eq!(env.uenv, "pytorch:latest");
+                assert_eq!(env.images.len(), 1);
+                assert_eq!(env.images[0].spec, "pytorch:latest");
                 let lc = spec.lifecycle.unwrap();
                 assert_eq!(lc.preemption_class, 8);
                 assert_eq!(lc.walltime.unwrap().seconds, 7200);

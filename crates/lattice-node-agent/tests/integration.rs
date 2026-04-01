@@ -243,6 +243,7 @@ async fn prologue_runtime_cache_miss_then_hit() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
 
     // First prologue run: cache miss, runtime.prepare called, cache updated.
@@ -283,6 +284,7 @@ async fn prologue_runtime_cache_miss_then_hit() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
 
     let result_2 = pipeline
@@ -334,6 +336,7 @@ async fn epilogue_runtime_sensitive_wipe() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     runtime.prepare(&prep_config).await.unwrap();
 
@@ -404,6 +407,7 @@ async fn runtime_full_lifecycle() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     runtime.prepare(&config).await.unwrap();
 
@@ -521,6 +525,7 @@ async fn signal_delivery_all_modes() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     rt_signal.prepare(&prep).await.unwrap();
     let handle_signal = rt_signal.spawn(alloc_signal, "python", &[]).await.unwrap();
@@ -555,6 +560,7 @@ async fn signal_delivery_all_modes() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     rt_shmem.prepare(&prep2).await.unwrap();
     let handle_shmem = rt_shmem.spawn(alloc_shmem, "app", &[]).await.unwrap();
@@ -592,6 +598,7 @@ async fn signal_delivery_all_modes() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     rt_grpc.prepare(&prep3).await.unwrap();
     let handle_grpc = rt_grpc.spawn(alloc_grpc, "server", &[]).await.unwrap();
@@ -683,6 +690,7 @@ async fn epilogue_log_flush_and_cleanup_no_sensitive() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     runtime.prepare(&prep_config).await.unwrap();
 
@@ -830,6 +838,7 @@ async fn prologue_then_epilogue_end_to_end() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
 
     let prologue = ProloguePipeline::default();
@@ -948,6 +957,7 @@ async fn agent_checkpoint_to_signal_delivery() {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     runtime.prepare(&prep).await.unwrap();
     let handle = runtime.spawn(alloc_id, "server", &[]).await.unwrap();

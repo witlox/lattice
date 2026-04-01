@@ -262,6 +262,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         }
     }
 
@@ -326,6 +327,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         let result = rt.prepare(&config).await;

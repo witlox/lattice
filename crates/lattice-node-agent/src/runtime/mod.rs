@@ -20,7 +20,7 @@ pub use sarus::SarusRuntime;
 pub use uenv::UenvRuntime;
 
 use async_trait::async_trait;
-use lattice_common::types::{AllocId, DataMount};
+use lattice_common::types::{AllocId, DataMount, ImageRef};
 
 /// Exit status from a runtime process.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +65,8 @@ pub struct PrepareConfig {
     pub scratch_per_node: Option<String>,
     /// Resource limits for cgroup isolation (hpc-node).
     pub resource_limits: Option<hpc_node::ResourceLimits>,
+    /// Resolved image references from the new Environment model.
+    pub images: Vec<ImageRef>,
 }
 
 /// Handle to a running process managed by a runtime.
@@ -160,6 +162,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
         assert!(config.uenv.is_some());
         assert!(config.image.is_none());

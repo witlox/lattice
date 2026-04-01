@@ -190,13 +190,19 @@ impl AllocationBuilder {
             tags: self.tags,
             allocation_type: AllocationType::Single,
             environment: Environment {
-                uenv: Some("prgenv-gnu/24.11:v1".into()),
-                view: Some("default".into()),
-                image: None,
-                tools_uenv: None,
+                images: vec![ImageRef {
+                    spec: "prgenv-gnu/24.11:v1".into(),
+                    image_type: ImageType::Uenv,
+                    name: "prgenv-gnu".into(),
+                    version: "24.11".into(),
+                    original_tag: "v1".into(),
+                    mount_point: "/user-environment".into(),
+                    ..ImageRef::default()
+                }],
                 sign_required: self.sign_required,
                 scan_required: self.scan_required,
                 approved_bases_only: self.sign_required,
+                ..Environment::default()
             },
             entrypoint: self.entrypoint,
             resources: ResourceRequest {

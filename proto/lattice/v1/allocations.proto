@@ -154,11 +154,51 @@ message AllocationSpec {
 }
 
 message EnvironmentSpec {
-  string uenv = 1;          // e.g., "prgenv-gnu/24.11:v1"
-  string view = 2;          // e.g., "default"
-  string image = 3;         // OCI image (alternative to uenv)
-  string tools_uenv = 4;    // additional tools uenv
-  bool sign_required = 5;   // sensitive: require signed images
+  repeated ImageRefProto images = 1;
+  repeated EnvPatchProto env_patches = 2;
+  repeated string devices = 3;
+  repeated MountSpecProto env_mounts = 4;
+  ContainerSpecProto container = 5;
+  bool writable = 6;
+  bool sign_required = 10;
+  bool scan_required = 11;
+  bool approved_bases_only = 12;
+}
+
+message ImageRefProto {
+  string spec = 1;
+  string image_type = 2;
+  string registry = 3;
+  string name = 4;
+  string version = 5;
+  string original_tag = 6;
+  string sha256 = 7;
+  uint64 size_bytes = 8;
+  string mount_point = 9;
+  bool resolve_on_schedule = 10;
+}
+
+message EnvPatchProto {
+  string variable = 1;
+  string op = 2;
+  string value = 3;
+  string separator = 4;
+}
+
+message ContainerSpecProto {
+  repeated string base_environments = 1;
+  repeated MountSpecProto mounts = 2;
+  repeated string devices = 3;
+  string workdir = 4;
+  bool writable = 5;
+  map<string, string> env = 6;
+  map<string, string> annotations = 7;
+}
+
+message MountSpecProto {
+  string source = 1;
+  string target = 2;
+  string options = 3;
 }
 
 message ResourceSpec {

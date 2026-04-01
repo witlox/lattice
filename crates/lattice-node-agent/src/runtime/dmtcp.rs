@@ -268,6 +268,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         }
     }
 

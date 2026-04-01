@@ -145,6 +145,7 @@ async fn run_prologue(world: &mut LatticeWorld) {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     let result = pipeline
         .execute(
@@ -182,6 +183,7 @@ async fn run_prologue_with_uenv(world: &mut LatticeWorld, uenv_ref: String) {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     let result = pipeline
         .execute(
@@ -219,6 +221,7 @@ async fn run_prologue_with_container(world: &mut LatticeWorld, image_ref: String
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     let result = pipeline
         .execute(
@@ -261,6 +264,7 @@ async fn run_prologue_fails(world: &mut LatticeWorld) {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     let result = pipeline
         .execute(
@@ -304,6 +308,7 @@ async fn run_prologue_for_allocation(world: &mut LatticeWorld) {
         data_mounts: data_mounts.clone(),
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     let result = pipeline
         .execute(
@@ -341,6 +346,7 @@ async fn run_epilogue_for_allocation(world: &mut LatticeWorld) {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     runtime.prepare(&config).await.unwrap();
 
@@ -381,6 +387,7 @@ async fn run_sensitive_epilogue(world: &mut LatticeWorld) {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     runtime.prepare(&config).await.unwrap();
 
@@ -424,6 +431,7 @@ async fn run_standard_epilogue(world: &mut LatticeWorld) {
         data_mounts: vec![],
         scratch_per_node: None,
         resource_limits: None,
+        images: vec![],
     };
     runtime.prepare(&config).await.unwrap();
 

@@ -100,14 +100,15 @@ impl DataStager {
     ///
     /// Criteria:
     /// - State is `Pending` or `Staging`
-    /// - Has at least one data mount
+    /// - Has at least one data mount OR at least one image (INV-SD9)
     pub fn should_prefetch(&self, allocation: &Allocation) -> bool {
         let is_queued = matches!(
             allocation.state,
             AllocationState::Pending | AllocationState::Staging
         );
         let has_data = !allocation.data.mounts.is_empty();
-        is_queued && has_data
+        let has_images = !allocation.environment.images.is_empty();
+        is_queued && (has_data || has_images)
     }
 }
 
@@ -367,12 +368,24 @@ mod tests {
     }
 
     #[test]
-    fn should_not_prefetch_no_mounts() {
+    fn should_not_prefetch_no_mounts_no_images() {
         let stager = DataStager::new();
+        let mut alloc = AllocationBuilder::new()
+            .state(AllocationState::Pending)
+            .build();
+        // Clear images so neither data mounts nor images trigger prefetch
+        alloc.environment.images.clear();
+        assert!(!stager.should_prefetch(&alloc));
+    }
+
+    #[test]
+    fn should_prefetch_with_images_no_mounts() {
+        let stager = DataStager::new();
+        // Default builder includes images, so prefetch should trigger
         let alloc = AllocationBuilder::new()
             .state(AllocationState::Pending)
             .build();
-        assert!(!stager.should_prefetch(&alloc));
+        assert!(stager.should_prefetch(&alloc));
     }
 
     #[test]

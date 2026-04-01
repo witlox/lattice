@@ -89,6 +89,7 @@ impl ProloguePipeline {
             .uenv
             .as_deref()
             .or(prepare_config.image.as_deref())
+            .or(prepare_config.images.first().map(|i| i.spec.as_str()))
             .unwrap_or("unknown");
 
         // Step 1: Check image cache
@@ -303,6 +304,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         // First run: cache miss
@@ -338,6 +340,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
         let result2 = pipeline
             .execute(
@@ -374,6 +377,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         pipeline
@@ -419,6 +423,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         let result = pipeline
@@ -455,6 +460,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         let result = pipeline
@@ -519,6 +525,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         pipeline
@@ -560,6 +567,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         pipeline
@@ -610,6 +618,7 @@ mod tests {
             }],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         let result = pipeline
@@ -660,6 +669,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         let result = pipeline
@@ -705,6 +715,7 @@ mod tests {
             }],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         let result = pipeline
@@ -749,6 +760,7 @@ mod tests {
                 cpu_weight: Some(200),
                 io_max: None,
             }),
+            images: vec![],
         };
 
         let result = pipeline
@@ -799,6 +811,7 @@ mod tests {
             data_mounts: vec![],
             scratch_per_node: None,
             resource_limits: None,
+            images: vec![],
         };
 
         let result = pipeline

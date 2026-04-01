@@ -5,9 +5,48 @@ use uuid::Uuid;
 
 use crate::error::LatticeError;
 use crate::types::{
-    AllocId, Allocation, AllocationState, GroupId, Node, NodeId, NodeOwnership, NodeState,
-    SchedulerType, TenantId, UserId, VClusterId,
+    AllocId, Allocation, AllocationState, GroupId, ImageMetadata, ImageRef, ImageType, Node,
+    NodeId, NodeOwnership, NodeState, SchedulerType, TenantId, UserId, VClusterId,
 };
+
+// ─── Image Resolution ───────────────────────────────────────
+
+/// Errors from image resolution and validation.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ImageResolveError {
+    #[error("image not found: {spec}")]
+    NotFound { spec: String },
+    #[error("registry unavailable: {url}: {reason}")]
+    RegistryUnavailable { url: String, reason: String },
+    #[error("invalid image spec: {spec}: {reason}")]
+    InvalidSpec { spec: String, reason: String },
+    #[error("view not found in image {image}: {view}")]
+    ViewNotFound { image: String, view: String },
+    #[error("EDF inheritance cycle: {chain:?}")]
+    InheritanceCycle { chain: Vec<String> },
+    #[error("EDF inheritance depth exceeded: {depth}/{max}")]
+    InheritanceDepthExceeded { depth: usize, max: usize },
+    #[error("image signature invalid: {image}")]
+    SignatureInvalid { image: String },
+    #[error("vulnerability scan required: {image}")]
+    ScanRequired { image: String },
+}
+
+/// Resolves human-readable image references to content-addressed ImageRefs.
+/// Called by the API server at submit time (or scheduler for deferred resolution).
+#[async_trait]
+pub trait ImageResolver: Send + Sync {
+    /// Resolve a spec string to a content-addressed ImageRef.
+    /// Returns None if the image does not exist in the registry.
+    async fn resolve(
+        &self,
+        spec: &str,
+        image_type: ImageType,
+    ) -> Result<Option<ImageRef>, ImageResolveError>;
+
+    /// Extract metadata (views, mount point) from a resolved image.
+    async fn metadata(&self, image: &ImageRef) -> Result<ImageMetadata, ImageResolveError>;
+}
 
 // ─── External Service Traits ────────────────────────────────
 

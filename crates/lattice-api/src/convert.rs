@@ -336,38 +336,150 @@ pub fn vcluster_to_response(vc: &VCluster) -> pb::VClusterResponse {
 
 // ─── Sub-type conversions ─────────────────────────────────────
 
+fn image_ref_from_proto(p: &pb::ImageRefProto) -> lattice_common::types::ImageRef {
+    let image_type = match p.image_type.as_str() {
+        "oci" => lattice_common::types::ImageType::Oci,
+        _ => lattice_common::types::ImageType::Uenv,
+    };
+    lattice_common::types::ImageRef {
+        spec: p.spec.clone(),
+        image_type,
+        registry: p.registry.clone(),
+        name: p.name.clone(),
+        version: p.version.clone(),
+        original_tag: p.original_tag.clone(),
+        sha256: p.sha256.clone(),
+        size_bytes: p.size_bytes,
+        mount_point: p.mount_point.clone(),
+        resolve_on_schedule: p.resolve_on_schedule,
+    }
+}
+
+fn image_ref_to_proto(r: &lattice_common::types::ImageRef) -> pb::ImageRefProto {
+    pb::ImageRefProto {
+        spec: r.spec.clone(),
+        image_type: match r.image_type {
+            lattice_common::types::ImageType::Uenv => "uenv".to_string(),
+            lattice_common::types::ImageType::Oci => "oci".to_string(),
+        },
+        registry: r.registry.clone(),
+        name: r.name.clone(),
+        version: r.version.clone(),
+        original_tag: r.original_tag.clone(),
+        sha256: r.sha256.clone(),
+        size_bytes: r.size_bytes,
+        mount_point: r.mount_point.clone(),
+        resolve_on_schedule: r.resolve_on_schedule,
+    }
+}
+
+fn env_patch_from_proto(p: &pb::EnvPatchProto) -> lattice_common::types::EnvPatch {
+    let op = match p.op.as_str() {
+        "prepend" => lattice_common::types::EnvOp::Prepend,
+        "append" => lattice_common::types::EnvOp::Append,
+        "unset" => lattice_common::types::EnvOp::Unset,
+        _ => lattice_common::types::EnvOp::Set,
+    };
+    lattice_common::types::EnvPatch {
+        variable: p.variable.clone(),
+        op,
+        value: p.value.clone(),
+        separator: if p.separator.is_empty() {
+            ":".to_string()
+        } else {
+            p.separator.clone()
+        },
+    }
+}
+
+fn env_patch_to_proto(p: &lattice_common::types::EnvPatch) -> pb::EnvPatchProto {
+    pb::EnvPatchProto {
+        variable: p.variable.clone(),
+        op: match p.op {
+            lattice_common::types::EnvOp::Prepend => "prepend".to_string(),
+            lattice_common::types::EnvOp::Append => "append".to_string(),
+            lattice_common::types::EnvOp::Set => "set".to_string(),
+            lattice_common::types::EnvOp::Unset => "unset".to_string(),
+        },
+        value: p.value.clone(),
+        separator: p.separator.clone(),
+    }
+}
+
+fn mount_spec_from_proto(p: &pb::MountSpecProto) -> lattice_common::types::MountSpec {
+    lattice_common::types::MountSpec {
+        source: p.source.clone(),
+        target: p.target.clone(),
+        options: p.options.clone(),
+    }
+}
+
+fn mount_spec_to_proto(m: &lattice_common::types::MountSpec) -> pb::MountSpecProto {
+    pb::MountSpecProto {
+        source: m.source.clone(),
+        target: m.target.clone(),
+        options: m.options.clone(),
+    }
+}
+
+fn container_spec_from_proto(p: &pb::ContainerSpecProto) -> lattice_common::types::ContainerSpec {
+    lattice_common::types::ContainerSpec {
+        base_environments: p.base_environments.clone(),
+        mounts: p.mounts.iter().map(mount_spec_from_proto).collect(),
+        devices: p.devices.clone(),
+        workdir: p.workdir.clone(),
+        writable: p.writable,
+        env: p.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        annotations: p
+            .annotations
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    }
+}
+
+fn container_spec_to_proto(c: &lattice_common::types::ContainerSpec) -> pb::ContainerSpecProto {
+    pb::ContainerSpecProto {
+        base_environments: c.base_environments.clone(),
+        mounts: c.mounts.iter().map(mount_spec_to_proto).collect(),
+        devices: c.devices.clone(),
+        workdir: c.workdir.clone(),
+        writable: c.writable,
+        env: c.env.iter().cloned().collect(),
+        annotations: c.annotations.iter().cloned().collect(),
+    }
+}
+
 fn environment_from_proto(e: &pb::EnvironmentSpec) -> Environment {
     Environment {
-        uenv: non_empty(&e.uenv),
-        view: non_empty(&e.view),
-        image: non_empty(&e.image),
-        tools_uenv: non_empty(&e.tools_uenv),
+        images: e.images.iter().map(image_ref_from_proto).collect(),
+        env_patches: e.env_patches.iter().map(env_patch_from_proto).collect(),
+        devices: e.devices.clone(),
+        mounts: e.env_mounts.iter().map(mount_spec_from_proto).collect(),
+        container: e.container.as_ref().map(container_spec_from_proto),
+        writable: e.writable,
         sign_required: e.sign_required,
-        scan_required: false,
-        approved_bases_only: false,
+        scan_required: e.scan_required,
+        approved_bases_only: e.approved_bases_only,
     }
 }
 
 fn environment_to_proto(e: &Environment) -> pb::EnvironmentSpec {
     pb::EnvironmentSpec {
-        uenv: e.uenv.clone().unwrap_or_default(),
-        view: e.view.clone().unwrap_or_default(),
-        image: e.image.clone().unwrap_or_default(),
-        tools_uenv: e.tools_uenv.clone().unwrap_or_default(),
+        images: e.images.iter().map(image_ref_to_proto).collect(),
+        env_patches: e.env_patches.iter().map(env_patch_to_proto).collect(),
+        devices: e.devices.clone(),
+        env_mounts: e.mounts.iter().map(mount_spec_to_proto).collect(),
+        container: e.container.as_ref().map(container_spec_to_proto),
+        writable: e.writable,
         sign_required: e.sign_required,
+        scan_required: e.scan_required,
+        approved_bases_only: e.approved_bases_only,
     }
 }
 
 fn default_environment() -> Environment {
-    Environment {
-        uenv: None,
-        view: None,
-        image: None,
-        tools_uenv: None,
-        sign_required: false,
-        scan_required: false,
-        approved_bases_only: false,
-    }
+    Environment::default()
 }
 
 fn resources_from_proto(r: &pb::ResourceSpec) -> ResourceRequest {

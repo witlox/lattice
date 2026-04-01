@@ -143,23 +143,145 @@ pub enum RequeuePolicy {
     Always,
 }
 
+// ─── Software Delivery ──────────────────────────────────────
+
+/// Image type: uenv (SquashFS) or OCI container.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageType {
+    #[default]
+    Uenv,
+    Oci,
+}
+
+/// A content-addressed reference to an image (uenv or OCI).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageRef {
+    /// Original user-provided spec (e.g., "prgenv-gnu/24.11:v1").
+    pub spec: String,
+    /// Whether this is a uenv or OCI image.
+    pub image_type: ImageType,
+    /// Registry URL (e.g., "jfrog.cscs.ch/uenv" or "nvcr.io").
+    pub registry: String,
+    /// Image name (e.g., "prgenv-gnu").
+    pub name: String,
+    /// Image version (e.g., "24.11").
+    pub version: String,
+    /// Original tag preserved for audit (INV-SD1).
+    pub original_tag: String,
+    /// Content hash (empty if deferred resolution).
+    pub sha256: String,
+    /// Image size in bytes.
+    pub size_bytes: u64,
+    /// Mount point (e.g., "/user-environment" for uenv, "/" for container).
+    pub mount_point: String,
+    /// If true, resolution is deferred to scheduler time (INV-SD4).
+    pub resolve_on_schedule: bool,
+}
+
+/// Operation to apply to an environment variable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnvOp {
+    Prepend,
+    Append,
+    #[default]
+    Set,
+    Unset,
+}
+
+/// A single patch to an environment variable (view activation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvPatch {
+    /// Variable name (e.g., "PATH").
+    pub variable: String,
+    /// Operation to apply.
+    pub op: EnvOp,
+    /// Value to use (ignored for Unset).
+    pub value: String,
+    /// Separator for Prepend/Append (default ":").
+    pub separator: String,
+}
+
+impl Default for EnvPatch {
+    fn default() -> Self {
+        Self {
+            variable: String::new(),
+            op: EnvOp::Set,
+            value: String::new(),
+            separator: ":".to_string(),
+        }
+    }
+}
+
+/// A named view definition from image metadata.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ViewDef {
+    pub name: String,
+    pub description: String,
+    pub patches: Vec<EnvPatch>,
+}
+
+/// Metadata extracted from a resolved image.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageMetadata {
+    pub name: String,
+    pub description: String,
+    pub mount_point: String,
+    pub views: Vec<ViewDef>,
+    pub default_view: Option<String>,
+}
+
+/// OCI container specification (when running via Sarus/Podman).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContainerSpec {
+    /// EDF inheritance chain (base environment names).
+    pub base_environments: Vec<String>,
+    /// Additional bind mounts.
+    pub mounts: Vec<MountSpec>,
+    /// CDI device specs (e.g., "nvidia.com/gpu=all").
+    pub devices: Vec<String>,
+    /// Working directory inside the container.
+    pub workdir: String,
+    /// Whether the container rootfs is writable.
+    pub writable: bool,
+    /// Additional environment variables.
+    pub env: Vec<(String, String)>,
+    /// OCI annotations.
+    pub annotations: Vec<(String, String)>,
+}
+
+/// A bind mount specification.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MountSpec {
+    pub source: String,
+    pub target: String,
+    /// Mount options (e.g., "ro", "rw").
+    pub options: String,
+}
+
 // ─── Environment ────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Software environment for an allocation. Replaces the legacy flat struct
+/// with content-addressed images, env patches from views, and optional
+/// OCI container spec.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Environment {
-    /// uenv name/version (e.g., "prgenv-gnu/24.11:v1")
-    pub uenv: Option<String>,
-    /// uenv view to activate (e.g., "default", "spack")
-    pub view: Option<String>,
-    /// OCI image (alternative to uenv, for Sarus)
-    pub image: Option<String>,
-    /// Additional uenv for tools (mounted at /user-tools)
-    pub tools_uenv: Option<String>,
-    /// For sensitive: require signed images
+    /// Resolved image references (uenv and/or OCI).
+    pub images: Vec<ImageRef>,
+    /// Environment variable patches (from view activation / EDF).
+    pub env_patches: Vec<EnvPatch>,
+    /// CDI device specs (e.g., "nvidia.com/gpu=all").
+    pub devices: Vec<String>,
+    /// Additional bind mounts.
+    pub mounts: Vec<MountSpec>,
+    /// Full container spec (set when running OCI images).
+    pub container: Option<ContainerSpec>,
+    /// Whether the container rootfs is writable.
+    pub writable: bool,
+    /// For sensitive: require signed images.
     pub sign_required: bool,
-    /// Require vulnerability scan before scheduling (sensitive-workloads)
+    /// Require vulnerability scan before scheduling (sensitive-workloads).
     pub scan_required: bool,
-    /// Restrict to approved base images only (sensitive-workloads)
+    /// Restrict to approved base images only (sensitive-workloads).
     pub approved_bases_only: bool,
 }
 
@@ -1053,11 +1175,271 @@ pub struct LaunchSpec {
     pub cxi_credentials: Option<CxiCredentials>,
 }
 
+// ─── Software Delivery Utilities ────────────────────────────
+
+/// Apply a list of environment patches to an env var map, in declaration order (INV-SD7).
+///
+/// - Prepend: `var = value + separator + existing` (or just `value` if unset)
+/// - Append: `var = existing + separator + value` (or just `value` if unset)
+/// - Set: `var = value`
+/// - Unset: remove `var`
+pub fn apply_env_patches(patches: &[EnvPatch], env: &mut HashMap<String, String>) {
+    for patch in patches {
+        match patch.op {
+            EnvOp::Set => {
+                env.insert(patch.variable.clone(), patch.value.clone());
+            }
+            EnvOp::Unset => {
+                env.remove(&patch.variable);
+            }
+            EnvOp::Prepend => {
+                let existing = env.get(&patch.variable).cloned().unwrap_or_default();
+                let new_val = if existing.is_empty() {
+                    patch.value.clone()
+                } else {
+                    format!("{}{}{}", patch.value, patch.separator, existing)
+                };
+                env.insert(patch.variable.clone(), new_val);
+            }
+            EnvOp::Append => {
+                let existing = env.get(&patch.variable).cloned().unwrap_or_default();
+                let new_val = if existing.is_empty() {
+                    patch.value.clone()
+                } else {
+                    format!("{}{}{}", existing, patch.separator, patch.value)
+                };
+                env.insert(patch.variable.clone(), new_val);
+            }
+        }
+    }
+}
+
+/// Check that no mount targets overlap (prefix-shadow each other, INV-SD3).
+///
+/// Two targets overlap when one is a prefix of the other followed by `/` or an
+/// exact match. For example, `/opt` overlaps `/opt/env` (prefix shadowing).
+pub fn check_mount_overlap(targets: &[&str]) -> Result<(), String> {
+    let mut sorted: Vec<&str> = targets.to_vec();
+    sorted.sort_by_key(|t| t.len());
+
+    for i in 0..sorted.len() {
+        for j in (i + 1)..sorted.len() {
+            let short = sorted[i];
+            let long = sorted[j];
+            if short == long {
+                return Err(format!("duplicate mount target: {short}"));
+            }
+            // Check prefix: /opt shadows /opt/env
+            if let Some(rest) = long.strip_prefix(short) {
+                if rest.starts_with('/') || short.ends_with('/') {
+                    return Err(format!("mount target overlap: {short} shadows {long}"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ─── Tests ─────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Software Delivery type tests ──
+
+    #[test]
+    fn environment_default_has_empty_vecs_and_false_bools() {
+        let env = Environment::default();
+        assert!(env.images.is_empty());
+        assert!(env.env_patches.is_empty());
+        assert!(env.devices.is_empty());
+        assert!(env.mounts.is_empty());
+        assert!(env.container.is_none());
+        assert!(!env.writable);
+        assert!(!env.sign_required);
+        assert!(!env.scan_required);
+        assert!(!env.approved_bases_only);
+    }
+
+    #[test]
+    fn image_ref_default() {
+        let img = ImageRef::default();
+        assert!(img.spec.is_empty());
+        assert_eq!(img.image_type, ImageType::Uenv);
+        assert!(img.sha256.is_empty());
+        assert_eq!(img.size_bytes, 0);
+        assert!(!img.resolve_on_schedule);
+    }
+
+    #[test]
+    fn image_ref_deferred_has_empty_sha256() {
+        let img = ImageRef {
+            spec: "prgenv-gnu/24.11:v1".into(),
+            resolve_on_schedule: true,
+            ..ImageRef::default()
+        };
+        assert!(img.sha256.is_empty());
+        assert!(img.resolve_on_schedule);
+    }
+
+    #[test]
+    fn env_patch_default_separator_is_colon() {
+        let patch = EnvPatch::default();
+        assert_eq!(patch.separator, ":");
+        assert_eq!(patch.op, EnvOp::Set);
+    }
+
+    #[test]
+    fn container_spec_default() {
+        let cs = ContainerSpec::default();
+        assert!(cs.base_environments.is_empty());
+        assert!(cs.mounts.is_empty());
+        assert!(cs.devices.is_empty());
+        assert!(cs.workdir.is_empty());
+        assert!(!cs.writable);
+    }
+
+    #[test]
+    fn mount_spec_default() {
+        let ms = MountSpec::default();
+        assert!(ms.source.is_empty());
+        assert!(ms.target.is_empty());
+        assert!(ms.options.is_empty());
+    }
+
+    #[test]
+    fn view_def_default() {
+        let vd = ViewDef::default();
+        assert!(vd.name.is_empty());
+        assert!(vd.patches.is_empty());
+    }
+
+    #[test]
+    fn image_metadata_default() {
+        let im = ImageMetadata::default();
+        assert!(im.views.is_empty());
+        assert!(im.default_view.is_none());
+    }
+
+    #[test]
+    fn apply_env_patches_set() {
+        let patches = vec![EnvPatch {
+            variable: "FOO".into(),
+            op: EnvOp::Set,
+            value: "bar".into(),
+            separator: ":".into(),
+        }];
+        let mut env = HashMap::new();
+        apply_env_patches(&patches, &mut env);
+        assert_eq!(env.get("FOO").unwrap(), "bar");
+    }
+
+    #[test]
+    fn apply_env_patches_unset() {
+        let patches = vec![EnvPatch {
+            variable: "FOO".into(),
+            op: EnvOp::Unset,
+            value: String::new(),
+            separator: ":".into(),
+        }];
+        let mut env = HashMap::new();
+        env.insert("FOO".into(), "bar".into());
+        apply_env_patches(&patches, &mut env);
+        assert!(!env.contains_key("FOO"));
+    }
+
+    #[test]
+    fn apply_env_patches_prepend() {
+        let patches = vec![EnvPatch {
+            variable: "PATH".into(),
+            op: EnvOp::Prepend,
+            value: "/new/bin".into(),
+            separator: ":".into(),
+        }];
+        let mut env = HashMap::new();
+        env.insert("PATH".into(), "/usr/bin".into());
+        apply_env_patches(&patches, &mut env);
+        assert_eq!(env.get("PATH").unwrap(), "/new/bin:/usr/bin");
+    }
+
+    #[test]
+    fn apply_env_patches_append() {
+        let patches = vec![EnvPatch {
+            variable: "PATH".into(),
+            op: EnvOp::Append,
+            value: "/extra/bin".into(),
+            separator: ":".into(),
+        }];
+        let mut env = HashMap::new();
+        env.insert("PATH".into(), "/usr/bin".into());
+        apply_env_patches(&patches, &mut env);
+        assert_eq!(env.get("PATH").unwrap(), "/usr/bin:/extra/bin");
+    }
+
+    #[test]
+    fn apply_env_patches_prepend_to_empty() {
+        let patches = vec![EnvPatch {
+            variable: "NEW_VAR".into(),
+            op: EnvOp::Prepend,
+            value: "/opt/lib".into(),
+            separator: ":".into(),
+        }];
+        let mut env = HashMap::new();
+        apply_env_patches(&patches, &mut env);
+        assert_eq!(env.get("NEW_VAR").unwrap(), "/opt/lib");
+    }
+
+    #[test]
+    fn apply_env_patches_declaration_order() {
+        let patches = vec![
+            EnvPatch {
+                variable: "X".into(),
+                op: EnvOp::Set,
+                value: "first".into(),
+                separator: ":".into(),
+            },
+            EnvPatch {
+                variable: "X".into(),
+                op: EnvOp::Set,
+                value: "second".into(),
+                separator: ":".into(),
+            },
+        ];
+        let mut env = HashMap::new();
+        apply_env_patches(&patches, &mut env);
+        assert_eq!(env.get("X").unwrap(), "second");
+    }
+
+    #[test]
+    fn check_mount_overlap_no_overlap() {
+        assert!(check_mount_overlap(&["/opt", "/usr", "/mnt/data"]).is_ok());
+    }
+
+    #[test]
+    fn check_mount_overlap_prefix_shadow() {
+        let result = check_mount_overlap(&["/opt", "/opt/env"]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("shadows"));
+    }
+
+    #[test]
+    fn check_mount_overlap_duplicate() {
+        let result = check_mount_overlap(&["/opt", "/opt"]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("duplicate"));
+    }
+
+    #[test]
+    fn check_mount_overlap_no_false_positive_on_shared_prefix() {
+        // /opt and /optional should NOT overlap (no / separator)
+        assert!(check_mount_overlap(&["/opt", "/optional"]).is_ok());
+    }
+
+    #[test]
+    fn check_mount_overlap_empty_list() {
+        assert!(check_mount_overlap(&[]).is_ok());
+    }
 
     // ── AllocationState transition tests ──
 

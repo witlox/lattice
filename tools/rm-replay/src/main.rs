@@ -193,15 +193,7 @@ fn trace_to_allocation(entry: &TraceEntry) -> Allocation {
         user: "replay-user".into(),
         tags: HashMap::new(),
         allocation_type: AllocationType::Single,
-        environment: Environment {
-            uenv: None,
-            view: None,
-            image: None,
-            tools_uenv: None,
-            sign_required: false,
-            scan_required: false,
-            approved_bases_only: false,
-        },
+        environment: Environment::default(),
         entrypoint: format!("trace:{}", entry.allocation_id),
         resources: ResourceRequest {
             nodes: NodeCount::Exact(entry.node_count),

@@ -545,6 +545,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -552,6 +553,12 @@ name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+
+[[package]]
+name = "futures-io"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
 
 [[package]]
 name = "futures-sink"
@@ -572,7 +579,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
+ "futures-io",
+ "futures-sink",
  "futures-task",
+ "memchr",
  "pin-project-lite",
  "slab",
 ]
@@ -681,6 +691,18 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hpc-audit"
+version = "2026.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb3411de0c162a38a8e62587013917fad0d4afa51a25b27a249e1ac33bad2709"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "hpc-scheduler-core"
@@ -1054,8 +1076,10 @@ name = "lattice-common"
 version = "2026.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "config",
+ "hpc-audit",
  "hpc-scheduler-core",
  "prost",
  "prost-types",
@@ -1069,6 +1093,7 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -1610,7 +1635,9 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "h2",
  "http",
  "http-body",

@@ -314,8 +314,8 @@ fn build_submit_request_populates_fields() {
             assert_eq!(res.min_nodes, 8);
 
             let env = spec.environment.unwrap();
-            assert_eq!(env.uenv, "biotools:2.1");
-            assert_eq!(env.view, "develop");
+            assert_eq!(env.images.len(), 1);
+            assert_eq!(env.images[0].spec, "biotools:2.1");
 
             let lc = spec.lifecycle.unwrap();
             assert_eq!(lc.preemption_class, 3);
