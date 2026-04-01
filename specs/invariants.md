@@ -584,3 +584,105 @@ The cascade tries each provider's `is_available()` before calling `get_identity(
 - Service endpoint port outside 1-65535
 
 **Enforcement:** Validation in `allocation_from_proto()` and submit handler (allocation_service.rs).
+
+---
+
+## Software Delivery Invariants
+
+### INV-SD1: Content-Addressed Image Pinning
+
+**Statement:** After resolution, an allocation's ImageRef.sha256 is immutable. Re-pushing a mutable tag to a different hash does not change the pinned image. The allocation runs exactly the image that was resolved at submit time (or scheduling time for deferred).
+
+**Enforcement:** API server resolves ImageRef on submit, stores sha256 in allocation spec. Node agent pulls by sha256, not tag. No re-resolution after pinning.
+
+**Violation consequence:** Different nodes in a multi-node job could run different image versions. Non-reproducible results.
+
+---
+
+### INV-SD2: View Validation at Resolution Time
+
+**Statement:** View names are validated against the image's metadata at resolution time. Requesting a nonexistent view is a submit-time error (or scheduling-time error for deferred resolution).
+
+**Enforcement:** API server extracts `env.json` (uenv) or EDF metadata (container) and validates view names before accepting the allocation.
+
+**Violation consequence:** Allocation reaches prologue, view activation fails, allocation fails after consuming scheduler resources.
+
+---
+
+### INV-SD3: Mount Point Non-Overlap
+
+**Statement:** When an allocation specifies multiple images, their mount points must not overlap (no prefix containment). Validated at submit time.
+
+**Enforcement:** API server checks all `ImageRef.mount_point` values for prefix containment in `allocation_from_proto()`.
+
+**Violation consequence:** Mount shadowing — one image's files hidden by another's mount. Unpredictable behavior.
+
+---
+
+### INV-SD4: Deferred Resolution Timeout
+
+**Statement:** Allocations with `resolve_on_schedule: true` must resolve within a configurable timeout (default: 1 hour). After timeout, allocation transitions to Failed with reason "image resolution timeout".
+
+**Enforcement:** Scheduler loop checks unresolved allocations each cycle. Timeout tracked from `submitted_at`.
+
+**Violation consequence:** Unresolvable allocations occupy queue indefinitely, consuming quota and confusing users.
+
+---
+
+### INV-SD5: Sensitive Image Integrity
+
+**Statement:** Sensitive allocations require: `sign_required: true` (image signature verified at pull), digest reference (`@sha256:...`) not mutable tags, `writable: false` for containers, specific GPU indices (not `gpu=all`) in device specs.
+
+**Enforcement:** API server validates sensitive constraints at submit time. Node agent verifies signatures at pull time.
+
+**Violation consequence:** Unsigned or tampered images on sensitive nodes. Data exfiltration via writable rootfs. Unauditable GPU access.
+
+---
+
+### INV-SD6: Single Pull for Shared Store
+
+**Statement:** For multi-node allocations, the image is pulled once to the shared store (VAST/NFS for uenv, Parallax for OCI). Individual nodes read from the shared store. There is never a per-node pull to a registry for images available in the shared store.
+
+**Enforcement:** Data stager creates one staging request per image (not per node). Node agent checks shared store before attempting registry pull.
+
+**Violation consequence:** 1000 nodes simultaneously hitting the registry. Registry rate-limiting causes cascading timeouts.
+
+---
+
+### INV-SD7: Prologue Env Patch Ordering
+
+**Statement:** Environment patches are applied in the order views are listed in the allocation spec. For multi-image compositions, patches from the first image's views are applied before the second image's views. Last-write-wins for conflicts.
+
+**Enforcement:** Prologue iterates `env_patches` in declaration order. No sorting or deduplication.
+
+**Violation consequence:** Non-deterministic PATH ordering. Different env state depending on internal iteration order.
+
+---
+
+### INV-SD8: EDF Inheritance Bounded
+
+**Statement:** EDF `base_environment` chains have a maximum depth of 10 levels. Cycles are detected and rejected at submit time.
+
+**Enforcement:** API server resolves EDF chain with depth counter and visited set. Rejects with error on cycle or depth > 10.
+
+**Violation consequence:** Infinite resolution loop. API server hang or stack overflow.
+
+---
+
+### INV-SD9: Image Staging Reuses Data Mover
+
+**Statement:** Image pre-staging uses the existing `DataStager` and `DataStageExecutor` pipeline. Images are treated as staging requests alongside data mounts, prioritized by allocation preemption class.
+
+**Enforcement:** `DataStager.should_prefetch()` checks for unresolved/uncached images in addition to data mounts. Same `StagingRequest` type.
+
+**Violation consequence:** Duplicate staging infrastructure. Inconsistent priority handling between data and images.
+
+---
+
+### INV-SD10: Namespace Joining Preserves Agent Parentage
+
+**Statement:** When using the Podman `setns()` pattern, the spawned workload process is a direct child of the lattice-node-agent (not Podman). The agent retains signal delivery, exit status collection, and cgroup membership control.
+
+**Enforcement:** Agent starts Podman detached, joins namespace via `setns()`, then `exec()`s the entrypoint directly. Podman's init process is stopped, not the parent of the workload.
+
+**Violation consequence:** Agent loses process management. Cannot signal, checkpoint, or collect exit status. Zombie processes after Podman stop.
