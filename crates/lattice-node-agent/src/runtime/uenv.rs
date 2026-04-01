@@ -214,7 +214,7 @@ impl Runtime for UenvRuntime {
         #[cfg(target_os = "linux")]
         let pid = {
             // Build environment with env_patches applied
-            let _env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            let env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
             // Inherit env_vars from state if stored; env_patches handled here
             // (PrepareConfig.env_patches are applied at spawn time)
             let mount_point = &state.mount_point;
@@ -226,7 +226,7 @@ impl Runtime for UenvRuntime {
                 .arg("--")
                 .arg(entrypoint)
                 .args(args)
-                .envs(&env)
+                .envs(env)
                 .spawn()
                 .map_err(|e| RuntimeError::SpawnFailed {
                     alloc_id,
@@ -236,7 +236,6 @@ impl Runtime for UenvRuntime {
                 alloc_id,
                 reason: "child process has no PID".to_string(),
             })?;
-            let _ = env; // suppress unused
             pid
         };
 
