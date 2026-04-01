@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use cucumber::{given, then, when};
 
 use crate::LatticeWorld;
@@ -703,7 +701,7 @@ fn then_f5_1(world: &mut LatticeWorld) {
         .unwrap()
         .tags
         .get("image_cached")
-        .map_or(false, |v| v == "true");
+        .is_some_and(|v| v == "true");
     assert!(cached);
 }
 

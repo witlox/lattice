@@ -89,7 +89,7 @@ fn given_old(world: &mut LatticeWorld, tenant: String, days: i64, gpu_hours: u64
 /// So `gpu_hours` of usage = `gpu_hours / 4` runtime hours on 1 node.
 fn add_consumed(world: &mut LatticeWorld, gpu_hours: u64, tenant: String) {
     let gpus_per_node = 4u64; // matches run_budget_cycle nodes
-    let runtime_hours = (gpu_hours + gpus_per_node - 1) / gpus_per_node; // ceil
+    let runtime_hours = gpu_hours.div_ceil(gpus_per_node);
     let mut alloc = make_gpu_alloc(&tenant, 1, 1, AllocationState::Completed);
     alloc.started_at = Some(chrono::Utc::now() - chrono::Duration::hours(runtime_hours as i64));
     alloc.completed_at = Some(chrono::Utc::now());
@@ -186,7 +186,7 @@ fn then_hours(world: &mut LatticeWorld, tenant: String, expected: u64) {
     let hours: f64 = world
         .allocations
         .iter()
-        .filter(|a| a.tenant == tenant && a.started_at.map_or(false, |s| s > start))
+        .filter(|a| a.tenant == tenant && a.started_at.is_some_and(|s| s > start))
         .map(|a| {
             let s = a.started_at.unwrap_or(now);
             let e = a.completed_at.unwrap_or(now);
@@ -214,7 +214,7 @@ fn then_hours_min(world: &mut LatticeWorld, tenant: String, min: u64) {
     let hours: f64 = world
         .allocations
         .iter()
-        .filter(|a| a.tenant == tenant && a.started_at.map_or(false, |s| s > start))
+        .filter(|a| a.tenant == tenant && a.started_at.is_some_and(|s| s > start))
         .map(|a| {
             let s = a.started_at.unwrap_or(now);
             let e = a.completed_at.unwrap_or(now);
