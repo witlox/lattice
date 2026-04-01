@@ -96,12 +96,26 @@ Feature: Software Delivery — uenv and container lifecycle
     Then the allocation should have 2 ImageRefs
     And the mount points should not overlap
 
-  Scenario: overlapping mount points rejected
+  Scenario: overlapping mount points rejected (exact duplicate)
     Given uenv images:
       | spec                  | mount_point        |
       | image-a/1.0:v1        | /opt/env           |
       | image-b/1.0:v1        | /opt/env           |
     When I submit an allocation with both uenv images
+    Then the submission should be rejected with "overlapping mount points"
+
+  Scenario: prefix-shadowing mount points rejected
+    Given uenv images:
+      | spec                  | mount_point        |
+      | image-a/1.0:v1        | /opt               |
+      | image-b/1.0:v1        | /opt/env           |
+    When I submit an allocation with both uenv images
+    Then the submission should be rejected with "overlapping mount points"
+
+  Scenario: bind mount colliding with image mount rejected
+    Given a uenv "prgenv-gnu/24.11:v1" mounted at "/user-environment"
+    And a bind mount from "/tmp" to "/user-environment"
+    When I submit the allocation
     Then the submission should be rejected with "overlapping mount points"
 
   Scenario: uenv and container used together
@@ -251,3 +265,36 @@ Feature: Software Delivery — uenv and container lifecycle
   Scenario: uenv views query
     When I run "lattice uenv views prgenv-gnu/24.11:v1"
     Then I should see the available views with descriptions
+
+  # ─── Edge Cases ───────────────────────────────────────────
+
+  Scenario: allocation with no images runs bare process
+    Given no images or containers specified
+    When I submit an allocation with entrypoint "./my_binary"
+    Then the allocation should be accepted
+    And the prologue should skip image and view activation steps
+
+  # ─── Crash Recovery (Podman) ──────────────────────────────
+
+  Scenario: agent crash after container prepare cleans orphaned Podman
+    Given a running Podman container for allocation A
+    And the agent crashes without persisting state
+    When the agent restarts
+    Then it should scan for Podman containers labeled "managed-by=lattice"
+    And find the orphaned container
+    And stop and remove it
+
+  Scenario: agent restart reattaches to running container workload
+    Given a running workload in a Podman container for allocation A
+    And the agent state file records container_id "abc123" and PID 42000
+    When the agent restarts
+    And PID 42000 is still alive
+    Then the agent should reattach to the allocation
+    And resume heartbeating its status
+
+  Scenario: agent restart cleans dead container workload
+    Given allocation A with container_id "abc123" in the state file
+    And PID 42000 is no longer alive
+    When the agent restarts
+    Then the agent should run "podman stop abc123" and "podman rm abc123"
+    And report allocation A as Failed

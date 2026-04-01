@@ -176,9 +176,10 @@ pub struct Environment {
 ```
 
 **Migration from current:** The existing `uenv: Option<String>`, `view: Option<String>`,
-`image: Option<String>`, `tools_uenv: Option<String>` fields are replaced by `images`
-(Vec<ImageRef>) and `env_patches` (Vec<EnvPatch>). Proto backward compat via conversion
-in `allocation_from_proto()`.
+`image: Option<String>`, `tools_uenv: Option<String>` fields are **removed** and replaced
+by `images` (Vec<ImageRef>) and `env_patches` (Vec<EnvPatch>). Clean break — no backward
+compatibility layer. All clients (CLI, Python SDK, lattice-client) updated in the same
+release. No external consumers exist yet.
 
 ## API Server: Resolution Pipeline (lattice-api)
 
@@ -195,6 +196,9 @@ Submit allocation
   │           └─ Fetch metadata → validate views (INV-SD2)
   │
   ├─ Validate mount point non-overlap (INV-SD3)
+  │   Collect ALL mount targets: ImageRef.mount_point + Environment.mounts[].target
+  │   Sort by length, check each against all shorter for prefix containment
+  │   /opt overlaps /opt/env (prefix shadowing)
   │
   ├─ Validate EDF inheritance (INV-SD8)
   │   ├─ Load system EDFs from search paths
@@ -214,25 +218,48 @@ Submit allocation
 
 ## Scheduler: Image-Aware Placement (lattice-scheduler)
 
+**New SchedulerCommandSink method** (INV-SD4):
+```rust
+/// Pin a resolved image on an allocation (deferred resolution).
+/// Proposes Command::ResolveImage to the Raft quorum.
+async fn resolve_image(
+    &self,
+    alloc_id: AllocId,
+    image_index: usize,
+    resolved: ImageRef,
+) -> Result<(), LatticeError>;
+```
+
+**New SchedulerStateReader method:**
+```rust
+/// Read allocations with unresolved images (resolve_on_schedule = true, sha256 empty).
+async fn unresolved_allocations(&self) -> Result<Vec<Allocation>, LatticeError>;
+```
+
+**Image readiness cache:** `ImageStager.readiness()` is synchronous and reads from
+an in-memory cache of known-staged images. The cache is updated asynchronously by
+the staging pipeline (on pull completion) and a background refresh task. The scheduler
+never blocks on network I/O for readiness checks.
+
 ```
 Each scheduling cycle:
   │
   ├─ Deferred resolution check (INV-SD4):
   │   For each Pending allocation with unresolved images:
-  │     ├─ Try resolve via ImageResolver
-  │     ├─ Resolved → pin sha256, update allocation
-  │     ├─ Timeout exceeded → transition to Failed
+  │     ├─ Try resolve via ImageResolver (async)
+  │     ├─ Resolved → sink.resolve_image(alloc_id, idx, resolved)
+  │     ├─ Timeout exceeded (submitted_at + resolve_timeout) → transition to Failed
   │     └─ Still unresolved → skip (defer to next cycle)
   │
   ├─ Image staging (INV-SD9):
   │   DataStager.plan_staging() now includes:
   │     - Data mount staging requests (existing)
-  │     - Image staging requests (new: one per unresolved image)
+  │     - Image staging requests (new: one per uncached resolved image)
   │
   └─ f5 scoring (INV-SD6):
       For each allocation × candidate node:
         readiness = min(data_readiness, image_readiness)
-        image_readiness = ImageStager.readiness(image)
+        image_readiness = ImageStager.readiness(image)  // sync, reads cache
           1.0 = cached on node or shared store
           0.5 = in registry, not cached (pull needed)
           0.0 = unresolved
@@ -283,15 +310,29 @@ Lifecycle (INV-SD10):
 prepare():
   1. Check Parallax shared store for image
   2. If missing: podman pull → parallax --migrate
-  3. podman run -d --module hpc [devices] [mounts] sh -c "kill -STOP $$ ; exit 0"
+  3. podman run -d --module hpc --label managed-by=lattice --label alloc-id=<id>
+       [devices] [mounts] sh -c "kill -STOP $$ ; exit 0"
   4. Read container PID from podman inspect
   5. Store PodmanState { container_id, container_pid }
+  6. Persist container_id in agent state file (for crash recovery)
 
 spawn():
-  1. Open /proc/<container_pid>/ns/user and /proc/<container_pid>/ns/mnt
-  2. setns() into both namespaces
-  3. Apply env_patches to environment
-  4. exec() entrypoint — process is agent-parented, not Podman-parented
+  IMPORTANT: The agent MUST NOT call setns() in its own async context.
+  Namespace joining is delegated to nsenter(1):
+
+  1. Build environment from env_patches
+  2. Command::new("nsenter")
+       --target <container_pid>
+       --mount --user
+       -- <entrypoint> [args...]
+     with env vars set on the Command
+  3. Spawned process is a child of the agent (via tokio::process::Command)
+  4. Agent retains PID for signal delivery and exit status collection
+
+  Rationale: setns() changes the calling thread's namespace. In a tokio
+  async runtime with work-stealing, this would corrupt other tasks on the
+  same thread. The nsenter binary forks, calls setns() in the child, then
+  exec()s — safe for long-lived agents. This matches UenvRuntime's pattern.
 
 stop():
   1. Signal spawned process (SIGTERM → grace → SIGKILL)
@@ -300,6 +341,14 @@ stop():
 cleanup():
   1. podman rm <container_id>
   2. Clean local artifacts
+
+crash recovery (on agent restart):
+  1. Load persisted state → find container_ids
+  2. For each container_id: podman inspect → check if container exists
+  3. If workload PID alive → reattach (resume heartbeating status)
+  4. If workload PID dead but container exists → podman stop + podman rm
+  5. Orphan scan: podman ps -a --filter label=managed-by=lattice
+     → containers not in persisted state → stop + remove
 ```
 
 ## Proto Changes (proto/)
