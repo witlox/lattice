@@ -36,7 +36,7 @@ Feature: Software Delivery — uenv and container lifecycle
   Scenario: deferred resolution resolves when image appears
     Given an allocation pending with unresolved image "ci-build/latest:v1"
     When the image "ci-build/latest:v1" is pushed to the registry
-    And the scheduler runs a cycle
+    And the scheduler runs a resolution cycle
     Then the ImageRef sha256 should be populated
     And the allocation should be eligible for scheduling
 
