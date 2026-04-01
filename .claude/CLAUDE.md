@@ -6,6 +6,17 @@ lives in each project's own CLAUDE.md.
 Role definitions are in `.claude/roles/`. Read the relevant role file when
 activating a mode. These are behavioral constraints, not suggestions.
 
+## Pre-commit discipline
+
+**Before claiming "all tests pass" or committing code, ALWAYS:**
+1. Run `cargo fmt --all` and `cargo clippy --workspace --all-targets`
+2. Run the relevant `cargo test` commands and **show the output**
+3. Run `cargo test -p lattice-acceptance` and verify `grep "✘"` returns 0 results
+4. Never commit based solely on subagent reports — verify in the main context
+5. When adding steps/functions to shared namespaces (BDD steps, trait impls), grep for name conflicts first
+
+Use `/project:verify` to run the full checklist. If any step fails, fix before committing.
+
 ## Before every response: determine mode
 
 Do not skip. Do not assume from prior context. Evaluate fresh.
