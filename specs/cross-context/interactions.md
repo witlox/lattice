@@ -264,6 +264,13 @@ hpc-core integration (trait-based, no code coupling):
 - Same `NamespaceConsumer` trait, different implementation
 - Creates namespaces via `unshare(2)` directly
 - Mounts uenv without refcounting (one mount per allocation)
+
+**Software Delivery Cross-Context:**
+- **API Server → Registry**: Resolves ImageRef at submit time (sha256 pin). Registry can be ORAS/S3 (uenv) or OCI (containers). If registry unavailable and `resolve_on_schedule: false`, submit fails.
+- **Scheduler → Data Stager**: Image staging requests generated alongside data mount requests. Images treated as staging targets with priority from `preemption_class`. Single pull to shared store (VAST/Parallax), not per-node.
+- **Node Agent → Shared Store**: Reads images from VAST/NFS (uenv) or Parallax (OCI). Falls back to direct registry pull if shared store unavailable.
+- **Node Agent → Podman**: For container workloads, starts Podman in detached mode, joins namespaces via `setns()`. Workload is agent-parented, not Podman-parented.
+- **API Server → Metadata Service** (future): Extracts `env.json` from uenv images for view validation. Currently resolved by reading from the mounted image on the API server or cached alongside the registry.
 - No socket communication
 
 **Failure modes:**

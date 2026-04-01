@@ -127,8 +127,8 @@ Cross-context coordination mechanisms (not contexts themselves):
 - Sensitive nodes have extended grace periods, mandatory wipe-on-release, strict conformance enforcement
 
 **NodeAgent** — Per-node daemon managing runtime lifecycle.
-- Owns: uenv mount, Sarus container, DMTCP checkpoint, eBPF telemetry loading, health reporting, PMI-2 server
-- Executes prologue (image pull, mount, data stage) and epilogue (cleanup, scratch wipe)
+- Owns: uenv mount, Podman container (sarus-suite), DMTCP checkpoint, eBPF telemetry loading, health reporting, PMI-2 server
+- Executes prologue (image resolve check, pull/stage, mount/setns, view activation, data stage) and epilogue (cleanup, container stop, scratch wipe)
 - Implements hpc-node contracts: `CgroupManager` (standalone), `NamespaceConsumer` (dual-mode), `MountManager` (dual-mode)
 - Dual-mode operation: detects PACT presence at runtime. When PACT is present, delegates namespace creation and mount management to PACT via hpc-node handoff protocol. When standalone, self-services all resource isolation.
 - Uses `IdentityCascade` (hpc-identity) for mTLS workload identity: SPIRE → self-signed → bootstrap cert

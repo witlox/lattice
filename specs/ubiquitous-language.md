@@ -91,9 +91,19 @@ Configured with: `period_secs`, `initial_delay_secs`, `failure_threshold`, `time
 
 ## Software Delivery
 
-**uenv** — User Environment. A SquashFS image mounted via Linux mount namespace. Near-zero runtime overhead, native GPU/Slingshot access. Default software delivery mechanism.
+**ImageRef** — Content-addressed reference to a software image (uenv SquashFS or OCI container). Resolved at submit time (sha256 pinned), with optional deferred resolution for CI pipelines. Carries `original_tag` for auditability. The scheduler treats all ImageRefs uniformly for data readiness scoring.
 
-**Sarus** — OCI container runtime for cases requiring isolation (multi-tenant node sharing, third-party images, sensitive with enhanced isolation). Used by the interactive vCluster for intra-node packing.
+**uenv** — User Environment. A SquashFS image mounted via Linux mount namespace. Near-zero runtime overhead, native GPU/Slingshot access. Default software delivery mechanism. Images stored in ORAS/S3 registry, cached on node-local NVMe.
+
+**View** (uenv) — A named set of environment variable patches (EnvPatch) stored in `env.json` inside a uenv SquashFS image. Views are validated at resolution time and applied during the prologue. Examples: `default`, `spack`. Multi-uenv compositions use namespaced views: `image-name:view-name`.
+
+**EnvPatch** — A single environment variable modification: prepend, append, set, or unset. Used by both uenv views and container EDF env sections. Applied in declaration order; last-write-wins for conflicts.
+
+**Container** (sarus-suite) — OCI container executed via Podman with the `setns()` namespace-joining pattern. The workload process enters the container's user+mount namespace but remains a child of the lattice-node-agent. Provides full filesystem isolation while preserving native MPI/RDMA/Slingshot access.
+
+**EDF** — Environment Definition File (TOML). Declarative container specification from the sarus-suite project. Supports `base_environment` inheritance chains (max 10 levels), mounts, CDI device specs, env vars, and annotations. Resolved and rendered at submit time by the API server.
+
+**Parallax** — Shared read-only OCI image store using SquashFS layers on VAST/NFS. Eliminates per-node image pulls. Accessed via `squashfuse_ll` (FUSE). Optional — without it, nodes pull directly from the registry.
 
 **DMTCP** — Distributed MultiThreaded Checkpointing. Transparent process-level checkpointing for applications that don't implement their own checkpoint support. Higher overhead but works for unmodified applications.
 
