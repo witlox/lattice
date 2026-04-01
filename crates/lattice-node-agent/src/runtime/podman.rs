@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
@@ -151,15 +153,95 @@ impl Runtime for PodmanRuntime {
             });
         }
 
-        // In production:
-        // 1. Check Parallax shared store for image
-        // 2. If missing: podman pull -> parallax --migrate
-        // 3. podman run -d --module hpc --label managed-by=lattice
-        //    --label alloc-id=<id> [devices] [mounts] sh -c "kill -STOP $$ ; exit 0"
-        // 4. Read container PID from podman inspect
-        // 5. Persist container_id in agent state file
-        let container_id = Self::generate_container_id(&config.alloc_id);
-        let container_pid = (config.alloc_id.as_u128() % 65535 + 1000) as u32;
+        #[cfg(target_os = "linux")]
+        let (container_id, container_pid) = {
+            // 1. Check parallax imagestore (if configured)
+            if let Some(ref parallax_store) = self.config.parallax_imagestore {
+                tracing::debug!(
+                    imagestore = %parallax_store,
+                    image = %image_ref,
+                    "checking parallax shared image store"
+                );
+            }
+
+            // 2. podman pull if needed
+            let pull_status = tokio::process::Command::new(&self.config.podman_bin)
+                .args(["pull", image_ref])
+                .status()
+                .await
+                .map_err(|e| RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!("podman pull failed: {e}"),
+                })?;
+            if !pull_status.success() {
+                return Err(RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!("podman pull exited with code {:?}", pull_status.code()),
+                });
+            }
+
+            // 3. Start detached container with paused init process
+            let mut run_cmd = tokio::process::Command::new(&self.config.podman_bin);
+            run_cmd
+                .args(["run", "-d"])
+                .args(["--module", &self.config.podman_module])
+                .args(["--tmpdir", &self.config.podman_tmp_path])
+                .args(["--label", "managed-by=lattice"])
+                .args(["--label", &format!("alloc-id={}", config.alloc_id)]);
+
+            run_cmd
+                .arg(image_ref)
+                .args(["sh", "-c", "kill -STOP $$ ; exit 0"]);
+
+            let output = run_cmd
+                .output()
+                .await
+                .map_err(|e| RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!("podman run failed: {e}"),
+                })?;
+
+            if !output.status.success() {
+                return Err(RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!(
+                        "podman run failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ),
+                });
+            }
+
+            let cid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+            // 4. Get container PID
+            let inspect_output = tokio::process::Command::new(&self.config.podman_bin)
+                .args(["inspect", "--format", "{{.State.Pid}}", &cid])
+                .output()
+                .await
+                .map_err(|e| RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!("podman inspect failed: {e}"),
+                })?;
+
+            let pid_str = String::from_utf8_lossy(&inspect_output.stdout)
+                .trim()
+                .to_string();
+            let cpid: u32 = pid_str.parse().map_err(|e| RuntimeError::PrepareFailed {
+                alloc_id: config.alloc_id,
+                reason: format!("failed to parse container PID '{pid_str}': {e}"),
+            })?;
+
+            (cid, cpid)
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let (container_id, container_pid) = {
+            let _ = &self.config;
+            (
+                Self::generate_container_id(&config.alloc_id),
+                (config.alloc_id.as_u128() % 65535 + 1000) as u32,
+            )
+        };
 
         let state = PodmanState {
             image_ref: image_ref.to_string(),
@@ -170,16 +252,14 @@ impl Runtime for PodmanRuntime {
         };
         states.insert(config.alloc_id, state);
 
-        let _ = &self.config; // suppress unused warning until real commands are wired in
-
         Ok(())
     }
 
     async fn spawn(
         &self,
         alloc_id: AllocId,
-        _entrypoint: &str,
-        _args: &[String],
+        entrypoint: &str,
+        args: &[String],
     ) -> Result<ProcessHandle, RuntimeError> {
         let mut states = self.states.write().await;
         let state = states
@@ -193,13 +273,41 @@ impl Runtime for PodmanRuntime {
             });
         }
 
-        // In production:
-        // 1. Build environment from env_patches via apply_env_patches()
-        // 2. Command::new(nsenter_bin) --target <container_pid>
-        //    --mount --user -- <entrypoint> [args...]
-        //    with env vars set on the Command
-        // 3. Agent retains PID for signal delivery and exit status collection
-        let workload_pid = (alloc_id.as_u128() % 65535 + 1) as u32;
+        #[cfg(target_os = "linux")]
+        let workload_pid = {
+            let container_pid = state
+                .container_pid
+                .ok_or_else(|| RuntimeError::SpawnFailed {
+                    alloc_id,
+                    reason: "no container PID available".to_string(),
+                })?;
+
+            let env: HashMap<String, String> = HashMap::new();
+
+            let child = tokio::process::Command::new(&self.config.nsenter_bin)
+                .args(["--target", &container_pid.to_string()])
+                .args(["--mount", "--user"])
+                .arg("--")
+                .arg(entrypoint)
+                .args(args)
+                .envs(&env)
+                .spawn()
+                .map_err(|e| RuntimeError::SpawnFailed {
+                    alloc_id,
+                    reason: format!("nsenter spawn failed: {e}"),
+                })?;
+            child.id().ok_or_else(|| RuntimeError::SpawnFailed {
+                alloc_id,
+                reason: "child process has no PID".to_string(),
+            })?
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let workload_pid = {
+            let _ = (entrypoint, args);
+            (alloc_id.as_u128() % 65535 + 1) as u32
+        };
+
         state.workload_pid = Some(workload_pid);
 
         Ok(ProcessHandle {
@@ -215,12 +323,10 @@ impl Runtime for PodmanRuntime {
             alloc_id: handle.alloc_id,
         })?;
 
-        if state.workload_pid.is_none() {
-            return Err(RuntimeError::SignalFailed {
-                alloc_id: handle.alloc_id,
-                reason: "no workload process running".to_string(),
-            });
-        }
+        let workload_pid = state.workload_pid.ok_or(RuntimeError::SignalFailed {
+            alloc_id: handle.alloc_id,
+            reason: "no workload process running".to_string(),
+        })?;
 
         if state.stopped {
             return Err(RuntimeError::SignalFailed {
@@ -229,14 +335,28 @@ impl Runtime for PodmanRuntime {
             });
         }
 
-        // In production: kill -<signal> <workload_pid>
         tracing::debug!(
             alloc_id = %handle.alloc_id,
             container_id = ?state.container_id,
-            workload_pid = ?state.workload_pid,
+            workload_pid,
             signal,
             "sending signal to podman workload process"
         );
+
+        #[cfg(target_os = "linux")]
+        {
+            use libc::{kill, pid_t};
+            let ret = unsafe { kill(workload_pid as pid_t, signal) };
+            if ret != 0 {
+                return Err(RuntimeError::SignalFailed {
+                    alloc_id: handle.alloc_id,
+                    reason: format!(
+                        "kill({workload_pid}, {signal}) failed: {}",
+                        std::io::Error::last_os_error()
+                    ),
+                });
+            }
+        }
 
         Ok(())
     }
@@ -244,7 +364,7 @@ impl Runtime for PodmanRuntime {
     async fn stop(
         &self,
         handle: &ProcessHandle,
-        _grace_secs: u32,
+        grace_secs: u32,
     ) -> Result<ExitStatus, RuntimeError> {
         let mut states = self.states.write().await;
         let state = states
@@ -257,9 +377,33 @@ impl Runtime for PodmanRuntime {
             return Ok(ExitStatus::Signal(15));
         }
 
-        // In production:
-        // 1. Signal spawned workload process (SIGTERM -> grace -> SIGKILL)
-        // 2. podman stop <container_id>
+        #[cfg(target_os = "linux")]
+        {
+            // Kill workload process
+            if let Some(pid) = state.workload_pid {
+                use libc::{kill, pid_t, SIGKILL, SIGTERM};
+
+                unsafe { kill(pid as pid_t, SIGTERM) };
+                tokio::time::sleep(Duration::from_secs(grace_secs as u64)).await;
+
+                let alive = unsafe { kill(pid as pid_t, 0) } == 0;
+                if alive {
+                    unsafe { kill(pid as pid_t, SIGKILL) };
+                }
+            }
+
+            // Stop container
+            if let Some(ref container_id) = state.container_id {
+                let _ = tokio::process::Command::new(&self.config.podman_bin)
+                    .args(["stop", container_id])
+                    .status()
+                    .await;
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        let _ = grace_secs;
+
         state.stopped = true;
         Ok(ExitStatus::Signal(15))
     }
@@ -274,19 +418,56 @@ impl Runtime for PodmanRuntime {
             return Ok(ExitStatus::Signal(15));
         }
 
-        // In production: waitpid() on the workload child process
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = state.workload_pid {
+            use libc::{waitpid, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG};
+            let mut status: i32 = 0;
+            let ret = unsafe { waitpid(pid as i32, &mut status, 0) };
+            if ret < 0 {
+                return Err(RuntimeError::StopFailed {
+                    alloc_id: handle.alloc_id,
+                    reason: format!("waitpid failed: {}", std::io::Error::last_os_error()),
+                });
+            }
+            if WIFEXITED(status) {
+                return Ok(ExitStatus::Code(WEXITSTATUS(status)));
+            }
+            if WIFSIGNALED(status) {
+                return Ok(ExitStatus::Signal(WTERMSIG(status)));
+            }
+            return Ok(ExitStatus::Unknown);
+        }
+
         Ok(ExitStatus::Code(0))
     }
 
     async fn cleanup(&self, alloc_id: AllocId) -> Result<(), RuntimeError> {
         let mut states = self.states.write().await;
-        let _state = states
+        let state = states
             .remove(&alloc_id)
             .ok_or(RuntimeError::NotFound { alloc_id })?;
 
-        // In production:
-        // 1. podman rm <container_id>
-        // 2. Clean local artifacts
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(ref container_id) = state.container_id {
+                let rm_status = tokio::process::Command::new(&self.config.podman_bin)
+                    .args(["rm", "-f", container_id])
+                    .status()
+                    .await;
+                if let Err(e) = rm_status {
+                    tracing::warn!(
+                        alloc_id = %alloc_id,
+                        container_id = %container_id,
+                        error = %e,
+                        "podman rm failed"
+                    );
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        let _ = state;
+
         tracing::debug!(alloc_id = %alloc_id, "cleaned up podman container");
 
         Ok(())

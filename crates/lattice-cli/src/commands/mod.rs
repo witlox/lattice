@@ -12,6 +12,7 @@ pub mod session;
 pub mod status;
 pub mod submit;
 pub mod top;
+pub mod uenv;
 pub mod usage;
 pub mod watch;
 
@@ -82,6 +83,9 @@ pub enum Command {
 
     /// DAG workflow management
     Dag(dag::DagArgs),
+
+    /// uenv image management (views, cache)
+    Uenv(uenv::UenvArgs),
 
     /// Login to lattice server
     Login(auth::LoginArgs),

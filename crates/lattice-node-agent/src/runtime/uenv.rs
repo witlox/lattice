@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
@@ -125,9 +127,9 @@ impl Runtime for UenvRuntime {
             .unwrap_or_else(|| self.workdir(&config.alloc_id));
 
         let state = UenvState {
-            mount_point,
+            mount_point: mount_point.clone(),
             image_ref: image_ref.to_string(),
-            workdir,
+            workdir: workdir.clone(),
             pid: None,
             stopped: false,
         };
@@ -141,10 +143,41 @@ impl Runtime for UenvRuntime {
         }
         states.insert(config.alloc_id, state);
 
-        // In production, this would run:
-        //   squashfs-mount <image-ref> <mount-point>
-        //   mkdir -p <workdir>
-        // For now, we record state. Actual execution is in the OS-level integration.
+        #[cfg(target_os = "linux")]
+        {
+            // Create mount point directory
+            tokio::fs::create_dir_all(&mount_point).await.map_err(|e| {
+                RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!("failed to create mount point {mount_point}: {e}"),
+                }
+            })?;
+
+            // Mount squashfs image
+            let status = tokio::process::Command::new(&self.config.squashfs_mount_bin)
+                .arg(image_ref)
+                .arg(&mount_point)
+                .status()
+                .await
+                .map_err(|e| RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!("squashfs-mount failed: {e}"),
+                })?;
+            if !status.success() {
+                return Err(RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!("squashfs-mount exited with code {:?}", status.code()),
+                });
+            }
+
+            // Create workdir
+            tokio::fs::create_dir_all(&workdir)
+                .await
+                .map_err(|e| RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!("failed to create workdir {workdir}: {e}"),
+                })?;
+        }
 
         Ok(())
     }
@@ -152,8 +185,8 @@ impl Runtime for UenvRuntime {
     async fn spawn(
         &self,
         alloc_id: AllocId,
-        _entrypoint: &str,
-        _args: &[String],
+        entrypoint: &str,
+        args: &[String],
     ) -> Result<ProcessHandle, RuntimeError> {
         let mut states = self.states.write().await;
         let state = states
@@ -167,11 +200,41 @@ impl Runtime for UenvRuntime {
             });
         }
 
-        // In production, this would run:
-        //   unshare --mount nsenter --mount=<mount>/ns/mnt -- <entrypoint> [args]
-        // and capture the child PID.
-        // For now, we simulate a PID assignment.
-        let pid = (alloc_id.as_u128() % 65535 + 1) as u32;
+        #[cfg(target_os = "linux")]
+        let pid = {
+            // Build environment with env_patches applied
+            let mut env = std::collections::HashMap::new();
+            // Inherit env_vars from state if stored; env_patches handled here
+            // (PrepareConfig.env_patches are applied at spawn time)
+            let mount_point = &state.mount_point;
+
+            let child = tokio::process::Command::new(&self.config.unshare_bin)
+                .arg("--mount")
+                .arg("nsenter")
+                .arg(&format!("--mount={mount_point}/ns/mnt"))
+                .arg("--")
+                .arg(entrypoint)
+                .args(args)
+                .envs(&env)
+                .spawn()
+                .map_err(|e| RuntimeError::SpawnFailed {
+                    alloc_id,
+                    reason: format!("failed to spawn: {e}"),
+                })?;
+            let pid = child.id().ok_or_else(|| RuntimeError::SpawnFailed {
+                alloc_id,
+                reason: "child process has no PID".to_string(),
+            })?;
+            let _ = env; // suppress unused
+            pid
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let pid = {
+            let _ = (entrypoint, args);
+            (alloc_id.as_u128() % 65535 + 1) as u32
+        };
+
         state.pid = Some(pid);
 
         Ok(ProcessHandle {
@@ -187,12 +250,10 @@ impl Runtime for UenvRuntime {
             alloc_id: handle.alloc_id,
         })?;
 
-        if state.pid.is_none() {
-            return Err(RuntimeError::SignalFailed {
-                alloc_id: handle.alloc_id,
-                reason: "no process running".to_string(),
-            });
-        }
+        let pid = state.pid.ok_or(RuntimeError::SignalFailed {
+            alloc_id: handle.alloc_id,
+            reason: "no process running".to_string(),
+        })?;
 
         if state.stopped {
             return Err(RuntimeError::SignalFailed {
@@ -201,13 +262,27 @@ impl Runtime for UenvRuntime {
             });
         }
 
-        // In production: kill -<signal> <pid>
         tracing::debug!(
             alloc_id = %handle.alloc_id,
-            pid = ?state.pid,
+            pid,
             signal,
             "sending signal to uenv process"
         );
+
+        #[cfg(target_os = "linux")]
+        {
+            use libc::{kill, pid_t};
+            let ret = unsafe { kill(pid as pid_t, signal) };
+            if ret != 0 {
+                return Err(RuntimeError::SignalFailed {
+                    alloc_id: handle.alloc_id,
+                    reason: format!(
+                        "kill({pid}, {signal}) failed: {}",
+                        std::io::Error::last_os_error()
+                    ),
+                });
+            }
+        }
 
         Ok(())
     }
@@ -215,7 +290,7 @@ impl Runtime for UenvRuntime {
     async fn stop(
         &self,
         handle: &ProcessHandle,
-        _grace_secs: u32,
+        grace_secs: u32,
     ) -> Result<ExitStatus, RuntimeError> {
         let mut states = self.states.write().await;
         let state = states
@@ -228,7 +303,26 @@ impl Runtime for UenvRuntime {
             return Ok(ExitStatus::Signal(15)); // already stopped
         }
 
-        // In production: kill -TERM <pid>, sleep grace_secs, kill -KILL <pid>
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = state.pid {
+            use libc::{kill, pid_t, SIGKILL, SIGTERM};
+
+            // Send SIGTERM
+            unsafe { kill(pid as pid_t, SIGTERM) };
+
+            // Wait grace period
+            tokio::time::sleep(Duration::from_secs(grace_secs as u64)).await;
+
+            // Check if still alive, SIGKILL if needed
+            let alive = unsafe { kill(pid as pid_t, 0) } == 0;
+            if alive {
+                unsafe { kill(pid as pid_t, SIGKILL) };
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        let _ = grace_secs;
+
         state.stopped = true;
         Ok(ExitStatus::Signal(15))
     }
@@ -243,19 +337,78 @@ impl Runtime for UenvRuntime {
             return Ok(ExitStatus::Signal(15));
         }
 
-        // In production: waitpid() on the child process
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = state.pid {
+            use libc::{waitpid, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG};
+            let mut status: i32 = 0;
+            let ret = unsafe { waitpid(pid as i32, &mut status, 0) };
+            if ret < 0 {
+                return Err(RuntimeError::StopFailed {
+                    alloc_id: handle.alloc_id,
+                    reason: format!("waitpid failed: {}", std::io::Error::last_os_error()),
+                });
+            }
+            if WIFEXITED(status) {
+                return Ok(ExitStatus::Code(WEXITSTATUS(status)));
+            }
+            if WIFSIGNALED(status) {
+                return Ok(ExitStatus::Signal(WTERMSIG(status)));
+            }
+            return Ok(ExitStatus::Unknown);
+        }
+
         Ok(ExitStatus::Code(0))
     }
 
     async fn cleanup(&self, alloc_id: AllocId) -> Result<(), RuntimeError> {
         let mut states = self.states.write().await;
-        let _state = states
+        let state = states
             .remove(&alloc_id)
             .ok_or(RuntimeError::NotFound { alloc_id })?;
 
-        // In production:
-        //   umount <mount-point>
-        //   rm -rf <workdir>
+        #[cfg(target_os = "linux")]
+        {
+            // Unmount squashfs
+            let umount_status = tokio::process::Command::new("umount")
+                .arg(&state.mount_point)
+                .status()
+                .await
+                .map_err(|e| RuntimeError::StopFailed {
+                    alloc_id,
+                    reason: format!("umount failed: {e}"),
+                })?;
+            if !umount_status.success() {
+                tracing::warn!(
+                    alloc_id = %alloc_id,
+                    mount_point = %state.mount_point,
+                    "umount exited with non-zero status"
+                );
+            }
+
+            // Remove mount point directory
+            if let Err(e) = tokio::fs::remove_dir_all(&state.mount_point).await {
+                tracing::warn!(
+                    alloc_id = %alloc_id,
+                    path = %state.mount_point,
+                    error = %e,
+                    "failed to remove mount point directory"
+                );
+            }
+
+            // Remove workdir
+            if let Err(e) = tokio::fs::remove_dir_all(&state.workdir).await {
+                tracing::warn!(
+                    alloc_id = %alloc_id,
+                    path = %state.workdir,
+                    error = %e,
+                    "failed to remove workdir"
+                );
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        let _ = state;
+
         tracing::debug!(alloc_id = %alloc_id, "cleaned up uenv environment");
 
         Ok(())

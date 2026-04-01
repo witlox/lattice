@@ -3,9 +3,9 @@
 use chrono::{DateTime, Utc};
 use lattice_common::traits::AuditEntry;
 use lattice_common::types::{
-    AllocId, Allocation, AllocationState, CostWeights, IsolationLevel, Node, NodeId, NodeOwnership,
-    NodeState, Session, SessionId, Tenant, TenantId, TenantQuota, TopologyModel, VCluster,
-    VClusterId,
+    AllocId, Allocation, AllocationState, CostWeights, ImageRef, IsolationLevel, Node, NodeId,
+    NodeOwnership, NodeState, Session, SessionId, Tenant, TenantId, TenantQuota, TopologyModel,
+    VCluster, VClusterId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -103,6 +103,14 @@ pub enum Command {
         session_id: SessionId,
     },
 
+    // ── Software delivery commands ─────────────────────────
+    /// Resolve a deferred image reference after scheduling (INV-SD4).
+    ResolveImage {
+        id: AllocId,
+        image_index: usize,
+        resolved: ImageRef,
+    },
+
     // ── Audit commands ──────────────────────────────────────
     RecordAudit(AuditEntry),
 
@@ -151,6 +159,9 @@ impl fmt::Display for Command {
             Command::DeleteSession { session_id } => {
                 write!(f, "DeleteSession({session_id})")
             }
+            Command::ResolveImage {
+                id, image_index, ..
+            } => write!(f, "ResolveImage({id}, index={image_index})"),
             Command::RecordAudit(e) => write!(f, "RecordAudit({})", e.event.action),
             Command::CompactAuditLog {
                 entries_to_archive, ..

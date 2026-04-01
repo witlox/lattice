@@ -116,8 +116,8 @@ pub async fn execute(
                     .walltime
                     .as_deref()
                     .and_then(crate::compat::parse_slurm_time),
-                uenv: create_args.uenv.clone(),
-                view: create_args.view.clone(),
+                uenvs: create_args.uenv.iter().cloned().collect(),
+                views: create_args.view.iter().cloned().collect(),
                 ..Default::default()
             };
             let req = build_submit_request(&desc, &config.user, config.vcluster.as_deref());

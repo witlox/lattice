@@ -291,8 +291,8 @@ fn build_submit_request_populates_fields() {
         entrypoint: Some("./align.sh".to_string()),
         nodes: Some(8),
         walltime: Some(Duration::from_secs(14400)),
-        uenv: Some("biotools:2.1".to_string()),
-        view: Some("develop".to_string()),
+        uenvs: vec!["biotools:2.1".to_string()],
+        views: vec!["develop".to_string()],
         priority_class: Some(3),
         dependencies: vec![
             ("job-100".to_string(), "success".to_string()),

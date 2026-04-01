@@ -849,3 +849,60 @@ async fn launch_tasks_e2e_with_scheduling() {
         );
     }
 }
+
+// ─── Test 13: Container allocation lifecycle via gRPC ─────────
+// Submit an allocation with OCI image, verify environment has images populated.
+
+#[tokio::test]
+async fn container_allocation_lifecycle_via_grpc() {
+    let state = e2e_state();
+    let svc = LatticeAllocationService::new(state.clone());
+
+    // Submit allocation with OCI image
+    let resp = svc
+        .submit(Request::new(pb::SubmitRequest {
+            submission: Some(pb::submit_request::Submission::Single(pb::AllocationSpec {
+                tenant: "ml-team".to_string(),
+                project: "training".to_string(),
+                entrypoint: "python train.py".to_string(),
+                environment: Some(pb::EnvironmentSpec {
+                    images: vec![pb::ImageRefProto {
+                        spec: "nvcr.io/nvidia/pytorch:24.01-py3".to_string(),
+                        image_type: "oci".to_string(),
+                        registry: "nvcr.io".to_string(),
+                        name: "pytorch".to_string(),
+                        version: "24.01-py3".to_string(),
+                        original_tag: "24.01-py3".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        }))
+        .await
+        .unwrap();
+
+    let alloc_id_str = &resp.get_ref().allocation_ids[0];
+    let alloc_id: Uuid = alloc_id_str.parse().unwrap();
+
+    // Verify allocation was created
+    let get_resp = svc
+        .get(Request::new(pb::GetAllocationRequest {
+            allocation_id: alloc_id_str.clone(),
+        }))
+        .await
+        .unwrap();
+    assert_eq!(get_resp.get_ref().state, "pending");
+
+    // Verify environment has images populated
+    let alloc = state.allocations.get(&alloc_id).await.unwrap();
+    assert!(
+        !alloc.environment.images.is_empty(),
+        "allocation should have images in environment"
+    );
+    let image = &alloc.environment.images[0];
+    assert_eq!(image.image_type, ImageType::Oci);
+    assert_eq!(image.spec, "nvcr.io/nvidia/pytorch:24.01-py3");
+    assert_eq!(image.name, "pytorch");
+}

@@ -24,10 +24,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     debug!("Parsed CLI: output={}, quiet={}", cli.output, cli.quiet);
 
-    // Shell completions don't need a gRPC connection or auth.
+    // Shell completions and uenv stubs don't need a gRPC connection or auth.
     if let Command::Completions { shell } = cli.command {
         lattice_cli::completions::generate_completions(shell);
         return Ok(());
+    }
+    if let Command::Uenv(ref args) = cli.command {
+        return commands::uenv::execute(args).await;
     }
 
     // Load config file and merge CLI overrides.
@@ -129,7 +132,9 @@ async fn main() -> Result<()> {
         Command::Usage(args) => {
             commands::usage::execute(&args, &mut client, &client_config, output_format).await?;
         }
-        Command::Login(_) | Command::Logout(_) | Command::Completions { .. } => unreachable!(),
+        Command::Login(_) | Command::Logout(_) | Command::Completions { .. } | Command::Uenv(_) => {
+            unreachable!()
+        }
     }
 
     Ok(())

@@ -1503,3 +1503,113 @@ async fn proc_collector_lifecycle() {
     // Cannot read events after detach.
     assert!(collector.read_events().await.is_err());
 }
+
+// ===============================================================
+// Test: PodmanRuntime full lifecycle (stub path on all platforms)
+// ===============================================================
+
+#[tokio::test]
+async fn podman_runtime_full_lifecycle() {
+    use lattice_common::types::{ImageRef, ImageType};
+    use lattice_node_agent::runtime::podman::{PodmanConfig, PodmanRuntime};
+    use lattice_node_agent::runtime::{ExitStatus, PrepareConfig, Runtime};
+
+    let rt = PodmanRuntime::new(PodmanConfig::default());
+    let alloc_id = Uuid::new_v4();
+    let config = PrepareConfig {
+        alloc_id,
+        uenv: None,
+        view: None,
+        image: Some("pytorch:latest".to_string()),
+        workdir: Some("/workspace".to_string()),
+        env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
+        resource_limits: None,
+        images: vec![ImageRef {
+            spec: "pytorch:latest".into(),
+            image_type: ImageType::Oci,
+            name: "pytorch".into(),
+            version: "latest".into(),
+            ..Default::default()
+        }],
+        env_patches: vec![],
+    };
+
+    // Prepare
+    rt.prepare(&config).await.unwrap();
+
+    // Spawn
+    let handle = rt
+        .spawn(alloc_id, "python", &["train.py".to_string()])
+        .await
+        .unwrap();
+    assert!(handle.pid.is_some());
+    assert!(handle.container_id.is_some());
+
+    // Stop
+    let status = rt.stop(&handle, 5).await.unwrap();
+    assert_eq!(status, ExitStatus::Signal(15));
+
+    // Cleanup
+    rt.cleanup(alloc_id).await.unwrap();
+}
+
+// ===============================================================
+// Test: UenvRuntime full lifecycle (stub path on all platforms)
+// ===============================================================
+
+#[tokio::test]
+async fn uenv_runtime_full_lifecycle() {
+    use lattice_node_agent::runtime::uenv::{UenvConfig, UenvRuntime};
+    use lattice_node_agent::runtime::{ExitStatus, PrepareConfig, Runtime};
+
+    let rt = UenvRuntime::new(UenvConfig {
+        mount_base: "/tmp/lattice-test/mounts".to_string(),
+        workdir_base: "/tmp/lattice-test/workdirs".to_string(),
+        ..Default::default()
+    });
+    let alloc_id = Uuid::new_v4();
+    let config = PrepareConfig {
+        alloc_id,
+        uenv: Some("prgenv-gnu/24.11:v1".to_string()),
+        view: Some("default".to_string()),
+        image: None,
+        workdir: None,
+        env_vars: vec![],
+        memory_policy: None,
+        is_unified_memory: false,
+        data_mounts: vec![],
+        scratch_per_node: None,
+        resource_limits: None,
+        images: vec![],
+        env_patches: vec![],
+    };
+
+    // Prepare
+    rt.prepare(&config).await.unwrap();
+
+    // Spawn
+    let handle = rt
+        .spawn(alloc_id, "python", &["train.py".to_string()])
+        .await
+        .unwrap();
+    assert!(handle.pid.is_some());
+    assert!(handle.container_id.is_none());
+
+    // Signal
+    rt.signal(&handle, 10).await.unwrap();
+
+    // Stop
+    let status = rt.stop(&handle, 5).await.unwrap();
+    assert_eq!(status, ExitStatus::Signal(15));
+
+    // Cleanup
+    rt.cleanup(alloc_id).await.unwrap();
+
+    // After cleanup, spawn should fail
+    let result = rt.spawn(alloc_id, "python", &[]).await;
+    assert!(result.is_err());
+}

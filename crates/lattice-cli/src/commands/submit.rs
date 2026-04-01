@@ -20,13 +20,33 @@ pub struct SubmitArgs {
     #[arg(long)]
     pub walltime: Option<String>,
 
-    /// uenv image to use
-    #[arg(long)]
-    pub uenv: Option<String>,
+    /// uenv image spec (repeatable, format: name/version:tag)
+    #[arg(long = "uenv", value_name = "SPEC")]
+    pub uenvs: Vec<String>,
 
-    /// uenv view to mount
+    /// uenv view to activate (repeatable, validated after resolution)
+    #[arg(long = "view", value_name = "NAME")]
+    pub views: Vec<String>,
+
+    /// OCI container image reference
     #[arg(long)]
-    pub view: Option<String>,
+    pub image: Option<String>,
+
+    /// EDF TOML file (parsed as ContainerSpec fields)
+    #[arg(long, value_name = "PATH")]
+    pub edf: Option<String>,
+
+    /// Additional bind mount (repeatable, format: src:dst[:opts])
+    #[arg(long = "mount", value_name = "SRC:DST[:OPTS]")]
+    pub mounts: Vec<String>,
+
+    /// CDI device spec (repeatable, e.g., nvidia.com/gpu=all)
+    #[arg(long = "device", value_name = "SPEC")]
+    pub devices: Vec<String>,
+
+    /// Defer image resolution to scheduling time
+    #[arg(long)]
+    pub resolve_on_schedule: bool,
 
     /// Task group spec (e.g., 0-99%20)
     #[arg(long)]
@@ -67,12 +87,26 @@ impl SubmitArgs {
         if let Some(ref w) = self.walltime {
             desc.walltime = crate::compat::parse_slurm_time(w);
         }
-        if let Some(ref u) = self.uenv {
-            desc.uenv = Some(u.clone());
+        // Backwards-compat: single uenv → first element; multiple → repeatable
+        if !self.uenvs.is_empty() {
+            desc.uenvs = self.uenvs.clone();
         }
-        if let Some(ref v) = self.view {
-            desc.view = Some(v.clone());
+        if !self.views.is_empty() {
+            desc.views = self.views.clone();
         }
+        if let Some(ref img) = self.image {
+            desc.image = Some(img.clone());
+        }
+        if let Some(ref edf) = self.edf {
+            desc.edf = Some(edf.clone());
+        }
+        if !self.mounts.is_empty() {
+            desc.mounts = self.mounts.clone();
+        }
+        if !self.devices.is_empty() {
+            desc.devices = self.devices.clone();
+        }
+        desc.resolve_on_schedule = self.resolve_on_schedule;
         if let Some(ref tg) = self.task_group {
             desc.task_group = crate::compat::parse_array_spec(tg);
         }
@@ -105,8 +139,13 @@ pub struct SubmitDescription {
     pub entrypoint: Option<String>,
     pub nodes: Option<u32>,
     pub walltime: Option<std::time::Duration>,
-    pub uenv: Option<String>,
-    pub view: Option<String>,
+    pub uenvs: Vec<String>,
+    pub views: Vec<String>,
+    pub image: Option<String>,
+    pub edf: Option<String>,
+    pub mounts: Vec<String>,
+    pub devices: Vec<String>,
+    pub resolve_on_schedule: bool,
     pub task_group: Option<(u32, u32, u32, u32)>,
     pub dependencies: Vec<(String, String)>,
     pub priority_class: Option<u32>,
@@ -128,11 +167,15 @@ impl SubmitDescription {
         if self.entrypoint.is_none() && !directives.entrypoint.is_empty() {
             self.entrypoint = Some(directives.entrypoint.clone());
         }
-        if self.uenv.is_none() {
-            self.uenv = directives.uenv.clone();
+        if self.uenvs.is_empty() {
+            if let Some(ref u) = directives.uenv {
+                self.uenvs = vec![u.clone()];
+            }
         }
-        if self.view.is_none() {
-            self.view = directives.view.clone();
+        if self.views.is_empty() {
+            if let Some(ref v) = directives.view {
+                self.views = vec![v.clone()];
+            }
         }
         if self.task_group.is_none() {
             if let Some(ref a) = directives.array {
@@ -212,8 +255,13 @@ mod tests {
             script: None,
             nodes: Some(4),
             walltime: Some("2:00:00".to_string()),
-            uenv: Some("pytorch:latest".to_string()),
-            view: None,
+            uenvs: vec!["pytorch:latest".to_string()],
+            views: vec![],
+            image: None,
+            edf: None,
+            mounts: vec![],
+            devices: vec![],
+            resolve_on_schedule: false,
             task_group: None,
             depends_on: None,
             priority: Some(8),
@@ -224,7 +272,7 @@ mod tests {
         let desc = args.to_submission(Some("physics"));
         assert_eq!(desc.nodes, Some(4));
         assert_eq!(desc.walltime, Some(std::time::Duration::from_secs(7200)));
-        assert_eq!(desc.uenv.as_deref(), Some("pytorch:latest"));
+        assert_eq!(desc.uenvs, vec!["pytorch:latest"]);
         assert_eq!(desc.tenant.as_deref(), Some("physics"));
         assert_eq!(desc.entrypoint.as_deref(), Some("python train.py"));
         assert_eq!(desc.priority_class, Some(8));
@@ -236,8 +284,13 @@ mod tests {
             script: Some("train.sh".to_string()),
             nodes: None,    // Will come from script
             walltime: None, // Will come from script
-            uenv: None,
-            view: None,
+            uenvs: vec![],
+            views: vec![],
+            image: None,
+            edf: None,
+            mounts: vec![],
+            devices: vec![],
+            resolve_on_schedule: false,
             task_group: None,
             depends_on: None,
             priority: None,
@@ -274,8 +327,13 @@ torchrun --nproc_per_node=4 train.py
             script: Some("train.sh".to_string()),
             nodes: Some(16), // CLI override
             walltime: None,
-            uenv: None,
-            view: None,
+            uenvs: vec![],
+            views: vec![],
+            image: None,
+            edf: None,
+            mounts: vec![],
+            devices: vec![],
+            resolve_on_schedule: false,
             task_group: None,
             depends_on: None,
             priority: None,
@@ -309,8 +367,13 @@ torchrun --nproc_per_node=4 train.py
             script: None,
             nodes: Some(1),
             walltime: None,
-            uenv: None,
-            view: None,
+            uenvs: vec![],
+            views: vec![],
+            image: None,
+            edf: None,
+            mounts: vec![],
+            devices: vec![],
+            resolve_on_schedule: false,
             task_group: Some("0-99%20".to_string()),
             depends_on: None,
             priority: None,
@@ -328,8 +391,13 @@ torchrun --nproc_per_node=4 train.py
             script: None,
             nodes: Some(1),
             walltime: None,
-            uenv: None,
-            view: None,
+            uenvs: vec![],
+            views: vec![],
+            image: None,
+            edf: None,
+            mounts: vec![],
+            devices: vec![],
+            resolve_on_schedule: false,
             task_group: None,
             depends_on: Some("afterok:123,afternotok:456".to_string()),
             priority: None,

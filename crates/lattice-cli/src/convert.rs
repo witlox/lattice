@@ -81,27 +81,55 @@ pub fn node_status_to_info(status: &pb::NodeStatus) -> NodeInfo {
     }
 }
 
+/// Parse a mount spec string "src:dst[:opts]" into a `MountSpecProto`.
+fn parse_mount_spec(s: &str) -> pb::MountSpecProto {
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+    pb::MountSpecProto {
+        source: parts.first().copied().unwrap_or("").to_string(),
+        target: parts.get(1).copied().unwrap_or("").to_string(),
+        options: parts.get(2).copied().unwrap_or("").to_string(),
+    }
+}
+
 /// Build a `SubmitRequest` from a `SubmitDescription`.
 pub fn build_submit_request(
     desc: &crate::commands::submit::SubmitDescription,
     user: &str,
     vcluster: Option<&str>,
 ) -> pb::SubmitRequest {
+    // Build image list: uenv images first, then optional OCI image
+    let mut images: Vec<pb::ImageRefProto> = desc
+        .uenvs
+        .iter()
+        .map(|u| pb::ImageRefProto {
+            spec: u.clone(),
+            image_type: "uenv".to_string(),
+            resolve_on_schedule: desc.resolve_on_schedule,
+            ..Default::default()
+        })
+        .collect();
+
+    if let Some(ref img) = desc.image {
+        images.push(pb::ImageRefProto {
+            spec: img.clone(),
+            image_type: "oci".to_string(),
+            resolve_on_schedule: desc.resolve_on_schedule,
+            ..Default::default()
+        });
+    }
+
+    let env_mounts: Vec<pb::MountSpecProto> =
+        desc.mounts.iter().map(|m| parse_mount_spec(m)).collect();
+
     let spec = pb::AllocationSpec {
         tenant: desc.tenant.clone().unwrap_or_default(),
         project: desc.project.clone().unwrap_or_default(),
         vcluster: vcluster.unwrap_or_default().to_string(),
         entrypoint: desc.entrypoint.clone().unwrap_or_default(),
         environment: Some(pb::EnvironmentSpec {
-            images: desc
-                .uenv
-                .iter()
-                .map(|u| pb::ImageRefProto {
-                    spec: u.clone(),
-                    image_type: "uenv".to_string(),
-                    ..Default::default()
-                })
-                .collect(),
+            images,
+            devices: desc.devices.clone(),
+            env_mounts,
             ..Default::default()
         }),
         resources: Some(pb::ResourceSpec {
@@ -280,7 +308,7 @@ mod tests {
             entrypoint: Some("python train.py".to_string()),
             nodes: Some(4),
             walltime: Some(std::time::Duration::from_secs(7200)),
-            uenv: Some("pytorch:latest".to_string()),
+            uenvs: vec!["pytorch:latest".to_string()],
             priority_class: Some(8),
             ..Default::default()
         };
@@ -297,10 +325,56 @@ mod tests {
                 let env = spec.environment.unwrap();
                 assert_eq!(env.images.len(), 1);
                 assert_eq!(env.images[0].spec, "pytorch:latest");
+                assert_eq!(env.images[0].image_type, "uenv");
                 let lc = spec.lifecycle.unwrap();
                 assert_eq!(lc.preemption_class, 8);
                 assert_eq!(lc.walltime.unwrap().seconds, 7200);
                 assert_eq!(spec.tags.get("user").unwrap(), "alice");
+            }
+            _ => panic!("expected Single submission"),
+        }
+    }
+
+    #[test]
+    fn build_submit_request_with_oci_image() {
+        let desc = SubmitDescription {
+            tenant: Some("ml".to_string()),
+            entrypoint: Some("python train.py".to_string()),
+            nodes: Some(1),
+            image: Some("nvcr.io/nvidia/pytorch:24.01".to_string()),
+            ..Default::default()
+        };
+
+        let req = build_submit_request(&desc, "alice", None);
+        match req.submission {
+            Some(pb::submit_request::Submission::Single(spec)) => {
+                let env = spec.environment.unwrap();
+                assert_eq!(env.images.len(), 1);
+                assert_eq!(env.images[0].spec, "nvcr.io/nvidia/pytorch:24.01");
+                assert_eq!(env.images[0].image_type, "oci");
+            }
+            _ => panic!("expected Single submission"),
+        }
+    }
+
+    #[test]
+    fn build_submit_request_with_mounts() {
+        let desc = SubmitDescription {
+            tenant: Some("ml".to_string()),
+            entrypoint: Some("./run.sh".to_string()),
+            nodes: Some(1),
+            mounts: vec!["/data/input:/mnt/input:ro".to_string()],
+            ..Default::default()
+        };
+
+        let req = build_submit_request(&desc, "alice", None);
+        match req.submission {
+            Some(pb::submit_request::Submission::Single(spec)) => {
+                let env = spec.environment.unwrap();
+                assert_eq!(env.env_mounts.len(), 1);
+                assert_eq!(env.env_mounts[0].source, "/data/input");
+                assert_eq!(env.env_mounts[0].target, "/mnt/input");
+                assert_eq!(env.env_mounts[0].options, "ro");
             }
             _ => panic!("expected Single submission"),
         }

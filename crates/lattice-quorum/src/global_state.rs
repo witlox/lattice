@@ -251,6 +251,11 @@ impl GlobalState {
             Command::ReleaseNetworkDomain { tenant, name } => {
                 self.release_network_domain(tenant, name)
             }
+            Command::ResolveImage {
+                id,
+                image_index,
+                resolved,
+            } => self.resolve_image(id, image_index, resolved),
             Command::CreateSession(session) => self.create_session(session),
             Command::DeleteSession { session_id } => self.delete_session(session_id),
             Command::RecordAudit(entry) => self.record_audit(entry),
@@ -394,6 +399,33 @@ impl GlobalState {
             return CommandResponse::Error(format!("Allocation vanished during assign: {id}"));
         };
         alloc.assigned_nodes = nodes;
+        CommandResponse::Ok
+    }
+
+    fn resolve_image(
+        &mut self,
+        id: AllocId,
+        image_index: usize,
+        resolved: lattice_common::types::ImageRef,
+    ) -> CommandResponse {
+        let Some(alloc) = self.allocations.get_mut(&id) else {
+            return CommandResponse::Error(format!("Allocation not found: {id}"));
+        };
+
+        if image_index >= alloc.environment.images.len() {
+            return CommandResponse::Error(format!(
+                "Image index {image_index} out of bounds (allocation has {} images)",
+                alloc.environment.images.len()
+            ));
+        }
+
+        let img = &mut alloc.environment.images[image_index];
+        img.sha256 = resolved.sha256;
+        img.size_bytes = resolved.size_bytes;
+        img.registry = resolved.registry;
+        img.name = resolved.name;
+        img.version = resolved.version;
+        img.resolve_on_schedule = false;
         CommandResponse::Ok
     }
 
@@ -2025,5 +2057,66 @@ mod tests {
 
         let services = state.list_services();
         assert_eq!(services, vec!["inference-api"]);
+    }
+
+    #[test]
+    fn resolve_image_updates_sha256() {
+        let mut state = GlobalState::new();
+        let alloc = test_allocation("test-tenant");
+        let id = alloc.id;
+        state.apply(Command::SubmitAllocation(alloc));
+
+        // The test allocation has one image by default
+        let resolved = lattice_common::types::ImageRef {
+            spec: "prgenv-gnu/24.11:v1".into(),
+            image_type: lattice_common::types::ImageType::Uenv,
+            registry: "jfrog.cscs.ch/uenv".into(),
+            name: "prgenv-gnu".into(),
+            version: "24.11".into(),
+            sha256: "sha256:abc123def456".into(),
+            size_bytes: 1_000_000,
+            ..Default::default()
+        };
+
+        let resp = state.apply(Command::ResolveImage {
+            id,
+            image_index: 0,
+            resolved,
+        });
+        assert!(matches!(resp, CommandResponse::Ok));
+
+        let updated = &state.allocations[&id].environment.images[0];
+        assert_eq!(updated.sha256, "sha256:abc123def456");
+        assert_eq!(updated.size_bytes, 1_000_000);
+        assert_eq!(updated.registry, "jfrog.cscs.ch/uenv");
+        assert!(!updated.resolve_on_schedule);
+    }
+
+    #[test]
+    fn resolve_image_invalid_index_returns_error() {
+        let mut state = GlobalState::new();
+        let alloc = test_allocation("test-tenant");
+        let id = alloc.id;
+        state.apply(Command::SubmitAllocation(alloc));
+
+        let resolved = lattice_common::types::ImageRef::default();
+        let resp = state.apply(Command::ResolveImage {
+            id,
+            image_index: 99,
+            resolved,
+        });
+        assert!(matches!(resp, CommandResponse::Error(ref e) if e.contains("out of bounds")));
+    }
+
+    #[test]
+    fn resolve_image_nonexistent_allocation_returns_error() {
+        let mut state = GlobalState::new();
+        let resolved = lattice_common::types::ImageRef::default();
+        let resp = state.apply(Command::ResolveImage {
+            id: Uuid::new_v4(),
+            image_index: 0,
+            resolved,
+        });
+        assert!(matches!(resp, CommandResponse::Error(ref e) if e.contains("not found")));
     }
 }

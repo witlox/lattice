@@ -172,12 +172,13 @@ impl SchedulerCommandSink for QuorumCommandSink {
 
     async fn resolve_image(
         &self,
-        _alloc_id: AllocId,
-        _image_index: usize,
-        _resolved: lattice_common::types::ImageRef,
+        alloc_id: AllocId,
+        image_index: usize,
+        resolved: lattice_common::types::ImageRef,
     ) -> Result<(), LatticeError> {
-        // TODO: propose Command::ResolveImage to Raft quorum
-        Ok(())
+        self.quorum
+            .resolve_image(&alloc_id, image_index, resolved)
+            .await
     }
 }
 

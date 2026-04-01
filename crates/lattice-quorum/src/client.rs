@@ -54,6 +54,28 @@ impl QuorumClient {
     pub fn state(&self) -> &Arc<RwLock<GlobalState>> {
         &self.state
     }
+
+    /// Resolve a deferred image reference on an allocation (INV-SD4).
+    pub async fn resolve_image(
+        &self,
+        id: &lattice_common::types::AllocId,
+        image_index: usize,
+        resolved: lattice_common::types::ImageRef,
+    ) -> Result<(), LatticeError> {
+        let resp = self
+            .propose(Command::ResolveImage {
+                id: *id,
+                image_index,
+                resolved,
+            })
+            .await?;
+
+        match resp {
+            CommandResponse::Ok => Ok(()),
+            CommandResponse::Error(e) => Err(LatticeError::Internal(e)),
+            _ => Err(LatticeError::Internal("Unexpected response".into())),
+        }
+    }
 }
 
 #[async_trait::async_trait]
