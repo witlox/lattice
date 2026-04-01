@@ -10,3 +10,5 @@ Pre-commit verification. Run this before every commit claim.
 If ANY step fails, do NOT commit. Fix first, then re-run /project:verify.
 
 Note: Step 2 uses `--all-features` to match CI. This catches type inference issues and feature-gated lint differences that don't surface without all features enabled.
+
+On macOS: `--all-features` fails because `aya` (eBPF) requires Linux libc symbols. Use `--features oidc,federation,accounting,nvidia,rocm` instead (all features except ebpf). Or run without `--all-features` and accept that CI may catch additional issues on Linux.
