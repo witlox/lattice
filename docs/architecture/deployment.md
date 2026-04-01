@@ -372,6 +372,31 @@ For centralized log collection, configure journald to forward to a log aggregato
 
 **Structured logging:** All components emit JSON-formatted logs with fields: `timestamp`, `level`, `component`, `message`, and context-specific fields (e.g., `allocation_id`, `node_id`).
 
+## Test/Dev Deployment (GCP)
+
+For integration testing without bare metal, use the GCP test infrastructure:
+
+```
+infra/gcp/
+├── terraform/main.tf           # 3 quorum + 2 compute + registry + TSDB
+├── packer/lattice-compute.pkr.hcl  # Pre-baked image with podman + squashfs-tools
+scripts/deploy/
+├── make-provision-bundle.sh    # Single tarball: binaries + scripts + systemd units
+├── install-quorum.sh           # Reusable, no GCP-specific logic
+├── install-compute.sh          # Reusable, HMAC token generation
+└── validate.sh                 # Structured test runner (15 tests)
+```
+
+Workflow:
+1. `packer build` — create compute image (once)
+2. `terraform apply` — provision VMs
+3. `make-provision-bundle.sh` — package release
+4. SCP bundle to nodes, `install-quorum.sh` (node 1 with `--bootstrap`), `install-compute.sh`
+5. `validate.sh` — run test matrix
+6. `terraform destroy` — manual cleanup
+
+The deploy scripts are reusable on-prem — no GCP-specific logic in `install-*.sh`.
+
 ## Cross-References
 
 - [system-architecture.md](system-architecture.md) — Seven-layer architecture overview

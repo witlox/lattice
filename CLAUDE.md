@@ -134,6 +134,15 @@ User-facing SDK for agents and notebooks. Wraps REST API with async httpx client
 - OpenCHAMI integration configs and deployment
 - eBPF programs for telemetry collection
 - Telemetry pipeline configuration
+- Docker: development docker-compose stack (3-node quorum + 2 agents + VictoriaMetrics + Grafana)
+- GCP: Terraform + Packer for integration test cluster
+- Systemd: service units + env file templates
+
+### Deploy Scripts (scripts/deploy/)
+- `install-quorum.sh` — install lattice-server on quorum node (reusable on-prem)
+- `install-compute.sh` — install lattice-agent on compute node (reusable on-prem)
+- `make-provision-bundle.sh` — package binaries + scripts + systemd into single tarball
+- `validate.sh` — structured test runner (15 tests: health, auth, submit, drain, restart)
 
 ### Tools (tools/)
 - RM-Replay: Scheduler simulator for testing cost function weights

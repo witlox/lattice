@@ -348,3 +348,34 @@ GPU discovery is automatic at runtime. The agent detects available hardware and 
 | NVIDIA (H100, A100, GH200) | nvml-wrapper (`libnvidia-ml.so` via dlopen) | NVIDIA driver installed |
 | AMD (MI300X, MI250) | rocm-smi CLI | ROCm toolkit installed |
 | CPU-only nodes | No GPU discovery runs | None |
+
+## GCP Test Cluster
+
+For integration testing without production hardware:
+
+```bash
+# 1. Build Packer image (once, ~5 min)
+cd infra/gcp/packer
+packer build -var project_id=YOUR_PROJECT lattice-compute.pkr.hcl
+
+# 2. Provision infrastructure (~2 min)
+cd infra/gcp
+terraform apply -var="project_id=YOUR_PROJECT" -var="use_packer_image=true"
+
+# 3. Build + bundle binaries
+cargo build --release --target x86_64-unknown-linux-gnu
+./scripts/deploy/make-provision-bundle.sh target/x86_64-unknown-linux-gnu/release /tmp/lattice-provision.tar.gz
+
+# 4. Deploy to nodes (SCP bundle + run install scripts)
+# See scripts/deploy/install-quorum.sh and install-compute.sh
+
+# 5. Run validation test matrix
+./scripts/deploy/validate.sh http://QUORUM1_IP:8080 x1000c0s0b0n0,x1000c0s0b0n1
+
+# 6. Teardown
+cd infra/gcp && terraform destroy
+```
+
+The test cluster includes: 3 quorum nodes, 2 compute nodes (with podman + squashfs-tools), 1 OCI registry, 1 VictoriaMetrics. The validate.sh script runs 15 tests covering health, auth, submit, drain, restart, and validation.
+
+Deploy scripts (`scripts/deploy/install-*.sh`) are reusable on-prem — no GCP-specific logic.
