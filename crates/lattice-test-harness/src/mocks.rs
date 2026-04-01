@@ -535,6 +535,56 @@ impl CheckpointBroker for MockCheckpointBroker {
     }
 }
 
+// ─── StubImageResolver ──────────────────────────────────────
+
+/// A configurable stub image resolver for testing.
+/// Takes a map of (spec, image_type) → (ImageRef, ImageMetadata).
+#[derive(Debug, Default)]
+pub struct StubImageResolver {
+    /// Map of spec string → (resolved ImageRef, ImageMetadata).
+    pub entries: Arc<Mutex<HashMap<String, (ImageRef, ImageMetadata)>>>,
+}
+
+impl StubImageResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a resolvable image.
+    pub fn with_image(self, spec: &str, image_ref: ImageRef, metadata: ImageMetadata) -> Self {
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(spec.to_string(), (image_ref, metadata));
+        self
+    }
+}
+
+#[async_trait]
+impl ImageResolver for StubImageResolver {
+    async fn resolve(
+        &self,
+        spec: &str,
+        _image_type: ImageType,
+    ) -> Result<Option<ImageRef>, lattice_common::traits::ImageResolveError> {
+        let entries = self.entries.lock().unwrap();
+        Ok(entries.get(spec).map(|(r, _)| r.clone()))
+    }
+
+    async fn metadata(
+        &self,
+        image: &ImageRef,
+    ) -> Result<ImageMetadata, lattice_common::traits::ImageResolveError> {
+        let entries = self.entries.lock().unwrap();
+        entries
+            .get(&image.spec)
+            .map(|(_, m)| m.clone())
+            .ok_or_else(|| lattice_common::traits::ImageResolveError::NotFound {
+                spec: image.spec.clone(),
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

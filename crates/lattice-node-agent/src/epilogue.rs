@@ -455,6 +455,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
         rt.prepare(&config).await.unwrap();
         rt

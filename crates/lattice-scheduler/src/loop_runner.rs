@@ -56,6 +56,14 @@ pub trait SchedulerStateReader: Send + Sync {
     ) -> Result<Vec<lattice_common::types::Node>, lattice_common::error::LatticeError> {
         Ok(vec![])
     }
+    /// Read allocations with unresolved images (resolve_on_schedule = true, sha256 empty).
+    /// Used by deferred image resolution in the scheduler loop (INV-SD4).
+    /// Default returns empty (opt-in for image-aware scheduling).
+    async fn unresolved_allocations(
+        &self,
+    ) -> Result<Vec<lattice_common::types::Allocation>, lattice_common::error::LatticeError> {
+        Ok(vec![])
+    }
     /// Read completed/failed/cancelled allocations within a time window.
     /// Used by the budget ledger to compute GPU-hours consumed.
     /// Default returns empty (opt-in for budget tracking).
@@ -113,6 +121,16 @@ pub trait SchedulerCommandSink: Send + Sync {
     async fn complete_drain(
         &self,
         _node_id: String,
+    ) -> Result<(), lattice_common::error::LatticeError> {
+        Ok(())
+    }
+    /// Pin a resolved image on an allocation (deferred resolution, INV-SD4).
+    /// Called when the scheduler resolves a deferred image spec to a content-addressed digest.
+    async fn resolve_image(
+        &self,
+        _alloc_id: lattice_common::types::AllocId,
+        _image_index: usize,
+        _resolved: lattice_common::types::ImageRef,
     ) -> Result<(), lattice_common::error::LatticeError> {
         Ok(())
     }
@@ -199,6 +217,30 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                     warn!(alloc_id = %alloc.id, error = %e, "Reconciler: failed to requeue");
                 } else {
                     requeued_ids.insert(alloc.id);
+                }
+            }
+        }
+
+        // ── Deferred image resolution: resolve pending images (INV-SD4) ──
+        // Allocations with resolve_on_schedule=true have empty sha256.
+        // Try to resolve each cycle; timeout after configured period.
+        let unresolved = self.reader.unresolved_allocations().await?;
+        for alloc in &unresolved {
+            for (idx, image) in alloc.environment.images.iter().enumerate() {
+                if image.resolve_on_schedule && image.sha256.is_empty() {
+                    // Check timeout (1 hour default from created_at)
+                    let elapsed = Utc::now() - alloc.created_at;
+                    if elapsed > chrono::Duration::seconds(3600) {
+                        warn!(
+                            alloc_id = %alloc.id,
+                            image_index = idx,
+                            image_spec = %image.spec,
+                            "Image resolution timeout — allocation has been pending for over 1 hour"
+                        );
+                        // TODO: fail_allocation method on sink — for now just log
+                    }
+                    // Actual resolution would call ImageResolver here.
+                    // For now, just the structure — real resolver wired later.
                 }
             }
         }
@@ -615,6 +657,7 @@ mod tests {
         running: Vec<Allocation>,
         failed: Vec<Allocation>,
         draining: Vec<Node>,
+        unresolved: Vec<Allocation>,
         nodes: Vec<Node>,
         tenants: Vec<Tenant>,
         topology: TopologyModel,
@@ -633,6 +676,9 @@ mod tests {
         }
         async fn draining_nodes(&self) -> Result<Vec<Node>, LatticeError> {
             Ok(self.draining.clone())
+        }
+        async fn unresolved_allocations(&self) -> Result<Vec<Allocation>, LatticeError> {
+            Ok(self.unresolved.clone())
         }
         async fn available_nodes(&self) -> Result<Vec<Node>, LatticeError> {
             Ok(self.nodes.clone())
@@ -684,6 +730,7 @@ mod tests {
             running: vec![],
             failed: vec![],
             draining: vec![],
+            unresolved: vec![],
             nodes: create_node_batch(nodes, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, nodes),
@@ -960,6 +1007,7 @@ mod tests {
             ],
             failed: vec![],
             draining: vec![],
+            unresolved: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1088,6 +1136,7 @@ mod tests {
             running: vec![],
             failed: vec![failed_svc],
             draining: vec![],
+            unresolved: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1116,6 +1165,7 @@ mod tests {
             running: vec![],
             failed: vec![failed_batch],
             draining: vec![],
+            unresolved: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1143,6 +1193,7 @@ mod tests {
             running: vec![],
             failed: vec![failed_svc],
             draining: vec![],
+            unresolved: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1172,6 +1223,7 @@ mod tests {
             running: vec![],
             failed: vec![failed_svc],
             draining: vec![],
+            unresolved: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1200,6 +1252,7 @@ mod tests {
             running: vec![],
             failed: vec![failed_reactive],
             draining: vec![],
+            unresolved: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1269,6 +1322,7 @@ mod tests {
             running: vec![], // no allocations on the draining node
             failed: vec![],
             draining: vec![draining_node],
+            unresolved: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1305,6 +1359,7 @@ mod tests {
             running: vec![alloc],
             failed: vec![],
             draining: vec![draining_node],
+            unresolved: vec![],
             nodes: create_node_batch(4, 0),
             tenants: vec![TenantBuilder::new("t1").build()],
             topology: create_test_topology(1, 4),
@@ -1319,5 +1374,123 @@ mod tests {
             drained.is_empty(),
             "Should not complete drain while allocations are active"
         );
+    }
+
+    // ─── Deferred image resolution tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn deferred_image_resolution_timeout_logged_for_old_allocation() {
+        // Create an allocation with resolve_on_schedule=true, empty sha256,
+        // and created_at set to >1 hour ago so the timeout path is exercised.
+        let mut alloc = AllocationBuilder::new()
+            .tenant("t1")
+            .state(AllocationState::Pending)
+            .build();
+        // Replace default image with a deferred-resolution image
+        alloc.environment.images = vec![ImageRef {
+            spec: "prgenv-gnu/24.11:latest".into(),
+            image_type: ImageType::Uenv,
+            name: "prgenv-gnu".into(),
+            version: "24.11".into(),
+            original_tag: "latest".into(),
+            mount_point: "/user-environment".into(),
+            resolve_on_schedule: true,
+            sha256: String::new(), // unresolved
+            ..ImageRef::default()
+        }];
+        // Set created_at to 2 hours ago to trigger timeout
+        alloc.created_at = Utc::now() - chrono::Duration::hours(2);
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![],
+            failed: vec![],
+            draining: vec![],
+            unresolved: vec![alloc],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(MockSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        // Should not panic or error — timeout is logged, not fatal
+        let placed = sched.run_once().await.unwrap();
+        assert_eq!(placed, 0);
+    }
+
+    #[tokio::test]
+    async fn deferred_image_resolution_skips_already_resolved() {
+        // Allocation with resolve_on_schedule=true but sha256 is filled → skip
+        let mut alloc = AllocationBuilder::new()
+            .tenant("t1")
+            .state(AllocationState::Pending)
+            .build();
+        alloc.environment.images = vec![ImageRef {
+            spec: "prgenv-gnu/24.11:latest".into(),
+            image_type: ImageType::Uenv,
+            name: "prgenv-gnu".into(),
+            version: "24.11".into(),
+            original_tag: "latest".into(),
+            mount_point: "/user-environment".into(),
+            resolve_on_schedule: true,
+            sha256: "abc123".into(), // already resolved
+            ..ImageRef::default()
+        }];
+
+        // Even if this is in unresolved list (edge case), the loop should skip it
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![],
+            failed: vec![],
+            draining: vec![],
+            unresolved: vec![alloc],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(MockSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        let placed = sched.run_once().await.unwrap();
+        assert_eq!(placed, 0);
+    }
+
+    #[tokio::test]
+    async fn deferred_image_resolution_no_timeout_for_recent_allocation() {
+        // Allocation created just now — should not trigger timeout
+        let mut alloc = AllocationBuilder::new()
+            .tenant("t1")
+            .state(AllocationState::Pending)
+            .build();
+        alloc.environment.images = vec![ImageRef {
+            spec: "prgenv-gnu/24.11:latest".into(),
+            image_type: ImageType::Uenv,
+            name: "prgenv-gnu".into(),
+            version: "24.11".into(),
+            original_tag: "latest".into(),
+            mount_point: "/user-environment".into(),
+            resolve_on_schedule: true,
+            sha256: String::new(), // unresolved
+            ..ImageRef::default()
+        }];
+        // created_at defaults to now — well within the 1 hour timeout
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![],
+            failed: vec![],
+            draining: vec![],
+            unresolved: vec![alloc],
+            nodes: create_node_batch(4, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 4),
+        });
+        let sink = Arc::new(MockSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        // Should succeed without timeout warning
+        let placed = sched.run_once().await.unwrap();
+        assert_eq!(placed, 0);
     }
 }

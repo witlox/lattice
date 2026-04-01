@@ -133,6 +133,59 @@ pub fn allocation_from_proto(spec: &pb::AllocationSpec, user: &str) -> Result<Al
         ));
     }
 
+    // INV-SD3: Validate mount point non-overlap.
+    // Collect ALL mount targets: image mount_points + environment mounts.
+    {
+        let mut mount_targets: Vec<&str> = environment
+            .images
+            .iter()
+            .filter(|i| !i.mount_point.is_empty())
+            .map(|i| i.mount_point.as_str())
+            .collect();
+        for m in &environment.mounts {
+            if !m.target.is_empty() {
+                mount_targets.push(m.target.as_str());
+            }
+        }
+        if mount_targets.len() > 1 {
+            check_mount_overlap(&mount_targets)
+                .map_err(|e| format!("overlapping mount points: {e}"))?;
+        }
+    }
+
+    // INV-SD5: Sensitive workload image validation.
+    if spec.sensitive || environment.sign_required || environment.scan_required {
+        for img in &environment.images {
+            // sha256 must be non-empty (no deferred resolution for sensitive)
+            if img.sha256.is_empty() && !img.resolve_on_schedule {
+                return Err(format!(
+                    "sensitive allocation requires pinned sha256 for image '{}'",
+                    img.spec
+                ));
+            }
+            if img.sha256.is_empty() && img.resolve_on_schedule {
+                return Err(format!(
+                    "sensitive allocation does not allow deferred resolution for image '{}'",
+                    img.spec
+                ));
+            }
+        }
+        // writable must be false
+        if environment.writable {
+            return Err("sensitive allocation requires writable=false".to_string());
+        }
+        // devices must not contain "gpu=all" — must be specific indices
+        for dev in &environment.devices {
+            if dev.contains("gpu=all") {
+                return Err(format!(
+                    "sensitive allocation requires specific GPU indices, not '{}'; \
+                     use e.g. 'nvidia.com/gpu=0,1'",
+                    dev
+                ));
+            }
+        }
+    }
+
     Ok(Allocation {
         id,
         tenant: spec.tenant.clone(),

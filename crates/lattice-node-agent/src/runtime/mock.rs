@@ -328,6 +328,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         rt.prepare(&config).await.unwrap();
@@ -359,6 +360,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         rt.prepare(&config).await.unwrap();
@@ -396,6 +398,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = rt.prepare(&config).await;
@@ -427,6 +430,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         rt.prepare(&config).await.unwrap();
@@ -456,6 +460,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         rt.prepare(&config).await.unwrap();
@@ -485,6 +490,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         rt.prepare(&config).await.unwrap();
@@ -512,6 +518,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
         let config_b = PrepareConfig {
             alloc_id: alloc_b,
@@ -526,6 +533,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         rt.prepare(&config_a).await.unwrap();
@@ -556,6 +564,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         rt.prepare(&config).await.unwrap();
@@ -591,6 +600,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         rt.prepare(&config).await.unwrap();
@@ -618,6 +628,7 @@ mod tests {
                 scratch_per_node: None,
                 resource_limits: None,
                 images: vec![],
+                env_patches: vec![],
             };
             rt.prepare(&config).await.unwrap();
             let handle = rt.spawn(alloc_id, "python", &[]).await.unwrap();

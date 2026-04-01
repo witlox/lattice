@@ -265,6 +265,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
         rt.prepare(&config).await.unwrap();
         let handle = rt.spawn(alloc_id, "python", &[]).await.unwrap();

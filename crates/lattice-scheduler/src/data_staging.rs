@@ -399,6 +399,47 @@ mod tests {
     }
 
     #[test]
+    fn should_prefetch_with_deferred_images_no_mounts() {
+        // INV-SD9: allocation with deferred-resolution images should be prefetchable
+        let stager = DataStager::new();
+        let mut alloc = AllocationBuilder::new()
+            .state(AllocationState::Pending)
+            .build();
+        // Replace default image with deferred-resolution image
+        alloc.environment.images = vec![lattice_common::types::ImageRef {
+            spec: "prgenv-gnu/24.11:latest".into(),
+            image_type: lattice_common::types::ImageType::Uenv,
+            name: "prgenv-gnu".into(),
+            version: "24.11".into(),
+            original_tag: "latest".into(),
+            mount_point: "/user-environment".into(),
+            resolve_on_schedule: true,
+            sha256: String::new(),
+            ..lattice_common::types::ImageRef::default()
+        }];
+        // No data mounts — should still be prefetchable due to images
+        assert!(alloc.data.mounts.is_empty());
+        assert!(stager.should_prefetch(&alloc));
+    }
+
+    #[test]
+    fn plan_staging_generates_requests_for_images_with_mounts() {
+        // Allocation with both images and data mounts generates staging for mounts
+        let stager = DataStager::new();
+        let mut alloc = AllocationBuilder::new()
+            .state(AllocationState::Pending)
+            .preemption_class(5)
+            .build();
+        add_mount(&mut alloc, "s3://bucket/dataset", "/data/dataset");
+        // Default builder already includes an image
+
+        let plan = stager.plan_staging(&[alloc]);
+        // Mount generates a staging request; image presence ensures prefetch triggers
+        assert_eq!(plan.requests.len(), 1);
+        assert_eq!(plan.requests[0].source, "s3://bucket/dataset");
+    }
+
+    #[test]
     fn should_not_prefetch_failed() {
         let stager = DataStager::new();
         let mut alloc = AllocationBuilder::new()

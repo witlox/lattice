@@ -4,7 +4,8 @@
 //! 1. Check image cache (skip pull on hit)
 //! 2. Pull uenv/OCI image
 //! 3. Prepare runtime environment (mount, create dirs)
-//! 4. Pre-stage data (if configured)
+//! 4. View activation (validate and apply env patches from resolved views)
+//! 5. Pre-stage data (if configured)
 //!
 //! All steps report progress and errors back via the `PrologueReporter` trait.
 
@@ -72,8 +73,9 @@ impl ProloguePipeline {
     /// 2. If miss: record in cache (pull is handled by runtime.prepare())
     /// 3. Create cgroup scope (if resource limits are set)
     /// 4. Call runtime.prepare()
-    /// 5. Configure memory policy
-    /// 6. Pre-stage data mounts via DataStageExecutor
+    /// 5. View activation (validate env patches from resolved views)
+    /// 6. Configure memory policy
+    /// 7. Pre-stage data mounts via DataStageExecutor
     #[allow(clippy::too_many_arguments)]
     pub async fn execute(
         &self,
@@ -159,7 +161,39 @@ impl ProloguePipeline {
             .report_step(alloc_id, "runtime_prepare", "completed")
             .await;
 
-        // Step 4: Configure memory policy (numactl)
+        // Step 4: View activation — apply env patches from resolved views (INV-SD7)
+        if !prepare_config.env_patches.is_empty() {
+            reporter
+                .report_step(alloc_id, "view_activation", "started")
+                .await;
+            // Build the effective environment by starting with env_vars and applying patches.
+            // The patches are stored in prepare_config.env_patches and will be applied
+            // by the runtime at spawn time via apply_env_patches(). Here we validate
+            // that the patches are well-formed (non-empty variable names).
+            let invalid = prepare_config
+                .env_patches
+                .iter()
+                .any(|p| p.variable.is_empty());
+            if invalid {
+                reporter
+                    .report_step(alloc_id, "view_activation", "failed")
+                    .await;
+                return Err(RuntimeError::PrepareFailed {
+                    alloc_id,
+                    reason: "env patch has empty variable name".to_string(),
+                });
+            }
+            tracing::debug!(
+                alloc_id = %alloc_id,
+                patch_count = prepare_config.env_patches.len(),
+                "view activation: env patches validated"
+            );
+            reporter
+                .report_step(alloc_id, "view_activation", "completed")
+                .await;
+        }
+
+        // Step 5: Configure memory policy (numactl)
         if let Some(ref policy) = prepare_config.memory_policy {
             reporter
                 .report_step(alloc_id, "memory_policy", "started")
@@ -185,7 +219,7 @@ impl ProloguePipeline {
             }
         }
 
-        // Step 5: Data staging
+        // Step 6: Data staging
         let data_staged = if !prepare_config.data_mounts.is_empty() {
             reporter
                 .report_step(alloc_id, "data_staging", "started")
@@ -305,6 +339,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         // First run: cache miss
@@ -341,6 +376,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
         let result2 = pipeline
             .execute(
@@ -378,6 +414,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         pipeline
@@ -424,6 +461,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = pipeline
@@ -461,6 +499,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = pipeline
@@ -526,6 +565,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         pipeline
@@ -568,6 +608,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         pipeline
@@ -619,6 +660,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = pipeline
@@ -670,6 +712,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = pipeline
@@ -716,6 +759,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = pipeline
@@ -761,6 +805,7 @@ mod tests {
                 io_max: None,
             }),
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = pipeline
@@ -812,6 +857,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = pipeline
@@ -828,5 +874,160 @@ mod tests {
             .unwrap();
 
         assert!(result.cgroup_handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn prologue_with_env_patches() {
+        use lattice_common::types::{EnvOp, EnvPatch};
+
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+        let (reporter, steps) = RecordingReporter::new();
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("prgenv-gnu/24.11:v1".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
+            resource_limits: None,
+            images: vec![],
+            env_patches: vec![
+                EnvPatch {
+                    variable: "PATH".into(),
+                    op: EnvOp::Prepend,
+                    value: "/opt/cray/bin".into(),
+                    separator: ":".into(),
+                },
+                EnvPatch {
+                    variable: "LD_LIBRARY_PATH".into(),
+                    op: EnvOp::Prepend,
+                    value: "/opt/cray/lib".into(),
+                    separator: ":".into(),
+                },
+            ],
+        };
+
+        let result = pipeline
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &StubCgroupManager,
+                &reporter,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.cache_hit);
+
+        // Verify view_activation step was reported
+        let steps = steps.lock().await;
+        assert!(steps
+            .iter()
+            .any(|(_, step, status)| step == "view_activation" && status == "started"));
+        assert!(steps
+            .iter()
+            .any(|(_, step, status)| step == "view_activation" && status == "completed"));
+    }
+
+    #[tokio::test]
+    async fn prologue_env_patches_empty_variable_fails() {
+        use lattice_common::types::{EnvOp, EnvPatch};
+
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("test-image".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
+            resource_limits: None,
+            images: vec![],
+            env_patches: vec![EnvPatch {
+                variable: String::new(), // invalid: empty variable name
+                op: EnvOp::Set,
+                value: "val".into(),
+                separator: ":".into(),
+            }],
+        };
+
+        let result = pipeline
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &StubCgroupManager,
+                &NoopReporter,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("empty variable name"));
+    }
+
+    #[tokio::test]
+    async fn prologue_no_env_patches_skips_view_activation() {
+        let pipeline = ProloguePipeline::default();
+        let runtime = MockRuntime::new();
+        let mut cache = ImageCache::new(10 * 1024 * 1024 * 1024);
+        let (reporter, steps) = RecordingReporter::new();
+
+        let alloc_id = uuid::Uuid::new_v4();
+        let config = PrepareConfig {
+            alloc_id,
+            uenv: Some("test-image".to_string()),
+            view: None,
+            image: None,
+            workdir: None,
+            env_vars: vec![],
+            memory_policy: None,
+            is_unified_memory: false,
+            data_mounts: vec![],
+            scratch_per_node: None,
+            resource_limits: None,
+            images: vec![],
+            env_patches: vec![],
+        };
+
+        pipeline
+            .execute(
+                alloc_id,
+                &config,
+                &runtime,
+                &mut cache,
+                &NoopDataStageExecutor,
+                &StubCgroupManager,
+                &reporter,
+            )
+            .await
+            .unwrap();
+
+        // view_activation should NOT appear when env_patches is empty
+        let steps = steps.lock().await;
+        assert!(!steps.iter().any(|(_, step, _)| step == "view_activation"));
     }
 }

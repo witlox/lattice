@@ -104,6 +104,22 @@ impl SchedulerStateReader for QuorumStateReader {
         let state = self.quorum.state().read().await;
         state.topology.clone()
     }
+
+    async fn unresolved_allocations(&self) -> Result<Vec<Allocation>, LatticeError> {
+        let state = self.quorum.state().read().await;
+        Ok(state
+            .allocations
+            .values()
+            .filter(|a| {
+                a.state == AllocationState::Pending
+                    && a.environment
+                        .images
+                        .iter()
+                        .any(|img| img.resolve_on_schedule && img.sha256.is_empty())
+            })
+            .cloned()
+            .collect())
+    }
 }
 
 /// Applies scheduling decisions back to the Raft quorum.
@@ -152,6 +168,16 @@ impl SchedulerCommandSink for QuorumCommandSink {
         self.quorum
             .update_node_state(&node_id, NodeState::Drained)
             .await
+    }
+
+    async fn resolve_image(
+        &self,
+        _alloc_id: AllocId,
+        _image_index: usize,
+        _resolved: lattice_common::types::ImageRef,
+    ) -> Result<(), LatticeError> {
+        // TODO: propose Command::ResolveImage to Raft quorum
+        Ok(())
     }
 }
 

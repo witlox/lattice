@@ -2155,4 +2155,197 @@ mod tests {
 
         pty.close(&session).await.unwrap();
     }
+
+    // ── Software delivery validation tests (INV-SD3, INV-SD5) ──
+
+    fn submit_with_env(env: pb::EnvironmentSpec) -> pb::SubmitRequest {
+        pb::SubmitRequest {
+            submission: Some(pb::submit_request::Submission::Single(pb::AllocationSpec {
+                tenant: "physics".to_string(),
+                project: "test".to_string(),
+                entrypoint: "python train.py".to_string(),
+                environment: Some(env),
+                ..Default::default()
+            })),
+        }
+    }
+
+    fn submit_sensitive_with_env(env: pb::EnvironmentSpec) -> pb::SubmitRequest {
+        pb::SubmitRequest {
+            submission: Some(pb::submit_request::Submission::Single(pb::AllocationSpec {
+                tenant: "medical".to_string(),
+                project: "test".to_string(),
+                entrypoint: "python train.py".to_string(),
+                sensitive: true,
+                environment: Some(env),
+                ..Default::default()
+            })),
+        }
+    }
+
+    fn image_ref_proto(spec: &str, mount: &str, sha: &str) -> pb::ImageRefProto {
+        pb::ImageRefProto {
+            spec: spec.to_string(),
+            image_type: "uenv".to_string(),
+            mount_point: mount.to_string(),
+            sha256: sha.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_overlapping_mount_points_rejected() {
+        let state = test_state();
+        let svc = LatticeAllocationService::new(state);
+
+        let env = pb::EnvironmentSpec {
+            images: vec![
+                image_ref_proto("img-a", "/opt", "abc123"),
+                image_ref_proto("img-b", "/opt", "def456"),
+            ],
+            ..Default::default()
+        };
+
+        let result = svc.submit(Request::new(submit_with_env(env))).await;
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            status.message().contains("overlapping mount points"),
+            "expected overlapping mount points error, got: {}",
+            status.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_prefix_shadowing_mount_rejected() {
+        let state = test_state();
+        let svc = LatticeAllocationService::new(state);
+
+        let env = pb::EnvironmentSpec {
+            images: vec![
+                image_ref_proto("img-a", "/opt", "abc123"),
+                image_ref_proto("img-b", "/opt/env", "def456"),
+            ],
+            ..Default::default()
+        };
+
+        let result = svc.submit(Request::new(submit_with_env(env))).await;
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            status.message().contains("overlapping mount points"),
+            "expected overlapping mount points error, got: {}",
+            status.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_sensitive_without_sha256_rejected() {
+        let state = test_state();
+        let svc = LatticeAllocationService::new(state);
+
+        // Image with empty sha256 and resolve_on_schedule=true (deferred)
+        let env = pb::EnvironmentSpec {
+            images: vec![pb::ImageRefProto {
+                spec: "prgenv-gnu/24.11:latest".to_string(),
+                image_type: "uenv".to_string(),
+                mount_point: "/user-environment".to_string(),
+                sha256: String::new(),
+                resolve_on_schedule: true,
+                ..Default::default()
+            }],
+            sign_required: true,
+            ..Default::default()
+        };
+
+        let result = svc
+            .submit(Request::new(submit_sensitive_with_env(env)))
+            .await;
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            status.message().contains("deferred resolution"),
+            "expected deferred resolution error, got: {}",
+            status.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_sensitive_writable_rejected() {
+        let state = test_state();
+        let svc = LatticeAllocationService::new(state);
+
+        let env = pb::EnvironmentSpec {
+            images: vec![image_ref_proto("img-a", "/user-environment", "abc123")],
+            writable: true,
+            sign_required: true,
+            ..Default::default()
+        };
+
+        let result = svc
+            .submit(Request::new(submit_sensitive_with_env(env)))
+            .await;
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            status.message().contains("writable=false"),
+            "expected writable=false error, got: {}",
+            status.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_sensitive_gpu_all_rejected() {
+        let state = test_state();
+        let svc = LatticeAllocationService::new(state);
+
+        let env = pb::EnvironmentSpec {
+            images: vec![image_ref_proto("img-a", "/user-environment", "abc123")],
+            devices: vec!["nvidia.com/gpu=all".to_string()],
+            sign_required: true,
+            ..Default::default()
+        };
+
+        let result = svc
+            .submit(Request::new(submit_sensitive_with_env(env)))
+            .await;
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            status.message().contains("specific GPU indices"),
+            "expected specific GPU indices error, got: {}",
+            status.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_valid_non_overlapping_mounts_accepted() {
+        let state = test_state();
+        let svc = LatticeAllocationService::new(state);
+
+        let env = pb::EnvironmentSpec {
+            images: vec![
+                image_ref_proto("img-a", "/user-environment", "abc123"),
+                image_ref_proto("img-b", "/opt/tools", "def456"),
+            ],
+            env_mounts: vec![pb::MountSpecProto {
+                source: "/data/input".to_string(),
+                target: "/mnt/data".to_string(),
+                options: "ro".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let result = svc.submit(Request::new(submit_with_env(env))).await;
+        assert!(
+            result.is_ok(),
+            "expected success, got: {:?}",
+            result.unwrap_err()
+        );
+    }
 }

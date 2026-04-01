@@ -288,6 +288,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         }
     }
 
@@ -352,6 +353,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
 
         let result = rt.prepare(&config).await;

@@ -11,16 +11,18 @@
 
 pub mod dmtcp;
 pub mod mock;
+pub mod podman;
 pub mod sarus;
 pub mod uenv;
 
 pub use dmtcp::DmtcpRuntime;
 pub use mock::{MockConfig, MockRuntime};
+pub use podman::PodmanRuntime;
 pub use sarus::SarusRuntime;
 pub use uenv::UenvRuntime;
 
 use async_trait::async_trait;
-use lattice_common::types::{AllocId, DataMount, ImageRef};
+use lattice_common::types::{AllocId, DataMount, EnvPatch, ImageRef};
 
 /// Exit status from a runtime process.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +69,8 @@ pub struct PrepareConfig {
     pub resource_limits: Option<hpc_node::ResourceLimits>,
     /// Resolved image references from the new Environment model.
     pub images: Vec<ImageRef>,
+    /// Environment patches from resolved views (applied during view activation).
+    pub env_patches: Vec<EnvPatch>,
 }
 
 /// Handle to a running process managed by a runtime.
@@ -163,6 +167,7 @@ mod tests {
             scratch_per_node: None,
             resource_limits: None,
             images: vec![],
+            env_patches: vec![],
         };
         assert!(config.uenv.is_some());
         assert!(config.image.is_none());
