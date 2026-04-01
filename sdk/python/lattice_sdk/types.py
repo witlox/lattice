@@ -228,6 +228,10 @@ class AllocationSpec:
     user_id: Optional[str] = None
     network_domain: Optional[str] = None
     uenv: Optional[str] = None
+    view: Optional[str] = None
+    image: Optional[str] = None
+    mounts: Optional[List[str]] = None
+    devices: Optional[List[str]] = None
     labels: Optional[Dict[str, str]] = None
     annotations: Optional[Dict[str, str]] = None
 
@@ -250,8 +254,32 @@ class AllocationSpec:
             d["user_id"] = self.user_id
         if self.network_domain is not None:
             d["network_domain"] = self.network_domain
+        # Software delivery: build environment with images
+        environment: Dict[str, Any] = {}
+        images = []
         if self.uenv is not None:
-            d["uenv"] = self.uenv
+            images.append({
+                "spec": self.uenv,
+                "image_type": "uenv",
+                "mount_point": "/user-environment",
+            })
+        if self.image is not None:
+            images.append({
+                "spec": self.image,
+                "image_type": "oci",
+            })
+        if images:
+            environment["images"] = images
+        if self.view is not None:
+            environment["views"] = [self.view]
+        if self.mounts:
+            environment["mounts"] = [
+                _parse_mount(m) for m in self.mounts
+            ]
+        if self.devices:
+            environment["devices"] = self.devices
+        if environment:
+            d["environment"] = environment
         if self.labels:
             d["labels"] = dict(self.labels)
         if self.annotations:
@@ -261,6 +289,25 @@ class AllocationSpec:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AllocationSpec":
         resources = data.get("resources", {})
+        env = data.get("environment", {})
+        images = env.get("images", [])
+        uenv = None
+        view = None
+        image = None
+        for img in images:
+            if img.get("image_type") == "uenv":
+                uenv = img.get("spec")
+            elif img.get("image_type") == "oci":
+                image = img.get("spec")
+        views = env.get("views", [])
+        if views:
+            view = views[0]
+        mounts_raw = env.get("mounts", [])
+        mounts = [f"{m['source']}:{m['target']}:{m.get('options', 'rw')}" for m in mounts_raw] if mounts_raw else None
+        devices = env.get("devices") or None
+        # Backward compat: flat uenv field
+        if uenv is None:
+            uenv = data.get("uenv")
         return cls(
             entrypoint=data["entrypoint"],
             nodes=data.get("nodes", 1),
@@ -273,10 +320,24 @@ class AllocationSpec:
             tenant_id=data.get("tenant_id"),
             user_id=data.get("user_id"),
             network_domain=data.get("network_domain"),
-            uenv=data.get("uenv"),
+            uenv=uenv,
+            view=view,
+            image=image,
+            mounts=mounts,
+            devices=devices,
             labels=data.get("labels"),
             annotations=data.get("annotations"),
         )
+
+
+def _parse_mount(mount_str: str) -> Dict[str, str]:
+    """Parse 'src:dst[:opts]' into {source, target, options}."""
+    parts = mount_str.split(":")
+    return {
+        "source": parts[0] if len(parts) > 0 else "",
+        "target": parts[1] if len(parts) > 1 else "",
+        "options": parts[2] if len(parts) > 2 else "rw",
+    }
 
 
 @dataclass

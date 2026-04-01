@@ -314,3 +314,84 @@ class TestErrorHandling:
         """Cancelling a non-existent allocation returns 404."""
         with pytest.raises((LatticeNotFoundError, LatticeError)):
             await client.cancel("does-not-exist-99999")
+
+
+# ── Software Delivery ──────────────────────────────────────────
+
+
+class TestSoftwareDelivery:
+    """Test software delivery: uenv, containers, image resolution."""
+
+    @pytest.mark.asyncio
+    async def test_submit_with_uenv(self, client: LatticeClient):
+        """Submit allocation with uenv image ref."""
+        spec = AllocationSpec(
+            entrypoint="./my_app",
+            nodes=1,
+            tenant_id="physics",
+            uenv="prgenv-gnu/24.11:v1",
+            view="default",
+        )
+        alloc = await client.submit(spec)
+        assert alloc.id is not None
+
+    @pytest.mark.asyncio
+    async def test_submit_with_container(self, client: LatticeClient):
+        """Submit allocation with OCI container image."""
+        spec = AllocationSpec(
+            entrypoint="python train.py",
+            nodes=1,
+            tenant_id="physics",
+            image="nvcr.io/nvidia/pytorch:24.01-py3",
+        )
+        alloc = await client.submit(spec)
+        assert alloc.id is not None
+
+    @pytest.mark.asyncio
+    async def test_submit_with_mounts(self, client: LatticeClient):
+        """Submit allocation with bind mounts."""
+        spec = AllocationSpec(
+            entrypoint="./app",
+            nodes=1,
+            tenant_id="physics",
+            mounts=["/scratch:/scratch:ro"],
+        )
+        alloc = await client.submit(spec)
+        assert alloc.id is not None
+
+    @pytest.mark.asyncio
+    async def test_submit_with_devices(self, client: LatticeClient):
+        """Submit allocation with CDI device specs."""
+        spec = AllocationSpec(
+            entrypoint="python train.py",
+            nodes=1,
+            tenant_id="physics",
+            image="pytorch:latest",
+            devices=["nvidia.com/gpu=all"],
+        )
+        alloc = await client.submit(spec)
+        assert alloc.id is not None
+
+    @pytest.mark.asyncio
+    async def test_submit_bare_process(self, client: LatticeClient):
+        """Submit allocation with no images — bare process."""
+        spec = AllocationSpec(
+            entrypoint="./my_binary",
+            nodes=1,
+            tenant_id="physics",
+        )
+        alloc = await client.submit(spec)
+        assert alloc.id is not None
+
+    @pytest.mark.asyncio
+    async def test_submit_uenv_and_container(self, client: LatticeClient):
+        """Submit allocation with both uenv and container."""
+        spec = AllocationSpec(
+            entrypoint="./app",
+            nodes=1,
+            tenant_id="physics",
+            uenv="prgenv-gnu/24.11:v1",
+            image="pytorch:latest",
+        )
+        alloc = await client.submit(spec)
+        assert alloc.id is not None

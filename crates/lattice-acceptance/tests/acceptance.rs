@@ -285,6 +285,26 @@ pub struct LatticeWorld {
     pub cgroup_metrics: Option<CgroupMetrics>,
     pub cgroup_result_ok: Option<bool>,
     pub cgroup_is_empty: Option<bool>,
+    // Software delivery
+    pub sd_image_registry: HashMap<String, (ImageRef, ImageMetadata)>,
+    pub sd_env_patches: Vec<EnvPatch>,
+    pub sd_process_env: HashMap<String, String>,
+    pub sd_images: Vec<ImageRef>,
+    pub sd_mounts: Vec<MountSpec>,
+    pub sd_container_spec: Option<ContainerSpec>,
+    pub sd_edf_search_dir: Option<tempfile::TempDir>,
+    pub sd_resolved_devices: Vec<String>,
+    pub sd_resolved_mounts: Vec<String>,
+    pub sd_submit_error: Option<String>,
+    pub sd_podman_container_id: Option<String>,
+    pub sd_podman_container_pid: Option<u32>,
+    pub sd_podman_devices: Vec<String>,
+    pub sd_is_sensitive: bool,
+    pub sd_container_writable: bool,
+    pub sd_f5_scores: HashMap<String, f64>,
+    pub sd_cli_result: Option<String>,
+    pub sd_persisted_container_ids: Vec<String>,
+    pub sd_reattach_result: Option<String>,
 }
 
 impl LatticeWorld {
@@ -416,6 +436,26 @@ impl LatticeWorld {
             cgroup_metrics: None,
             cgroup_result_ok: None,
             cgroup_is_empty: None,
+            // Software delivery
+            sd_image_registry: HashMap::new(),
+            sd_env_patches: Vec::new(),
+            sd_process_env: HashMap::new(),
+            sd_images: Vec::new(),
+            sd_mounts: Vec::new(),
+            sd_container_spec: None,
+            sd_edf_search_dir: None,
+            sd_resolved_devices: Vec::new(),
+            sd_resolved_mounts: Vec::new(),
+            sd_submit_error: None,
+            sd_podman_container_id: None,
+            sd_podman_container_pid: None,
+            sd_podman_devices: Vec::new(),
+            sd_is_sensitive: false,
+            sd_container_writable: false,
+            sd_f5_scores: HashMap::new(),
+            sd_cli_result: None,
+            sd_persisted_container_ids: Vec::new(),
+            sd_reattach_result: None,
         }
     }
 

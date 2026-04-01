@@ -26,6 +26,7 @@ mod rbac;
 mod scheduling;
 mod sensitive;
 mod session;
+mod software_delivery;
 mod streaming;
 mod tenant;
 mod walltime;

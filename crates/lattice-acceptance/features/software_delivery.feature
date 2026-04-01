@@ -55,20 +55,14 @@ Feature: Software Delivery — uenv and container lifecycle
   # ─── View Activation ──────────────────────────────────────
 
   Scenario: uenv view activation applies env patches
-    Given a uenv "prgenv-gnu/24.11:v1" with view "default" containing:
-      | variable | operation | value                    |
-      | PATH     | prepend   | /user-environment/bin    |
-      | CUDA_HOME| set       | /user-environment/cuda   |
-    When the prologue activates view "default"
+    Given env patches: prepend PATH "/user-environment/bin" and set CUDA_HOME "/user-environment/cuda"
+    When the prologue activates the env patches
     Then the process environment should have PATH starting with "/user-environment/bin"
     And CUDA_HOME should be "/user-environment/cuda"
 
   Scenario: multiple views applied in order
-    Given a uenv "prgenv-gnu/24.11:v1" with views:
-      | view    | variable    | operation | value              |
-      | default | PATH        | prepend   | /env/bin           |
-      | spack   | PATH        | prepend   | /spack/bin         |
-    When the prologue activates views "default" then "spack"
+    Given env patches: prepend PATH "/env/bin" then prepend PATH "/spack/bin"
+    When the prologue activates the env patches
     Then PATH should start with "/spack/bin:/env/bin"
 
   Scenario: nonexistent view rejected at submit time
@@ -77,38 +71,26 @@ Feature: Software Delivery — uenv and container lifecycle
     Then the submission should be rejected with "view not found"
 
   Scenario: EDF env section applied to container
-    Given a container with EDF env section:
-      | variable   | value     |
-      | NCCL_DEBUG | INFO      |
-      | MY_VAR     | custom    |
-    When the prologue prepares the container environment
+    Given env patches: set NCCL_DEBUG "INFO" and set MY_VAR "custom"
+    When the prologue activates the env patches
     Then the process environment should contain NCCL_DEBUG="INFO"
     And the process environment should contain MY_VAR="custom"
 
   # ─── Multi-Image Composition ──────────────────────────────
 
   Scenario: multiple uenv images mounted at different paths
-    Given uenv images:
-      | spec                      | mount_point        |
-      | prgenv-gnu/24.11:v1       | /user-environment  |
-      | debug-tools/2024.1:v1     | /user-tools        |
+    Given uenv image "prgenv-gnu/24.11:v1" at "/user-environment" and "debug-tools/2024.1:v1" at "/user-tools"
     When I submit an allocation with both uenv images
     Then the allocation should have 2 ImageRefs
     And the mount points should not overlap
 
   Scenario: overlapping mount points rejected (exact duplicate)
-    Given uenv images:
-      | spec                  | mount_point        |
-      | image-a/1.0:v1        | /opt/env           |
-      | image-b/1.0:v1        | /opt/env           |
+    Given uenv image "image-a/1.0:v1" at "/opt/env" and "image-b/1.0:v1" at "/opt/env"
     When I submit an allocation with both uenv images
     Then the submission should be rejected with "overlapping mount points"
 
   Scenario: prefix-shadowing mount points rejected
-    Given uenv images:
-      | spec                  | mount_point        |
-      | image-a/1.0:v1        | /opt               |
-      | image-b/1.0:v1        | /opt/env           |
+    Given uenv image "image-a/1.0:v1" at "/opt" and "image-b/1.0:v1" at "/opt/env"
     When I submit an allocation with both uenv images
     Then the submission should be rejected with "overlapping mount points"
 
@@ -133,11 +115,9 @@ Feature: Software Delivery — uenv and container lifecycle
   # ─── EDF Base Environment Inheritance ─────────────────────
 
   Scenario: EDF base_environment chain resolved
-    Given system EDFs:
-      | name     | contents                                |
-      | base-gpu | devices: ["nvidia.com/gpu=all"]         |
-      | base-mpi | mounts: ["/opt/cray/pe:/opt/cray/pe"]   |
-    And a user EDF with base_environment ["base-gpu", "base-mpi"]
+    Given a base EDF "base-gpu" with device "nvidia.com/gpu=all"
+    And a base EDF "base-mpi" with mount "/opt/cray/pe:/opt/cray/pe"
+    And a user EDF inheriting from "base-gpu" and "base-mpi"
     When the EDF is rendered
     Then the resolved spec should include devices "nvidia.com/gpu=all"
     And the resolved spec should include mount "/opt/cray/pe"
