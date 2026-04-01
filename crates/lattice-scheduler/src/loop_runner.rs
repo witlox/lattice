@@ -134,6 +134,14 @@ pub trait SchedulerCommandSink: Send + Sync {
     ) -> Result<(), lattice_common::error::LatticeError> {
         Ok(())
     }
+    /// Fail an allocation (e.g., image resolution timeout, unrecoverable error).
+    async fn fail_allocation(
+        &self,
+        _alloc_id: lattice_common::types::AllocId,
+        _reason: String,
+    ) -> Result<(), lattice_common::error::LatticeError> {
+        Ok(())
+    }
     /// Requeue a failed allocation back to Pending (service reconciliation).
     /// F14: expected_requeue_count enables optimistic concurrency.
     async fn requeue(
@@ -237,7 +245,19 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                             image_spec = %image.spec,
                             "Image resolution timeout — allocation has been pending for over 1 hour"
                         );
-                        // TODO: fail_allocation method on sink — for now just log
+                        if let Err(e) = self
+                            .sink
+                            .fail_allocation(
+                                alloc.id,
+                                format!(
+                                    "image resolution timeout: {} unresolved after 1 hour",
+                                    image.spec
+                                ),
+                            )
+                            .await
+                        {
+                            warn!(alloc_id = %alloc.id, error = %e, "Failed to fail allocation");
+                        }
                     }
                     // Actual resolution would call ImageResolver here.
                     // For now, just the structure — real resolver wired later.
@@ -694,6 +714,7 @@ mod tests {
     struct MockSink {
         assigned: Mutex<Vec<(AllocId, Vec<String>)>>,
         running: Mutex<Vec<AllocId>>,
+        failed: Mutex<Vec<(AllocId, String)>>,
         assign_count: AtomicUsize,
     }
 
@@ -702,6 +723,7 @@ mod tests {
             Self {
                 assigned: Mutex::new(Vec::new()),
                 running: Mutex::new(Vec::new()),
+                failed: Mutex::new(Vec::new()),
                 assign_count: AtomicUsize::new(0),
             }
         }
@@ -720,6 +742,14 @@ mod tests {
         }
         async fn set_running(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
             self.running.lock().await.push(alloc_id);
+            Ok(())
+        }
+        async fn fail_allocation(
+            &self,
+            alloc_id: AllocId,
+            reason: String,
+        ) -> Result<(), LatticeError> {
+            self.failed.lock().await.push((alloc_id, reason));
             Ok(())
         }
     }
@@ -1414,9 +1444,17 @@ mod tests {
         let sink = Arc::new(MockSink::new());
         let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
 
-        // Should not panic or error — timeout is logged, not fatal
         let placed = sched.run_once().await.unwrap();
         assert_eq!(placed, 0);
+
+        // Verify fail_allocation was called for the timed-out allocation
+        let failed = sink.failed.lock().await;
+        assert_eq!(failed.len(), 1, "timed-out allocation should be failed");
+        assert!(
+            failed[0].1.contains("image resolution timeout"),
+            "failure reason should mention timeout, got: {}",
+            failed[0].1
+        );
     }
 
     #[tokio::test]

@@ -252,9 +252,19 @@ impl NodeAgent {
 
     /// Replay buffered updates when quorum reconnects.
     async fn flush_buffered(&mut self) {
-        // In a real implementation, each buffered heartbeat would be
-        // replayed to the quorum. For now, we just clear the buffer.
-        self.buffered_updates.clear();
+        // Buffered heartbeats are stale — they contain old allocation counts,
+        // health state, and sequence numbers. On quorum reconnect, the next
+        // heartbeat tick sends fresh data. Replaying old heartbeats would
+        // confuse the quorum with outdated information (INV-E4: sequence).
+        // Correct behavior: drop stale buffer, let the live heartbeat loop
+        // send current state.
+        if !self.buffered_updates.is_empty() {
+            tracing::info!(
+                buffered = self.buffered_updates.len(),
+                "quorum reachable — discarding stale buffered heartbeats"
+            );
+            self.buffered_updates.clear();
+        }
     }
 
     /// Run the agent: spawn the heartbeat loop and listen for commands.

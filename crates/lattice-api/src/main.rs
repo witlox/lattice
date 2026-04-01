@@ -163,6 +163,17 @@ impl SchedulerCommandSink for QuorumCommandSink {
             .await
     }
 
+    async fn fail_allocation(
+        &self,
+        alloc_id: AllocId,
+        _reason: String,
+    ) -> Result<(), LatticeError> {
+        use lattice_common::traits::AllocationStore;
+        self.quorum
+            .update_state(&alloc_id, AllocationState::Failed)
+            .await
+    }
+
     async fn complete_drain(&self, node_id: String) -> Result<(), LatticeError> {
         use lattice_common::traits::NodeRegistry;
         self.quorum
