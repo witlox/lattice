@@ -203,6 +203,21 @@ lattice-node-agent                    SPIRE      Quorum/Journal    Bootstrap
         source: Bootstrap ✓            │              │              │
 ```
 
+## Software Delivery Invariants
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-SD1** Content-addressed pinning | lattice-api | `ImageResolver.resolve()` pins sha256 at submit time; node agent pulls by sha256 | software_delivery.feature |
+| **INV-SD2** View validation | lattice-api | `ImageResolver.metadata()` extracts views; submit rejects unknown view names | software_delivery.feature |
+| **INV-SD3** Mount non-overlap | lattice-api | Prefix containment check on `ImageRef.mount_point` in `allocation_from_proto()` | software_delivery.feature |
+| **INV-SD4** Deferred resolution timeout | lattice-scheduler | `run_once()` checks unresolved images each cycle; timeout from `submitted_at` | software_delivery.feature |
+| **INV-SD5** Sensitive image integrity | lattice-api | Sensitive validation at submit: sign_required, digest ref, writable=false, no gpu=all | software_delivery.feature |
+| **INV-SD6** Single pull for shared store | lattice-scheduler + lattice-node-agent | `DataStager` creates one staging request per image; `ImageStager.is_cached()` checks shared store first | software_delivery.feature |
+| **INV-SD7** Env patch ordering | lattice-node-agent | Prologue iterates `env_patches` in declaration order, no sorting | software_delivery.feature |
+| **INV-SD8** EDF inheritance bounded | lattice-api | Depth counter + visited set during EDF chain resolution; max 10 levels | software_delivery.feature |
+| **INV-SD9** Image staging reuses data mover | lattice-scheduler | `DataStager.should_prefetch()` checks for uncached images alongside data mounts | software_delivery.feature |
+| **INV-SD10** Namespace joining parentage | lattice-node-agent | `PodmanRuntime.spawn()` uses `setns()` then `exec()` — workload is agent-parented | software_delivery.feature |
+
 ## Gaps Identified
 
 1. **ESC-001: GPU HBM wipe** — The epilogue path exists in lattice-node-agent but the GPU memory clear step for sensitive allocations needs verification that it actually calls `nvidia-smi --gpu-reset` / `rocm-smi --resetgpu` before the OpenCHAMI wipe. This is a regulatory compliance requirement (INV-S6).
