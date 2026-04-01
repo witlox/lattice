@@ -428,25 +428,28 @@ impl Runtime for PodmanRuntime {
 
         #[cfg(target_os = "linux")]
         {
-            // Kill workload process
+            // Kill workload process (only real processes, not simulated PIDs)
             if let Some(pid) = state.workload_pid {
                 use libc::{kill, pid_t, SIGKILL, SIGTERM};
-
-                unsafe { kill(pid as pid_t, SIGTERM) };
-                tokio::time::sleep(Duration::from_secs(grace_secs as u64)).await;
-
-                let alive = unsafe { kill(pid as pid_t, 0) } == 0;
-                if alive {
-                    unsafe { kill(pid as pid_t, SIGKILL) };
+                let is_real = unsafe { kill(pid as pid_t, 0) } == 0;
+                if is_real {
+                    unsafe { kill(pid as pid_t, SIGTERM) };
+                    tokio::time::sleep(Duration::from_secs(grace_secs as u64)).await;
+                    let alive = unsafe { kill(pid as pid_t, 0) } == 0;
+                    if alive {
+                        unsafe { kill(pid as pid_t, SIGKILL) };
+                    }
                 }
             }
 
-            // Stop container
+            // Stop container (soft-fail if podman not available)
             if let Some(ref container_id) = state.container_id {
-                let _ = tokio::process::Command::new(&self.config.podman_bin)
-                    .args(["stop", container_id])
-                    .status()
-                    .await;
+                if std::path::Path::new(&self.config.podman_bin).exists() {
+                    let _ = tokio::process::Command::new(&self.config.podman_bin)
+                        .args(["stop", container_id])
+                        .status()
+                        .await;
+                }
             }
         }
 
@@ -469,22 +472,26 @@ impl Runtime for PodmanRuntime {
 
         #[cfg(target_os = "linux")]
         if let Some(pid) = state.workload_pid {
-            use libc::{waitpid, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG};
-            let mut status: i32 = 0;
-            let ret = unsafe { waitpid(pid as i32, &mut status, 0) };
-            if ret < 0 {
-                return Err(RuntimeError::StopFailed {
-                    alloc_id: handle.alloc_id,
-                    reason: format!("waitpid failed: {}", std::io::Error::last_os_error()),
-                });
+            use libc::{kill, pid_t, waitpid, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG};
+            // Only waitpid on real child processes (skip for simulated PIDs)
+            let is_our_child = unsafe { kill(pid as pid_t, 0) } == 0;
+            if is_our_child {
+                let mut status: i32 = 0;
+                let ret = unsafe { waitpid(pid as i32, &mut status, 0) };
+                if ret < 0 {
+                    return Err(RuntimeError::StopFailed {
+                        alloc_id: handle.alloc_id,
+                        reason: format!("waitpid failed: {}", std::io::Error::last_os_error()),
+                    });
+                }
+                if WIFEXITED(status) {
+                    return Ok(ExitStatus::Code(WEXITSTATUS(status)));
+                }
+                if WIFSIGNALED(status) {
+                    return Ok(ExitStatus::Signal(WTERMSIG(status)));
+                }
+                return Ok(ExitStatus::Unknown);
             }
-            if WIFEXITED(status) {
-                return Ok(ExitStatus::Code(WEXITSTATUS(status)));
-            }
-            if WIFSIGNALED(status) {
-                return Ok(ExitStatus::Signal(WTERMSIG(status)));
-            }
-            return Ok(ExitStatus::Unknown);
         }
 
         Ok(ExitStatus::Code(0))
@@ -499,17 +506,21 @@ impl Runtime for PodmanRuntime {
         #[cfg(target_os = "linux")]
         {
             if let Some(ref container_id) = state.container_id {
-                let rm_status = tokio::process::Command::new(&self.config.podman_bin)
-                    .args(["rm", "-f", container_id])
-                    .status()
-                    .await;
-                if let Err(e) = rm_status {
-                    tracing::warn!(
-                        alloc_id = %alloc_id,
-                        container_id = %container_id,
-                        error = %e,
-                        "podman rm failed"
-                    );
+                if !std::path::Path::new(&self.config.podman_bin).exists() {
+                    // No podman — skip cleanup (simulation mode)
+                } else {
+                    let rm_status = tokio::process::Command::new(&self.config.podman_bin)
+                        .args(["rm", "-f", container_id])
+                        .status()
+                        .await;
+                    if let Err(e) = rm_status {
+                        tracing::warn!(
+                            alloc_id = %alloc_id,
+                            container_id = %container_id,
+                            error = %e,
+                            "podman rm failed"
+                        );
+                    }
                 }
             }
         }
