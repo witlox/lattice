@@ -20,6 +20,7 @@ pub mod heartbeat;
 pub mod heartbeat_loop;
 pub mod identity;
 pub mod image_cache;
+pub mod image_stager;
 pub mod liveness;
 pub mod network;
 pub mod pmi2;
@@ -36,6 +37,9 @@ pub mod telemetry;
 pub use agent::NodeAgent;
 pub use attach::{AttachManager, AttachSession};
 pub use heartbeat_loop::{HealthObserver, HeartbeatLoop, HeartbeatSink};
+pub use image_stager::{
+    ImageStageError, ImageStager, LocalImageStager, NoopImageStager, StagedImage,
+};
 pub use pty::{MockPtyBackend, PtyBackend, PtyError, TerminalSize};
 pub use runtime::{
     ExitStatus, MockRuntime, PrepareConfig, ProcessHandle, Runtime, RuntimeError, SarusRuntime,

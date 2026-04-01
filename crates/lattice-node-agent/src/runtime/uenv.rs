@@ -145,6 +145,17 @@ impl Runtime for UenvRuntime {
 
         #[cfg(target_os = "linux")]
         {
+            // Check if squashfs-mount binary exists
+            let bin = &self.config.squashfs_mount_bin;
+            if !std::path::Path::new(bin).exists() {
+                return Err(RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!(
+                        "squashfs-mount binary not found at {bin} — uenv not available on this node"
+                    ),
+                });
+            }
+
             // Create mount point directory
             tokio::fs::create_dir_all(&mount_point).await.map_err(|e| {
                 RuntimeError::PrepareFailed {

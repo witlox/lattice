@@ -155,16 +155,56 @@ impl Runtime for PodmanRuntime {
 
         #[cfg(target_os = "linux")]
         let (container_id, container_pid) = {
-            // 1. Check parallax imagestore (if configured)
-            if let Some(ref parallax_store) = self.config.parallax_imagestore {
-                tracing::debug!(
-                    imagestore = %parallax_store,
-                    image = %image_ref,
-                    "checking parallax shared image store"
-                );
+            // 0. Check podman binary exists
+            let bin = &self.config.podman_bin;
+            if !std::path::Path::new(bin).exists() {
+                return Err(RuntimeError::PrepareFailed {
+                    alloc_id: config.alloc_id,
+                    reason: format!(
+                        "podman binary not found at {bin} — containers not available on this node"
+                    ),
+                });
             }
 
-            // 2. podman pull if needed
+            // 1. Try Parallax shared store first (soft-fail)
+            if let Some(ref store) = self.config.parallax_imagestore {
+                if let Some(ref parallax_bin) = self.config.parallax_bin {
+                    match tokio::process::Command::new(parallax_bin)
+                        .args(["--migrate", image_ref, "--store", store])
+                        .status()
+                        .await
+                    {
+                        Ok(status) if status.success() => {
+                            tracing::info!(
+                                image = %image_ref,
+                                "image migrated to Parallax store"
+                            );
+                        }
+                        Ok(status) => {
+                            tracing::warn!(
+                                image = %image_ref,
+                                code = status.code(),
+                                "Parallax migrate failed, falling back to direct pull"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                image = %image_ref,
+                                error = %e,
+                                "Parallax binary not available, falling back to direct pull"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::debug!(
+                        imagestore = %store,
+                        image = %image_ref,
+                        "Parallax store configured but no parallax_bin set, skipping migration"
+                    );
+                }
+            }
+
+            // 2. podman pull if needed (always falls through — no-op if image already available)
             let pull_status = tokio::process::Command::new(&self.config.podman_bin)
                 .args(["pull", image_ref])
                 .status()

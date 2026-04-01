@@ -121,6 +121,37 @@ pub fn build_submit_request(
     let env_mounts: Vec<pb::MountSpecProto> =
         desc.mounts.iter().map(|m| parse_mount_spec(m)).collect();
 
+    // Build env_patches from EDF env (as Set operations)
+    let env_patches: Vec<pb::EnvPatchProto> = desc
+        .edf_env
+        .iter()
+        .map(|(k, v)| pb::EnvPatchProto {
+            variable: k.clone(),
+            op: "set".to_string(),
+            value: v.clone(),
+            separator: String::new(),
+        })
+        .collect();
+
+    // Build ContainerSpec if EDF provided base_environments or other container fields
+    let container = if !desc.edf_base_environments.is_empty()
+        || desc.edf_workdir.is_some()
+        || desc.edf_writable
+        || !desc.edf_annotations.is_empty()
+    {
+        Some(pb::ContainerSpecProto {
+            base_environments: desc.edf_base_environments.clone(),
+            mounts: desc.mounts.iter().map(|m| parse_mount_spec(m)).collect(),
+            devices: desc.devices.clone(),
+            workdir: desc.edf_workdir.clone().unwrap_or_default(),
+            writable: desc.edf_writable,
+            env: desc.edf_env.clone(),
+            annotations: desc.edf_annotations.clone(),
+        })
+    } else {
+        None
+    };
+
     let spec = pb::AllocationSpec {
         tenant: desc.tenant.clone().unwrap_or_default(),
         project: desc.project.clone().unwrap_or_default(),
@@ -130,6 +161,8 @@ pub fn build_submit_request(
             images,
             devices: desc.devices.clone(),
             env_mounts,
+            env_patches,
+            container,
             ..Default::default()
         }),
         resources: Some(pb::ResourceSpec {
