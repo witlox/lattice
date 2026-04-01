@@ -4,6 +4,7 @@ mod helpers;
 mod allocation;
 mod autoscaling;
 mod backup;
+mod budget_tracking;
 mod cgroup_steps;
 mod checkpoint;
 mod conformance;
