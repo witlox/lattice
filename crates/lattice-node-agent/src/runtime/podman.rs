@@ -159,8 +159,6 @@ impl Runtime for PodmanRuntime {
 
         #[cfg(target_os = "linux")]
         let (container_id, container_pid) = if podman_available {
-            let bin = &self.config.podman_bin;
-
             // 1. Try Parallax shared store first (soft-fail)
             if let Some(ref store) = self.config.parallax_imagestore {
                 if let Some(ref parallax_bin) = self.config.parallax_bin {
