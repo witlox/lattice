@@ -100,12 +100,16 @@ base64 = "0.22"
 # Test cert generation
 rcgen = "0.14"
 
+# Crypto
+sha2 = "0.10"
+
 # Testing
 proptest = "1"
 tokio-test = "0.4"
 cucumber = "0.22"
 wiremock = "0.6"
 tempfile = "3"
+testcontainers = "0.23"
 
 [profile.release]
 lto = true

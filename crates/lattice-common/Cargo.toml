@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared types, configuration, and error handling for Lattice scheduler"
-include = ["src/**/*", "build.rs", "proto/**/*", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**/*", "build.rs", "proto/**/*", "tests/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
 [features]
 default = []
@@ -38,6 +38,8 @@ proptest = { workspace = true }
 tokio-test = { workspace = true }
 tokio = { workspace = true }
 wiremock = { workspace = true }
+sha2 = { workspace = true }
+testcontainers = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
