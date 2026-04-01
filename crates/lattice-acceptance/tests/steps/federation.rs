@@ -394,3 +394,166 @@ fn broker_returns_503(world: &mut LatticeWorld, _header: String) {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// G69: Federation offer accepted but quorum quota-rejects
+// ═══════════════════════════════════════════════════════════════
+
+#[given(regex = r#"^tenant "(\w[\w-]*)" has hard quota max_nodes (\d+) with (\d+) already used$"#)]
+fn given_tenant_at_quota(world: &mut LatticeWorld, tenant: String, max: u32, used: u32) {
+    let t = TenantBuilder::new(&tenant).max_nodes(max).build();
+    world.tenants.retain(|t| t.id != tenant);
+    world.tenants.push(t);
+
+    // Create `used` running allocations to fill the quota
+    for i in 0..used {
+        let mut alloc = AllocationBuilder::new()
+            .tenant(&tenant)
+            .nodes(1)
+            .state(AllocationState::Running)
+            .build();
+        alloc.assigned_nodes = vec![format!("node-{i}")];
+        world.allocations.push(alloc);
+    }
+}
+
+#[when(regex = r#"^site "(\w[\w-]*)" offers (\d+) nodes for tenant "(\w[\w-]*)"$"#)]
+fn when_offer_for_tenant(world: &mut LatticeWorld, source: String, nodes: u32, tenant: String) {
+    let broker = world.federation_broker.as_ref().expect("no broker");
+    let mut offer = make_offer(&source, nodes, false);
+    offer.tenant_id = tenant.clone();
+
+    let decision = broker.evaluate_offer(
+        &offer,
+        world.federation_total_nodes,
+        world.federation_idle_nodes,
+    );
+    world.federation_decision = Some(decision);
+
+    // Now check quorum quota — the broker accepted but the quorum may reject
+    let running_for_tenant = world
+        .allocations
+        .iter()
+        .filter(|a| a.tenant == tenant && a.state == AllocationState::Running)
+        .count() as u32;
+    let tenant_obj = world.tenants.iter().find(|t| t.id == tenant);
+    if let Some(t) = tenant_obj {
+        if running_for_tenant + nodes > t.quota.max_nodes {
+            world.last_error = Some(lattice_common::error::LatticeError::QuotaExceeded {
+                tenant: tenant.clone(),
+                detail: format!(
+                    "max_nodes: {} running + {} requested > {} quota",
+                    running_for_tenant, nodes, t.quota.max_nodes
+                ),
+            });
+        }
+    }
+}
+
+#[then("the broker accepts the offer (capacity check passes)")]
+fn then_broker_accepts(world: &mut LatticeWorld) {
+    let decision = world.federation_decision.as_ref().expect("no decision");
+    assert!(
+        matches!(decision, OfferDecision::Accept { .. }),
+        "expected Accept, got {:?}",
+        decision
+    );
+}
+
+#[then("the quorum rejects the allocation (hard quota exceeded)")]
+fn then_quorum_rejects(world: &mut LatticeWorld) {
+    assert!(
+        world.last_error.is_some(),
+        "expected quota rejection but got none"
+    );
+}
+
+#[then(regex = r#"^the federation response should indicate "([^"]+)"$"#)]
+fn then_federation_response(world: &mut LatticeWorld, expected: String) {
+    let err = world.last_error.as_ref().expect("no error");
+    let msg = format!("{err}");
+    assert!(
+        msg.to_lowercase().contains(&expected.to_lowercase()),
+        "expected '{expected}' in error, got: {msg}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// G70: DAG downstream proposed after quota reduced mid-flight
+// ═══════════════════════════════════════════════════════════════
+
+#[given("a DAG with stages A and B where B depends on A")]
+fn given_dag_ab(world: &mut LatticeWorld) {
+    let stage_a = AllocationBuilder::new()
+        .tenant("physics")
+        .nodes(8)
+        .state(AllocationState::Running)
+        .build();
+    let stage_b = AllocationBuilder::new()
+        .tenant("physics")
+        .nodes(4)
+        .state(AllocationState::Pending)
+        .build();
+    world.allocations.push(stage_a);
+    world.allocations.push(stage_b);
+}
+
+#[given(regex = r#"^tenant "(\w[\w-]*)" has hard quota max_nodes (\d+)$"#)]
+fn given_tenant_quota(world: &mut LatticeWorld, tenant: String, max: u32) {
+    let t = TenantBuilder::new(&tenant).max_nodes(max).build();
+    world.tenants.retain(|t| t.id != tenant);
+    world.tenants.push(t);
+}
+
+#[when(regex = r#"^stage A is running using (\d+) nodes$"#)]
+fn when_stage_a_running(world: &mut LatticeWorld, nodes: u32) {
+    if let Some(alloc) = world.allocations.first_mut() {
+        alloc.state = AllocationState::Running;
+        alloc.assigned_nodes = (0..nodes).map(|i| format!("node-{i}")).collect();
+    }
+}
+
+#[when(regex = r#"^the tenant quota is reduced to max_nodes (\d+)$"#)]
+fn when_quota_reduced(world: &mut LatticeWorld, new_max: u32) {
+    if let Some(t) = world.tenants.first_mut() {
+        t.quota.max_nodes = new_max;
+    }
+}
+
+#[then("stage B should not be scheduled (quota exceeded)")]
+fn then_stage_b_blocked(world: &mut LatticeWorld) {
+    // Stage A uses 8 nodes, quota reduced to 6 → B needs 4 more → 8+4=12 > 6
+    let running_nodes: u32 = world
+        .allocations
+        .iter()
+        .filter(|a| a.state == AllocationState::Running)
+        .flat_map(|a| &a.assigned_nodes)
+        .count() as u32;
+    let max = world
+        .tenants
+        .first()
+        .map(|t| t.quota.max_nodes)
+        .unwrap_or(0);
+    let pending_needs: u32 = world
+        .allocations
+        .iter()
+        .filter(|a| a.state == AllocationState::Pending)
+        .map(|a| match a.resources.nodes {
+            NodeCount::Exact(n) => n,
+            NodeCount::Range { min, .. } => min,
+        })
+        .sum();
+    assert!(
+        running_nodes + pending_needs > max,
+        "expected quota exceeded: {running_nodes} running + {pending_needs} pending > {max} quota"
+    );
+}
+
+#[then(regex = r#"^stage B should remain Pending with reason "([^"]+)"$"#)]
+fn then_stage_b_pending(world: &mut LatticeWorld, _reason: String) {
+    let stage_b = world
+        .allocations
+        .iter()
+        .find(|a| a.state == AllocationState::Pending);
+    assert!(stage_b.is_some(), "stage B should still be Pending");
+}

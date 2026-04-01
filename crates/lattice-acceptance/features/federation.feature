@@ -68,3 +68,22 @@ Feature: Federation
     And the local quorum is undergoing leader election
     When site "site-b" sends an allocation request
     Then the broker returns status 503 with "Retry-After" header
+
+  Scenario: Federation offer accepted but quorum quota-rejects
+    Given a federation broker for site "site-a"
+    And trusted sites "site-b"
+    And 100 total nodes with 20 idle
+    And tenant "physics" has hard quota max_nodes 5 with 5 already used
+    When site "site-b" offers 2 nodes for tenant "physics"
+    Then the broker accepts the offer (capacity check passes)
+    But the quorum rejects the allocation (hard quota exceeded)
+    And the federation response should indicate "quota exceeded"
+
+  Scenario: DAG downstream proposed after quota reduced mid-flight
+    Given a federation broker for site "site-a"
+    And a DAG with stages A and B where B depends on A
+    And tenant "physics" has hard quota max_nodes 10
+    When stage A is running using 8 nodes
+    And the tenant quota is reduced to max_nodes 6
+    Then stage B should not be scheduled (quota exceeded)
+    And stage B should remain Pending with reason "quota_reduced"
