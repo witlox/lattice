@@ -214,8 +214,7 @@ impl Runtime for UenvRuntime {
         #[cfg(target_os = "linux")]
         let pid = {
             // Build environment with env_patches applied
-            let mut env: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
+            let _env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
             // Inherit env_vars from state if stored; env_patches handled here
             // (PrepareConfig.env_patches are applied at spawn time)
             let mount_point = &state.mount_point;
@@ -223,7 +222,7 @@ impl Runtime for UenvRuntime {
             let child = tokio::process::Command::new(&self.config.unshare_bin)
                 .arg("--mount")
                 .arg("nsenter")
-                .arg(&format!("--mount={mount_point}/ns/mnt"))
+                .arg(format!("--mount={mount_point}/ns/mnt"))
                 .arg("--")
                 .arg(entrypoint)
                 .args(args)

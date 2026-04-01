@@ -129,6 +129,7 @@ impl PodmanRuntime {
     }
 
     /// Generate a deterministic container ID for an allocation (for simulation).
+    #[allow(dead_code)] // Used in non-Linux stub path
     fn generate_container_id(alloc_id: &AllocId) -> String {
         format!("podman-{}", &alloc_id.to_string()[..12])
     }
