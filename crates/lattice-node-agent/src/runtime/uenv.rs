@@ -232,11 +232,10 @@ impl Runtime for UenvRuntime {
                     alloc_id,
                     reason: format!("failed to spawn: {e}"),
                 })?;
-            let pid = child.id().ok_or_else(|| RuntimeError::SpawnFailed {
+            child.id().ok_or_else(|| RuntimeError::SpawnFailed {
                 alloc_id,
                 reason: "child process has no PID".to_string(),
-            })?;
-            pid
+            })?
         };
 
         #[cfg(not(target_os = "linux"))]
