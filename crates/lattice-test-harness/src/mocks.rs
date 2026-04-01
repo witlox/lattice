@@ -279,6 +279,7 @@ impl NodeRegistry for MockNodeRegistry {
                     });
                 }
                 node.owner = Some(ownership);
+                node.owner_version += 1;
                 Ok(())
             }
             None => Err(LatticeError::NodeNotFound(id.clone())),
@@ -294,6 +295,7 @@ impl NodeRegistry for MockNodeRegistry {
         match nodes.get_mut(id) {
             Some(node) => {
                 node.owner = None;
+                node.owner_version += 1;
                 Ok(())
             }
             None => Err(LatticeError::NodeNotFound(id.clone())),
@@ -413,6 +415,63 @@ impl AllocationStore for MockAllocationStore {
             .filter(|a| a.tenant == *tenant && a.state == AllocationState::Running)
             .count() as u32;
         Ok(count)
+    }
+}
+
+// ─── ValidatingMockAllocationStore ──────────────────────────
+
+/// A wrapper around `MockAllocationStore` that enforces state transition
+/// validation via `AllocationState::can_transition_to()`.
+///
+/// Use this in tests that need stricter invariant checking. The underlying
+/// `MockAllocationStore` remains available for backward-compatible tests.
+#[derive(Debug, Default)]
+pub struct ValidatingMockAllocationStore {
+    inner: MockAllocationStore,
+}
+
+impl ValidatingMockAllocationStore {
+    pub fn new() -> Self {
+        Self {
+            inner: MockAllocationStore::new(),
+        }
+    }
+
+    pub fn with_allocations(allocs: Vec<Allocation>) -> Self {
+        Self {
+            inner: MockAllocationStore::new().with_allocations(allocs),
+        }
+    }
+}
+
+#[async_trait]
+impl AllocationStore for ValidatingMockAllocationStore {
+    async fn insert(&self, allocation: Allocation) -> Result<(), LatticeError> {
+        self.inner.insert(allocation).await
+    }
+
+    async fn get(&self, id: &AllocId) -> Result<Allocation, LatticeError> {
+        self.inner.get(id).await
+    }
+
+    async fn update_state(&self, id: &AllocId, state: AllocationState) -> Result<(), LatticeError> {
+        // Validate the transition before delegating
+        let current = self.inner.get(id).await?;
+        if !current.state.can_transition_to(&state) {
+            return Err(LatticeError::Internal(format!(
+                "invalid transition from {:?} to {:?}",
+                current.state, state
+            )));
+        }
+        self.inner.update_state(id, state).await
+    }
+
+    async fn list(&self, filter: &AllocationFilter) -> Result<Vec<Allocation>, LatticeError> {
+        self.inner.list(filter).await
+    }
+
+    async fn count_running(&self, tenant: &TenantId) -> Result<u32, LatticeError> {
+        self.inner.count_running(tenant).await
     }
 }
 
@@ -666,6 +725,88 @@ mod tests {
         assert_eq!(log.entry_count(), 1);
         let claims = log.entries_for_action(audit_actions::NODE_CLAIM);
         assert_eq!(claims.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn validating_store_rejects_invalid_transition() {
+        let store = ValidatingMockAllocationStore::new();
+        let alloc = AllocationBuilder::new().build();
+        let id = alloc.id;
+
+        store.insert(alloc).await.unwrap();
+
+        // Pending → Completed is NOT a valid transition (must go through Running first)
+        let result = store.update_state(&id, AllocationState::Completed).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("invalid transition"),
+            "Expected 'invalid transition' error, got: {err}"
+        );
+
+        // Pending → Running IS valid
+        store
+            .update_state(&id, AllocationState::Running)
+            .await
+            .unwrap();
+
+        // Running → Completed IS valid
+        store
+            .update_state(&id, AllocationState::Completed)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn validating_store_delegates_other_methods() {
+        let store = ValidatingMockAllocationStore::new();
+        let alloc = AllocationBuilder::new().build();
+        let id = alloc.id;
+
+        store.insert(alloc).await.unwrap();
+        let retrieved = store.get(&id).await.unwrap();
+        assert_eq!(retrieved.id, id);
+
+        let all = store.list(&AllocationFilter::default()).await.unwrap();
+        assert_eq!(all.len(), 1);
+
+        let count = store.count_running(&"test-tenant".into()).await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn mock_node_registry_claim_increments_owner_version() {
+        let nodes = create_node_batch(1, 0);
+        let registry = MockNodeRegistry::new().with_nodes(nodes);
+
+        // Initial owner_version should be 0
+        let node = registry.get_node(&"x1000c0s0b0n0".into()).await.unwrap();
+        assert_eq!(node.owner_version, 0);
+
+        // Claim increments to 1
+        let ownership = NodeOwnership {
+            tenant: "t1".into(),
+            vcluster: "vc1".into(),
+            allocation: Uuid::new_v4(),
+            claimed_by: Some("user-a".into()),
+            is_borrowed: false,
+        };
+        registry
+            .claim_node(&"x1000c0s0b0n0".into(), ownership)
+            .await
+            .unwrap();
+
+        let node = registry.get_node(&"x1000c0s0b0n0".into()).await.unwrap();
+        assert_eq!(node.owner_version, 1);
+
+        // Release increments to 2
+        registry
+            .release_node(&"x1000c0s0b0n0".into())
+            .await
+            .unwrap();
+
+        let node = registry.get_node(&"x1000c0s0b0n0".into()).await.unwrap();
+        assert_eq!(node.owner_version, 2);
     }
 
     #[tokio::test]

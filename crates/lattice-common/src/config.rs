@@ -714,6 +714,26 @@ telemetry:
     }
 
     #[test]
+    fn default_config_parses_without_error() {
+        let config = LatticeConfig::default();
+        assert!(!config.api.grpc_address.is_empty());
+        assert!(config.quorum.node_id > 0);
+    }
+
+    #[test]
+    fn config_yaml_roundtrip() {
+        let config = LatticeConfig::default();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let parsed: LatticeConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.api.grpc_address, config.api.grpc_address);
+        assert_eq!(parsed.quorum.node_id, config.quorum.node_id);
+        assert_eq!(
+            parsed.quorum.raft_listen_address,
+            config.quorum.raft_listen_address
+        );
+    }
+
+    #[test]
     fn quorum_config_defaults() {
         let cfg = QuorumConfig::default();
         assert_eq!(cfg.node_id, 1);
