@@ -1,0 +1,4 @@
+FROM alpine:3.20
+ENV EXIT_CODE=1
+ENV DELAY_SECONDS=5
+ENTRYPOINT ["sh", "-c", "echo STARTING delay=${DELAY_SECONDS} code=${EXIT_CODE} && sleep ${DELAY_SECONDS} && echo CRASHING code=${EXIT_CODE} && exit ${EXIT_CODE}"]
