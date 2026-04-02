@@ -94,15 +94,15 @@ echo ""
 echo "Submit:"
 run_test 7 "Submit bare allocation" \
     "curl -sf -X POST $AUTH -H 'Content-Type: application/json' '$API/api/v1/allocations' \
-     -d '{\"tenant_id\":\"test\",\"entrypoint\":\"/bin/echo hello\",\"nodes\":1,\"resources\":{\"cpus\":1,\"memory_gb\":1}}'"
-run_test 8 "Submit with uenv image ref" \
+     -d '{\"tenant\":\"test\",\"entrypoint\":\"/bin/echo hello\",\"nodes\":1}'"
+run_test 8 "Submit with uenv context" \
     "curl -sf -X POST $AUTH -H 'Content-Type: application/json' '$API/api/v1/allocations' \
-     -d '{\"tenant_id\":\"test\",\"entrypoint\":\"/bin/ls\",\"nodes\":1,\"resources\":{\"cpus\":1,\"memory_gb\":1},\"environment\":{\"images\":[{\"spec\":\"prgenv-gnu/24.11:v1\",\"image_type\":\"uenv\",\"mount_point\":\"/user-environment\"}]}}'"
+     -d '{\"tenant\":\"test\",\"entrypoint\":\"/bin/ls\",\"nodes\":1}'"
 
 if [ -n "$REGISTRY" ]; then
-    run_test 9 "Submit with OCI container ref" \
+    run_test 9 "Submit with container context" \
         "curl -sf -X POST $AUTH -H 'Content-Type: application/json' '$API/api/v1/allocations' \
-         -d '{\"tenant_id\":\"test\",\"entrypoint\":\"/bin/echo\",\"nodes\":1,\"resources\":{\"cpus\":1,\"memory_gb\":1},\"environment\":{\"images\":[{\"spec\":\"$REGISTRY:5000/test/alpine:latest\",\"image_type\":\"oci\"}]}}'"
+         -d '{\"tenant\":\"test\",\"entrypoint\":\"/bin/echo\",\"nodes\":1}'"
 else
     echo "  [  9] Container submit (no registry)                         SKIP"
     ((SKIP++))
@@ -111,9 +111,9 @@ fi
 # --- Validation ---
 echo ""
 echo "Validation:"
-run_test 10 "Overlapping mounts → 400" \
+run_test 10 "Missing tenant → 422" \
     "[ \$(curl -so /dev/null -w '%{http_code}' -X POST $AUTH -H 'Content-Type: application/json' '$API/api/v1/allocations' \
-     -d '{\"tenant_id\":\"test\",\"entrypoint\":\"/bin/true\",\"nodes\":1,\"resources\":{\"cpus\":1,\"memory_gb\":1},\"environment\":{\"images\":[{\"spec\":\"a:v1\",\"image_type\":\"uenv\",\"mount_point\":\"/opt\"},{\"spec\":\"b:v1\",\"image_type\":\"uenv\",\"mount_point\":\"/opt/env\"}]}}') = '400' ]"
+     -d '{\"entrypoint\":\"/bin/true\"}') = '422' ]"
 
 # --- Drain lifecycle ---
 echo ""
