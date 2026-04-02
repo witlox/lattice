@@ -62,6 +62,7 @@ telemetry:
   default_mode: "prod"
   tsdb_endpoint: ""
   prod_interval_seconds: 30
+  ebpf_programs_path: "/opt/lattice/ebpf"
 EOF
 
 # Generate HMAC token for agents

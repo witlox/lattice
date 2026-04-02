@@ -2,10 +2,9 @@
 # Test 08: Quorum restart without --bootstrap (the crash-loop fix)
 set -euo pipefail
 
-QUORUM_IP=$(cd "$PROJECT_DIR/infra/gcp" 2>/dev/null && terraform output -json quorum_ips | jq -r '.[0]' || echo "$API_URL" | sed 's|http://||;s|:.*||')
-
 echo "Restarting quorum-1 (without --bootstrap)..."
-ssh -o StrictHostKeyChecking=no "lattice@$QUORUM_IP" "sudo systemctl restart lattice-server"
+gcloud compute ssh lattice-test-quorum-1 --zone=europe-west1-b \
+  --command="sudo systemctl restart lattice-server" 2>/dev/null
 
 echo "Waiting for quorum health..."
 for i in {1..30}; do

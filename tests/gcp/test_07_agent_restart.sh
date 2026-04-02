@@ -2,14 +2,13 @@
 # Test 07: Agent restart preserves state and node re-registers
 set -euo pipefail
 
-COMPUTE_IP="${COMPUTE_IPS[0]}"
-
 echo "Checking node is registered..."
 NODES_BEFORE=$(curl -sf -H "Authorization: Bearer $TOKEN" "$API_URL/api/v1/nodes" | jq length)
 echo "Nodes before restart: $NODES_BEFORE"
 
-echo "Restarting agent on $COMPUTE_IP..."
-ssh -o StrictHostKeyChecking=no "lattice@$COMPUTE_IP" "sudo systemctl restart lattice-agent"
+echo "Restarting agent on compute-1..."
+gcloud compute ssh lattice-test-compute-1 --zone=europe-west1-b \
+  --command="sudo systemctl restart lattice-agent" 2>/dev/null
 
 echo "Waiting for re-registration..."
 sleep 10

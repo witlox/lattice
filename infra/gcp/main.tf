@@ -150,6 +150,7 @@ resource "google_compute_instance" "quorum" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.lattice.id
+    network_ip = "10.0.0.${10 + count.index}"
     access_config {} # External IP for SSH
   }
 
