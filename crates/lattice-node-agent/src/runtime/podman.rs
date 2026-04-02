@@ -36,6 +36,8 @@ struct PodmanState {
     workload_pid: Option<u32>,
     /// Whether the container has been stopped.
     stopped: bool,
+    /// Whether this state was created in simulation mode (no real podman).
+    simulated: bool,
 }
 
 /// Configuration for the Podman runtime.
@@ -158,6 +160,9 @@ impl Runtime for PodmanRuntime {
         let podman_available = std::path::Path::new(&self.config.podman_bin).exists();
 
         #[cfg(target_os = "linux")]
+        let simulated = !podman_available;
+
+        #[cfg(target_os = "linux")]
         let (container_id, container_pid) = if podman_available {
             // 1. Try Parallax shared store first (soft-fail)
             if let Some(ref store) = self.config.parallax_imagestore {
@@ -274,6 +279,9 @@ impl Runtime for PodmanRuntime {
         };
 
         #[cfg(not(target_os = "linux"))]
+        let simulated = true;
+
+        #[cfg(not(target_os = "linux"))]
         let (container_id, container_pid) = {
             let _ = &self.config;
             (
@@ -288,6 +296,7 @@ impl Runtime for PodmanRuntime {
             container_pid: Some(container_pid),
             workload_pid: None,
             stopped: false,
+            simulated,
         };
         states.insert(config.alloc_id, state);
 
@@ -313,7 +322,8 @@ impl Runtime for PodmanRuntime {
         }
 
         #[cfg(target_os = "linux")]
-        let nsenter_available = std::path::Path::new(&self.config.nsenter_bin).exists();
+        let nsenter_available =
+            !state.simulated && std::path::Path::new(&self.config.nsenter_bin).exists();
 
         #[cfg(target_os = "linux")]
         let workload_pid = if nsenter_available {

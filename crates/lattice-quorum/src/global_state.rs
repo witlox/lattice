@@ -41,7 +41,7 @@ fn default_audit_retention() -> usize {
 }
 
 fn default_signing_key() -> SigningKey {
-    SigningKey::generate(&mut rand::thread_rng())
+    SigningKey::generate(&mut rand_core::OsRng)
 }
 
 /// The complete cluster state replicated via Raft.
@@ -160,7 +160,7 @@ impl Default for GlobalState {
             vni_pool: VniPool::default(),
             service_registry: HashMap::new(),
             sessions: HashMap::new(),
-            audit_signing_key: SigningKey::generate(&mut rand::thread_rng()),
+            audit_signing_key: SigningKey::generate(&mut rand_core::OsRng),
         }
     }
 }
@@ -743,7 +743,8 @@ impl GlobalState {
         let event_json = serde_json::to_string(&entry.event).unwrap_or_default();
         hasher.update(event_json.as_bytes());
         hasher.update(entry.previous_hash.as_bytes());
-        format!("{:x}", hasher.finalize())
+        let result = hasher.finalize();
+        result.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// Canonical byte representation of an audit entry for signing/verification.
@@ -1362,7 +1363,7 @@ mod tests {
         assert!(!GlobalState::verify_audit_entry(&short_sig, &vk));
 
         // Verify with a different key fails
-        let other_key = SigningKey::generate(&mut rand::thread_rng());
+        let other_key = SigningKey::generate(&mut rand_core::OsRng);
         let other_vk = other_key.verifying_key();
         assert!(!GlobalState::verify_audit_entry(
             &state.audit_log[0],
