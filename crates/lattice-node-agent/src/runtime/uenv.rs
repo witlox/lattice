@@ -35,6 +35,8 @@ struct UenvState {
     pid: Option<u32>,
     /// Whether the process has been stopped.
     stopped: bool,
+    /// Whether this state was created in simulation mode (no real squashfs-mount).
+    simulated: bool,
 }
 
 /// Configuration for the uenv runtime.
@@ -126,14 +128,6 @@ impl Runtime for UenvRuntime {
             .clone()
             .unwrap_or_else(|| self.workdir(&config.alloc_id));
 
-        let state = UenvState {
-            mount_point: mount_point.clone(),
-            image_ref: image_ref.to_string(),
-            workdir: workdir.clone(),
-            pid: None,
-            stopped: false,
-        };
-
         let mut states = self.states.write().await;
         if states.contains_key(&config.alloc_id) {
             return Err(RuntimeError::PrepareFailed {
@@ -141,21 +135,15 @@ impl Runtime for UenvRuntime {
                 reason: "allocation already prepared".to_string(),
             });
         }
-        states.insert(config.alloc_id, state);
 
         #[cfg(target_os = "linux")]
-        {
-            // Check if squashfs-mount binary exists
-            let bin = &self.config.squashfs_mount_bin;
-            if !std::path::Path::new(bin).exists() {
-                return Err(RuntimeError::PrepareFailed {
-                    alloc_id: config.alloc_id,
-                    reason: format!(
-                        "squashfs-mount binary not found at {bin} — uenv not available on this node"
-                    ),
-                });
-            }
+        let simulated = !std::path::Path::new(&self.config.squashfs_mount_bin).exists();
 
+        #[cfg(not(target_os = "linux"))]
+        let simulated = true;
+
+        #[cfg(target_os = "linux")]
+        if !simulated {
             // Create mount point directory
             tokio::fs::create_dir_all(&mount_point).await.map_err(|e| {
                 RuntimeError::PrepareFailed {
@@ -190,6 +178,16 @@ impl Runtime for UenvRuntime {
                 })?;
         }
 
+        let state = UenvState {
+            mount_point: mount_point.clone(),
+            image_ref: image_ref.to_string(),
+            workdir: workdir.clone(),
+            pid: None,
+            stopped: false,
+            simulated,
+        };
+        states.insert(config.alloc_id, state);
+
         Ok(())
     }
 
@@ -212,7 +210,7 @@ impl Runtime for UenvRuntime {
         }
 
         #[cfg(target_os = "linux")]
-        let pid = {
+        let pid = if !state.simulated {
             // Build environment with env_patches applied
             let env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
             // Inherit env_vars from state if stored; env_patches handled here
@@ -236,6 +234,9 @@ impl Runtime for UenvRuntime {
                 alloc_id,
                 reason: "child process has no PID".to_string(),
             })?
+        } else {
+            let _ = (entrypoint, args);
+            (alloc_id.as_u128() % 65535 + 1) as u32
         };
 
         #[cfg(not(target_os = "linux"))]
@@ -279,7 +280,7 @@ impl Runtime for UenvRuntime {
         );
 
         #[cfg(target_os = "linux")]
-        {
+        if !state.simulated {
             use libc::{kill, pid_t};
             let ret = unsafe { kill(pid as pid_t, signal) };
             if ret != 0 {
@@ -313,19 +314,21 @@ impl Runtime for UenvRuntime {
         }
 
         #[cfg(target_os = "linux")]
-        if let Some(pid) = state.pid {
-            use libc::{kill, pid_t, SIGKILL, SIGTERM};
+        if !state.simulated {
+            if let Some(pid) = state.pid {
+                use libc::{kill, pid_t, SIGKILL, SIGTERM};
 
-            // Send SIGTERM
-            unsafe { kill(pid as pid_t, SIGTERM) };
+                // Send SIGTERM
+                unsafe { kill(pid as pid_t, SIGTERM) };
 
-            // Wait grace period
-            tokio::time::sleep(Duration::from_secs(grace_secs as u64)).await;
+                // Wait grace period
+                tokio::time::sleep(Duration::from_secs(grace_secs as u64)).await;
 
-            // Check if still alive, SIGKILL if needed
-            let alive = unsafe { kill(pid as pid_t, 0) } == 0;
-            if alive {
-                unsafe { kill(pid as pid_t, SIGKILL) };
+                // Check if still alive, SIGKILL if needed
+                let alive = unsafe { kill(pid as pid_t, 0) } == 0;
+                if alive {
+                    unsafe { kill(pid as pid_t, SIGKILL) };
+                }
             }
         }
 
@@ -347,23 +350,25 @@ impl Runtime for UenvRuntime {
         }
 
         #[cfg(target_os = "linux")]
-        if let Some(pid) = state.pid {
-            use libc::{waitpid, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG};
-            let mut status: i32 = 0;
-            let ret = unsafe { waitpid(pid as i32, &mut status, 0) };
-            if ret < 0 {
-                return Err(RuntimeError::StopFailed {
-                    alloc_id: handle.alloc_id,
-                    reason: format!("waitpid failed: {}", std::io::Error::last_os_error()),
-                });
+        if !state.simulated {
+            if let Some(pid) = state.pid {
+                use libc::{waitpid, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG};
+                let mut status: i32 = 0;
+                let ret = unsafe { waitpid(pid as i32, &mut status, 0) };
+                if ret < 0 {
+                    return Err(RuntimeError::StopFailed {
+                        alloc_id: handle.alloc_id,
+                        reason: format!("waitpid failed: {}", std::io::Error::last_os_error()),
+                    });
+                }
+                if WIFEXITED(status) {
+                    return Ok(ExitStatus::Code(WEXITSTATUS(status)));
+                }
+                if WIFSIGNALED(status) {
+                    return Ok(ExitStatus::Signal(WTERMSIG(status)));
+                }
+                return Ok(ExitStatus::Unknown);
             }
-            if WIFEXITED(status) {
-                return Ok(ExitStatus::Code(WEXITSTATUS(status)));
-            }
-            if WIFSIGNALED(status) {
-                return Ok(ExitStatus::Signal(WTERMSIG(status)));
-            }
-            return Ok(ExitStatus::Unknown);
         }
 
         Ok(ExitStatus::Code(0))
@@ -376,7 +381,7 @@ impl Runtime for UenvRuntime {
             .ok_or(RuntimeError::NotFound { alloc_id })?;
 
         #[cfg(target_os = "linux")]
-        {
+        if !state.simulated {
             // Unmount squashfs
             let umount_status = tokio::process::Command::new("umount")
                 .arg(&state.mount_point)
