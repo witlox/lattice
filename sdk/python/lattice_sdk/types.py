@@ -193,16 +193,16 @@ class Allocation:
         except ValueError:
             state = AllocationState.PENDING
         return cls(
-            id=data["id"],
+            id=data.get("id", data.get("allocation_id", "")),
             entrypoint=data.get("entrypoint", ""),
             state=state,
             requested_resources=resources,
-            tenant_id=data.get("tenant_id", ""),
+            tenant_id=data.get("tenant_id", data.get("tenant", "")),
             user_id=data.get("user_id", ""),
             priority_class=data.get("priority_class", "normal"),
             network_domain=data.get("network_domain"),
             uenv=data.get("uenv"),
-            nodes_allocated=data.get("nodes_allocated", []),
+            nodes_allocated=data.get("nodes_allocated", data.get("assigned_nodes", [])),
             created_at=_parse_datetime(data.get("created_at")),
             started_at=_parse_datetime(data.get("started_at")),
             completed_at=_parse_datetime(data.get("completed_at")),
@@ -215,129 +215,79 @@ class Allocation:
 
 @dataclass
 class AllocationSpec:
-    """Specification for submitting a new allocation."""
+    """Specification for submitting a new allocation.
+
+    Aligned with the REST API SubmitRequest. For gRPC-only features
+    (mounts, devices, network domains), use the Rust gRPC client.
+    """
     entrypoint: str
+    tenant: str = "default"
     nodes: int = 1
-    cpus: float = 1.0
-    memory_gb: float = 4.0
-    gpus: int = 0
-    gpu_memory_gb: float = 0.0
-    storage_gb: float = 0.0
-    priority_class: str = "normal"
-    tenant_id: Optional[str] = None
-    user_id: Optional[str] = None
-    network_domain: Optional[str] = None
-    uenv: Optional[str] = None
-    view: Optional[str] = None
+    walltime_hours: Optional[float] = None
+    project: Optional[str] = None
+    vcluster: Optional[str] = None
+    # Lifecycle
+    lifecycle: str = "bounded"
+    requeue_policy: str = "never"
+    max_requeue: int = 0
+    # Workload
     image: Optional[str] = None
-    mounts: Optional[List[str]] = None
-    devices: Optional[List[str]] = None
+    sensitive: bool = False
+    # Metadata
     labels: Optional[Dict[str, str]] = None
-    annotations: Optional[Dict[str, str]] = None
+
+    @property
+    def tenant_id(self) -> str:
+        """Deprecated: use tenant instead."""
+        return self.tenant
+
+    @tenant_id.setter
+    def tenant_id(self, value: str) -> None:
+        """Deprecated: use tenant instead."""
+        self.tenant = value
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
+            "tenant": self.tenant,
             "entrypoint": self.entrypoint,
             "nodes": self.nodes,
-            "resources": {
-                "cpus": self.cpus,
-                "memory_gb": self.memory_gb,
-                "gpus": self.gpus,
-                "gpu_memory_gb": self.gpu_memory_gb,
-                "storage_gb": self.storage_gb,
-            },
-            "priority_class": self.priority_class,
         }
-        if self.tenant_id is not None:
-            d["tenant_id"] = self.tenant_id
-        if self.user_id is not None:
-            d["user_id"] = self.user_id
-        if self.network_domain is not None:
-            d["network_domain"] = self.network_domain
-        # Software delivery: build environment with images
-        environment: Dict[str, Any] = {}
-        images = []
-        if self.uenv is not None:
-            images.append({
-                "spec": self.uenv,
-                "image_type": "uenv",
-                "mount_point": "/user-environment",
-            })
+        if self.walltime_hours is not None:
+            d["walltime_hours"] = self.walltime_hours
+        if self.project is not None:
+            d["project"] = self.project
+        if self.vcluster is not None:
+            d["vcluster"] = self.vcluster
+        if self.lifecycle != "bounded":
+            d["lifecycle"] = self.lifecycle
+        if self.requeue_policy != "never":
+            d["requeue_policy"] = self.requeue_policy
+        if self.max_requeue > 0:
+            d["max_requeue"] = self.max_requeue
         if self.image is not None:
-            images.append({
-                "spec": self.image,
-                "image_type": "oci",
-            })
-        if images:
-            environment["images"] = images
-        if self.view is not None:
-            environment["views"] = [self.view]
-        if self.mounts:
-            environment["mounts"] = [
-                _parse_mount(m) for m in self.mounts
-            ]
-        if self.devices:
-            environment["devices"] = self.devices
-        if environment:
-            d["environment"] = environment
+            d["image"] = self.image
+        if self.sensitive:
+            d["sensitive"] = True
         if self.labels:
             d["labels"] = dict(self.labels)
-        if self.annotations:
-            d["annotations"] = dict(self.annotations)
         return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AllocationSpec":
-        resources = data.get("resources", {})
-        env = data.get("environment", {})
-        images = env.get("images", [])
-        uenv = None
-        view = None
-        image = None
-        for img in images:
-            if img.get("image_type") == "uenv":
-                uenv = img.get("spec")
-            elif img.get("image_type") == "oci":
-                image = img.get("spec")
-        views = env.get("views", [])
-        if views:
-            view = views[0]
-        mounts_raw = env.get("mounts", [])
-        mounts = [f"{m['source']}:{m['target']}:{m.get('options', 'rw')}" for m in mounts_raw] if mounts_raw else None
-        devices = env.get("devices") or None
-        # Backward compat: flat uenv field
-        if uenv is None:
-            uenv = data.get("uenv")
         return cls(
             entrypoint=data["entrypoint"],
+            tenant=data.get("tenant", data.get("tenant_id", "default")),
             nodes=data.get("nodes", 1),
-            cpus=float(resources.get("cpus", data.get("cpus", 1.0))),
-            memory_gb=float(resources.get("memory_gb", data.get("memory_gb", 4.0))),
-            gpus=int(resources.get("gpus", data.get("gpus", 0))),
-            gpu_memory_gb=float(resources.get("gpu_memory_gb", data.get("gpu_memory_gb", 0.0))),
-            storage_gb=float(resources.get("storage_gb", data.get("storage_gb", 0.0))),
-            priority_class=data.get("priority_class", "normal"),
-            tenant_id=data.get("tenant_id"),
-            user_id=data.get("user_id"),
-            network_domain=data.get("network_domain"),
-            uenv=uenv,
-            view=view,
-            image=image,
-            mounts=mounts,
-            devices=devices,
+            walltime_hours=data.get("walltime_hours"),
+            project=data.get("project"),
+            vcluster=data.get("vcluster"),
+            lifecycle=data.get("lifecycle", "bounded"),
+            requeue_policy=data.get("requeue_policy", "never"),
+            max_requeue=data.get("max_requeue", 0),
+            image=data.get("image"),
+            sensitive=data.get("sensitive", False),
             labels=data.get("labels"),
-            annotations=data.get("annotations"),
         )
-
-
-def _parse_mount(mount_str: str) -> Dict[str, str]:
-    """Parse 'src:dst[:opts]' into {source, target, options}."""
-    parts = mount_str.split(":")
-    return {
-        "source": parts[0] if len(parts) > 0 else "",
-        "target": parts[1] if len(parts) > 1 else "",
-        "options": parts[2] if len(parts) > 2 else "rw",
-    }
 
 
 @dataclass

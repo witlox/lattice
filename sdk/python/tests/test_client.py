@@ -284,18 +284,16 @@ class TestSubmit:
     @pytest.mark.asyncio
     async def test_submit_success(self, httpx_mock):
         """Test successful allocation submission."""
-        alloc_dict = _sample_allocation_dict()
         httpx_mock.add_response(
             url="http://localhost:8080/api/v1/allocations",
             method="POST",
-            json=alloc_dict,
+            json={"allocation_id": "alloc-001"},
             status_code=201,
         )
         async with LatticeClient() as client:
-            spec = AllocationSpec(entrypoint="python train.py", cpus=4.0, memory_gb=16.0, gpus=1)
-            alloc = await client.submit(spec)
-            assert alloc.id == "alloc-001"
-            assert alloc.state == AllocationState.PENDING
+            spec = AllocationSpec(entrypoint="python train.py", tenant="t1")
+            alloc_id = await client.submit(spec)
+            assert alloc_id == "alloc-001"
 
     @pytest.mark.asyncio
     async def test_submit_auth_error(self, httpx_mock):
@@ -307,7 +305,7 @@ class TestSubmit:
             text="Unauthorized",
         )
         async with LatticeClient() as client:
-            spec = AllocationSpec(entrypoint="echo hello")
+            spec = AllocationSpec(entrypoint="echo hello", tenant="t1")
             with pytest.raises(LatticeAuthError):
                 await client.submit(spec)
 
@@ -321,7 +319,7 @@ class TestSubmit:
             text="Internal Server Error",
         )
         async with LatticeClient() as client:
-            spec = AllocationSpec(entrypoint="echo hello")
+            spec = AllocationSpec(entrypoint="echo hello", tenant="t1")
             with pytest.raises(LatticeError) as exc_info:
                 await client.submit(spec)
             assert exc_info.value.status_code == 500
@@ -1433,91 +1431,69 @@ class TestAllocationSpecSerialization:
     def test_roundtrip(self):
         spec = AllocationSpec(
             entrypoint="python train.py",
+            tenant="t1",
             nodes=4,
-            cpus=16.0,
-            memory_gb=64.0,
-            gpus=2,
-            priority_class="high",
-            tenant_id="t1",
+            walltime_hours=2.0,
             labels={"env": "prod"},
         )
         d = spec.to_dict()
         assert d["entrypoint"] == "python train.py"
+        assert d["tenant"] == "t1"
         assert d["nodes"] == 4
-        assert d["resources"]["cpus"] == 16.0
-        assert d["resources"]["gpus"] == 2
+        assert d["walltime_hours"] == 2.0
         restored = AllocationSpec.from_dict(d)
         assert restored.entrypoint == "python train.py"
         assert restored.nodes == 4
-        assert restored.cpus == 16.0
-        assert restored.gpus == 2
+        assert restored.tenant == "t1"
+        # Deprecated alias still works
         assert restored.tenant_id == "t1"
 
-
-    # ─── G-NEW-6: New field serialization tests ─────────────────
-
-    def test_uenv_with_view_serialization(self):
-        """uenv + view → correct environment.images structure."""
+    def test_lifecycle_fields_roundtrip(self):
+        """Lifecycle, requeue, and image fields serialize correctly."""
         spec = AllocationSpec(
-            entrypoint="./run.sh",
-            uenv="prgenv-gnu/24.11:v1",
-            view="default",
+            entrypoint="./server",
+            tenant="t1",
+            lifecycle="unbounded",
+            requeue_policy="always",
+            max_requeue=5,
+            image="registry:5000/test/app:latest",
+            sensitive=True,
         )
         d = spec.to_dict()
-        env = d["environment"]
-        assert len(env["images"]) == 1
-        assert env["images"][0]["spec"] == "prgenv-gnu/24.11:v1"
-        assert env["images"][0]["image_type"] == "uenv"
-        assert env["images"][0]["mount_point"] == "/user-environment"
-        assert env["views"] == ["default"]
-
-    def test_oci_image_with_devices_serialization(self):
-        """OCI image + devices → correct image + devices."""
-        spec = AllocationSpec(
-            entrypoint="python train.py",
-            image="pytorch:latest",
-            devices=["nvidia.com/gpu=all"],
-        )
-        d = spec.to_dict()
-        env = d["environment"]
-        assert len(env["images"]) == 1
-        assert env["images"][0]["spec"] == "pytorch:latest"
-        assert env["images"][0]["image_type"] == "oci"
-        assert env["devices"] == ["nvidia.com/gpu=all"]
-
-    def test_mounts_serialization(self):
-        """mounts → correct mounts structure with source/target/options."""
-        spec = AllocationSpec(
-            entrypoint="./run.sh",
-            mounts=["/scratch:/scratch:ro"],
-        )
-        d = spec.to_dict()
-        env = d["environment"]
-        assert len(env["mounts"]) == 1
-        assert env["mounts"][0]["source"] == "/scratch"
-        assert env["mounts"][0]["target"] == "/scratch"
-        assert env["mounts"][0]["options"] == "ro"
-
-    def test_uenv_roundtrip(self):
-        """to_dict → from_dict preserves uenv, view, image, devices, mounts."""
-        spec = AllocationSpec(
-            entrypoint="./run.sh",
-            uenv="prgenv-gnu/24.11:v1",
-            view="default",
-            image="pytorch:latest",
-            devices=["nvidia.com/gpu=all"],
-            mounts=["/scratch:/scratch:ro"],
-        )
-        d = spec.to_dict()
+        assert d["lifecycle"] == "unbounded"
+        assert d["requeue_policy"] == "always"
+        assert d["max_requeue"] == 5
+        assert d["image"] == "registry:5000/test/app:latest"
+        assert d["sensitive"] is True
         restored = AllocationSpec.from_dict(d)
-        assert restored.uenv == "prgenv-gnu/24.11:v1"
-        assert restored.view == "default"
-        assert restored.image == "pytorch:latest"
-        assert restored.devices == ["nvidia.com/gpu=all"]
-        assert restored.mounts is not None
-        assert len(restored.mounts) == 1
-        assert "/scratch" in restored.mounts[0]
-        assert "ro" in restored.mounts[0]
+        assert restored.lifecycle == "unbounded"
+        assert restored.requeue_policy == "always"
+        assert restored.max_requeue == 5
+        assert restored.image == "registry:5000/test/app:latest"
+        assert restored.sensitive is True
+
+    def test_defaults_omit_optional_fields(self):
+        """Default values are omitted from serialization."""
+        spec = AllocationSpec(entrypoint="echo hi", tenant="t1")
+        d = spec.to_dict()
+        assert "lifecycle" not in d  # bounded is default, omitted
+        assert "requeue_policy" not in d
+        assert "max_requeue" not in d
+        assert "image" not in d
+        assert "sensitive" not in d
+        assert "labels" not in d
+
+    def test_labels_roundtrip(self):
+        """Labels pass through serialization."""
+        spec = AllocationSpec(
+            entrypoint="echo hi",
+            tenant="t1",
+            labels={"ov-run": "test-123", "ov-test": "my_test"},
+        )
+        d = spec.to_dict()
+        assert d["labels"] == {"ov-run": "test-123", "ov-test": "my_test"}
+        restored = AllocationSpec.from_dict(d)
+        assert restored.labels == {"ov-run": "test-123", "ov-test": "my_test"}
 
 
 class TestAllocationMetricsSerialization:

@@ -180,6 +180,26 @@ pub struct SubmitRequest {
     pub entrypoint: String,
     pub nodes: Option<u32>,
     pub walltime_hours: Option<f64>,
+    /// Lifecycle type: "bounded" (default), "unbounded", "reactive"
+    #[serde(default = "default_lifecycle")]
+    pub lifecycle: String,
+    /// Requeue policy: "never" (default), "on_node_failure", "always"
+    #[serde(default)]
+    pub requeue_policy: String,
+    /// Maximum requeue attempts (0 = unlimited up to cap of 100)
+    #[serde(default)]
+    pub max_requeue: u32,
+    /// OCI container image reference
+    pub image: Option<String>,
+    /// Sensitive workload isolation
+    #[serde(default)]
+    pub sensitive: bool,
+    /// User-defined labels (mapped to allocation tags)
+    pub labels: Option<std::collections::HashMap<String, String>>,
+}
+
+fn default_lifecycle() -> String {
+    "bounded".to_string()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -452,6 +472,73 @@ async fn submit_allocation(
     Json(req): Json<SubmitRequest>,
 ) -> impl IntoResponse {
     use lattice_common::proto::lattice::v1 as pb;
+
+    // Validate lifecycle enum (ADV-OV-1)
+    let lifecycle_type = match req.lifecycle.as_str() {
+        "bounded" => pb::lifecycle_spec::Type::Bounded,
+        "unbounded" => pb::lifecycle_spec::Type::Unbounded,
+        "reactive" => pb::lifecycle_spec::Type::Reactive,
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "invalid lifecycle '{other}': must be bounded, unbounded, or reactive"
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Validate requeue_policy enum (ADV-OV-1)
+    if !req.requeue_policy.is_empty() {
+        match req.requeue_policy.as_str() {
+            "never" | "on_node_failure" | "always" => {}
+            other => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "invalid requeue_policy '{other}': must be never, on_node_failure, or always"
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Build lifecycle spec
+    let lifecycle = match lifecycle_type {
+        pb::lifecycle_spec::Type::Bounded => Some(pb::LifecycleSpec {
+            r#type: pb::lifecycle_spec::Type::Bounded as i32,
+            walltime: Some(prost_types::Duration {
+                seconds: (req.walltime_hours.unwrap_or(1.0) * 3600.0) as i64,
+                nanos: 0,
+            }),
+            ..Default::default()
+        }),
+        pb::lifecycle_spec::Type::Unbounded => Some(pb::LifecycleSpec {
+            r#type: pb::lifecycle_spec::Type::Unbounded as i32,
+            ..Default::default()
+        }),
+        pb::lifecycle_spec::Type::Reactive => Some(pb::LifecycleSpec {
+            r#type: pb::lifecycle_spec::Type::Reactive as i32,
+            ..Default::default()
+        }),
+    };
+
+    // Build environment spec (OCI image)
+    let environment = req.image.map(|img| pb::EnvironmentSpec {
+        images: vec![pb::ImageRefProto {
+            spec: img,
+            image_type: "oci".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+
     let spec = pb::AllocationSpec {
         tenant: req.tenant,
         project: req.project.unwrap_or_default(),
@@ -461,14 +548,12 @@ async fn submit_allocation(
             min_nodes: req.nodes.unwrap_or(1),
             ..Default::default()
         }),
-        lifecycle: Some(pb::LifecycleSpec {
-            r#type: pb::lifecycle_spec::Type::Bounded as i32,
-            walltime: Some(prost_types::Duration {
-                seconds: (req.walltime_hours.unwrap_or(1.0) * 3600.0) as i64,
-                nanos: 0,
-            }),
-            ..Default::default()
-        }),
+        lifecycle,
+        environment,
+        requeue_policy: req.requeue_policy,
+        max_requeue: req.max_requeue,
+        sensitive: req.sensitive,
+        tags: req.labels.unwrap_or_default(),
         ..Default::default()
     };
     let alloc = match convert::allocation_from_proto(&spec, "rest-user") {
@@ -3216,5 +3301,129 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ── REST extension tests (ADV-OV-5) ──────────────────────
+
+    async fn submit_json(state: Arc<ApiState>, body: serde_json::Value) -> (StatusCode, Vec<u8>) {
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/allocations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body.to_vec())
+    }
+
+    #[tokio::test]
+    async fn submit_bounded_default_lifecycle() {
+        let state = test_state();
+        let body = serde_json::json!({"tenant": "t1", "entrypoint": "/bin/echo hi"});
+        let (status, resp) = submit_json(state, body).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let sr: SubmitResponse = serde_json::from_slice(&resp).unwrap();
+        assert!(!sr.allocation_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_unbounded_lifecycle() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "tenant": "t1",
+            "entrypoint": "/bin/server",
+            "lifecycle": "unbounded",
+            "requeue_policy": "always",
+            "max_requeue": 5
+        });
+        let (status, _) = submit_json(state, body).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn submit_invalid_lifecycle_returns_400() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "tenant": "t1",
+            "entrypoint": "/bin/echo",
+            "lifecycle": "invalid"
+        });
+        let (status, resp) = submit_json(state, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let err: String = String::from_utf8(resp).unwrap();
+        assert!(err.contains("invalid lifecycle"));
+    }
+
+    #[tokio::test]
+    async fn submit_invalid_requeue_policy_returns_400() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "tenant": "t1",
+            "entrypoint": "/bin/echo",
+            "requeue_policy": "allways"
+        });
+        let (status, resp) = submit_json(state, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let err: String = String::from_utf8(resp).unwrap();
+        assert!(err.contains("invalid requeue_policy"));
+    }
+
+    #[tokio::test]
+    async fn submit_with_image_creates_allocation() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "tenant": "t1",
+            "entrypoint": "/bin/echo",
+            "image": "registry:5000/test/alpine:latest"
+        });
+        let (status, _) = submit_json(state, body).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn submit_with_labels_creates_allocation() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "tenant": "t1",
+            "entrypoint": "/bin/echo",
+            "labels": {"ov-run": "test-123", "ov-test": "my_test"}
+        });
+        let (status, _) = submit_json(state, body).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn submit_sensitive_creates_allocation() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "tenant": "t1",
+            "entrypoint": "/bin/echo",
+            "sensitive": true
+        });
+        let (status, _) = submit_json(state, body).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn submit_unbounded_ignores_walltime() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "tenant": "t1",
+            "entrypoint": "/bin/server",
+            "lifecycle": "unbounded",
+            "walltime_hours": 999.0
+        });
+        let (status, _) = submit_json(state, body).await;
+        // Should succeed — walltime is ignored for unbounded
+        assert_eq!(status, StatusCode::CREATED);
     }
 }

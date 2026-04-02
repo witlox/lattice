@@ -157,7 +157,7 @@ class LatticeClient:
 
     # ── Allocation Operations ──
 
-    async def submit(self, spec: AllocationSpec) -> Allocation:
+    async def submit(self, spec: AllocationSpec) -> str:
         """
         Submit an allocation (job or service) to Lattice.
 
@@ -165,7 +165,7 @@ class LatticeClient:
             spec: AllocationSpec describing the workload.
 
         Returns:
-            The created Allocation with its assigned ID and initial state.
+            The allocation ID.
 
         Raises:
             LatticeError: On submission failure.
@@ -174,7 +174,8 @@ class LatticeClient:
         client = self._ensure_client()
         response = await client.post("/api/v1/allocations", json=spec.to_dict())
         self._raise_for_status(response)
-        return Allocation.from_dict(response.json())
+        data = response.json()
+        return data.get("allocation_id", data.get("id", ""))
 
     async def status(self, alloc_id: str) -> Allocation:
         """

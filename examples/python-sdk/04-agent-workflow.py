@@ -92,18 +92,13 @@ async def main():
         # Step 1: Submit a training job.
         spec = AllocationSpec(
             entrypoint="python train.py --model resnet50 --epochs 100",
+            tenant="ml-team",
             nodes=4,
-            cpus=64.0,
-            memory_gb=256.0,
-            gpus=4,
-            gpu_memory_gb=80.0,
-            priority_class="normal",
-            tenant_id="ml-team",
-            uenv="pytorch:2.3",
+            walltime_hours=4.0,
+            image="nvcr.io/nvidia/pytorch:24.01-py3",
         )
 
-        alloc = await client.submit(spec)
-        alloc_id = alloc.id
+        alloc_id = await client.submit(spec)
         print(f"Submitted allocation: {alloc_id}")
 
         # Step 2: Wait for the job to start running.
