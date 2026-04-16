@@ -1390,6 +1390,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         })
     }
 
@@ -1411,6 +1412,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         })
     }
 
@@ -2059,6 +2061,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         });
         assert!(state.pty.is_some());
 
@@ -2099,6 +2102,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         });
         let svc = LatticeAllocationService::new(state.clone());
 

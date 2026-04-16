@@ -12,6 +12,7 @@
 pub mod clients;
 pub mod config;
 pub mod error;
+pub mod metrics;
 pub mod proto;
 pub mod registry;
 #[cfg(feature = "scheduler-core")]

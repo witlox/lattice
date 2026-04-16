@@ -2351,6 +2351,7 @@ dependencies = [
  "config",
  "hpc-audit",
  "hpc-scheduler-core",
+ "prometheus",
  "proptest",
  "prost",
  "prost-types",

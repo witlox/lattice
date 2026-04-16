@@ -2470,6 +2470,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         })
     }
 
@@ -2493,6 +2494,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         })
     }
 
@@ -2775,6 +2777,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         });
         let app = router(state);
         let resp = app
@@ -3266,6 +3269,7 @@ mod tests {
                 audience: "lattice-client".to_string(),
                 required_scopes: vec![],
             }),
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         });
         let app = router(state);
         let resp = app

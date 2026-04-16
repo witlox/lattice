@@ -775,8 +775,7 @@ impl GlobalState {
 
         // INV-D12 source-auth: reporting node must be assigned to this allocation.
         if !alloc.assigned_nodes.contains(&node_id) {
-            // TODO(observability): once metrics module is exposed from
-            // lattice-common, emit lattice_completion_report_cross_node_total.
+            lattice_common::metrics::record_cross_node_report(&node_id);
             return CommandResponse::Error(format!(
                 "cross_node_report: {node_id} not in assigned_nodes for {allocation_id}"
             ));
@@ -785,7 +784,10 @@ impl GlobalState {
         // INV-D7 monotonicity: reject phases that regress relative to
         // the current global state.
         if is_phase_regression(&alloc.state, phase) {
-            // TODO(observability): lattice_completion_report_phase_regression_total.
+            lattice_common::metrics::record_phase_regression(
+                &format!("{:?}", alloc.state),
+                &format!("{phase:?}"),
+            );
             return CommandResponse::Error(format!(
                 "phase_regression: allocation {allocation_id} current state {:?} vs reported {:?}",
                 alloc.state, phase
@@ -913,7 +915,7 @@ impl GlobalState {
                 if node.consecutive_dispatch_failures >= MAX_NODE_DISPATCH_FAILURES
                     && matches!(node.state, NodeState::Ready)
                 {
-                    // TODO(observability): lattice_node_degraded_by_dispatch_total.
+                    lattice_common::metrics::record_node_degraded(&node_id);
                     node.state = NodeState::Degraded {
                         reason: "max_node_dispatch_failures".into(),
                     };

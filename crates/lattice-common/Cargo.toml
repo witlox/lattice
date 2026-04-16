@@ -32,6 +32,7 @@ zeroize = { workspace = true }
 base64 = { workspace = true }
 hpc-scheduler-core = { workspace = true, optional = true }
 hpc-audit = { workspace = true }
+prometheus = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

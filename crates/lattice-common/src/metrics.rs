@@ -478,7 +478,7 @@ mod tests {
 
         let families = prometheus::gather();
         for f in &families {
-            let name = f.get_name();
+            let name = f.name();
             // Only check our metrics (skip any from other crates/tests).
             if name.starts_with("lattice_") {
                 assert!(
@@ -490,7 +490,7 @@ mod tests {
         // Make sure we found at least our 13 metrics.
         let lattice_count = families
             .iter()
-            .filter(|f| f.get_name().starts_with("lattice_"))
+            .filter(|f| f.name().starts_with("lattice_"))
             .count();
         assert!(
             lattice_count >= 13,

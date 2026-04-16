@@ -48,6 +48,7 @@ fn e2e_state() -> Arc<ApiState> {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     })
 }
 
@@ -69,6 +70,7 @@ fn e2e_state_with_nodes(nodes: Vec<Node>) -> Arc<ApiState> {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     })
 }
 
@@ -372,6 +374,7 @@ async fn checkpoint_broker_via_api() {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
 
     let svc = LatticeAllocationService::new(state.clone());
@@ -761,6 +764,7 @@ async fn launch_tasks_e2e_with_scheduling() {
         agent_pool: Some(Arc::new(StubNodeAgentPool)),
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
 
     let svc = LatticeAllocationService::new(state.clone());
@@ -940,6 +944,7 @@ async fn drain_endpoint_reports_active_allocation_count() {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
 
     let node_svc = LatticeNodeService::new(state.clone());

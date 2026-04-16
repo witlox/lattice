@@ -123,6 +123,7 @@ fn test_state() -> Arc<ApiState> {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     })
 }
 
@@ -949,6 +950,7 @@ fn rest_test_state() -> Arc<ApiState> {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     })
 }
 
@@ -1412,6 +1414,7 @@ async fn rest_audit_returns_entries() {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
 
     let app = rest::router(state);
@@ -1528,6 +1531,7 @@ fn streaming_test_state() -> Arc<ApiState> {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     })
 }
 
@@ -1549,6 +1553,7 @@ fn streaming_test_state_with_tsdb(tsdb: Arc<MockTsdb>) -> Arc<ApiState> {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     })
 }
 
@@ -1921,6 +1926,7 @@ async fn node_disable_sets_down_state() {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
     let node_svc = LatticeNodeService::new(state.clone());
 
@@ -2205,6 +2211,7 @@ async fn rest_undrain_node() {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
     let node_id = &nodes[0].id;
 
@@ -2264,6 +2271,7 @@ async fn admin_drain_and_node_list_filters_correctly() {
         agent_pool: None,
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
     let node_svc = LatticeNodeService::new(state.clone());
 
@@ -2382,6 +2390,7 @@ async fn launch_tasks_with_agent_pool_succeeds() {
         agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
     let svc = LatticeAllocationService::new(state.clone());
 
@@ -2443,6 +2452,7 @@ async fn launch_tasks_with_agent_pool_no_nodes_fails() {
         agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
     let svc = LatticeAllocationService::new(state.clone());
 
@@ -2494,6 +2504,7 @@ async fn launch_tasks_pmi_mode_pmix() {
         agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
     let svc = LatticeAllocationService::new(state.clone());
 
@@ -2553,6 +2564,7 @@ async fn launch_tasks_with_env_and_args() {
         agent_pool: Some(Arc::new(lattice_api::mpi::StubNodeAgentPool)),
         data_dir: None,
         oidc_config: None,
+        san_validator: lattice_api::state::ApiState::default_dev_san_validator(),
     });
     let svc = LatticeAllocationService::new(state.clone());
 

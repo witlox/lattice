@@ -197,6 +197,10 @@ impl NodeService for LatticeNodeService {
         &self,
         request: Request<pb::RegisterNodeRequest>,
     ) -> Result<Response<pb::RegisterNodeResponse>, Status> {
+        let peer_sans = request
+            .extensions()
+            .get::<crate::middleware::cert_san::PeerCertSans>()
+            .cloned();
         let req = request.into_inner();
 
         // INV-D1: agent_address required + non-trivial validation.
@@ -218,21 +222,27 @@ impl NodeService for LatticeNodeService {
                 reason: "agent_address_invalid".into(),
             }));
         }
-        // INV-D14 (cert-SAN binding): the full enforcement requires a tonic
-        // interceptor to extract the peer workload certificate's SANs at
-        // handshake time and match against `req.agent_address`. That
-        // middleware is a v2 hardening — deferred here because:
-        //  (a) production deployments using SPIRE already bind workload
-        //      identities to SANs at the SPIRE registration entry level,
-        //      providing equivalent guarantees one layer earlier in the
-        //      stack; (b) dev/no-auth mode (used in the OV suite + unit
-        //      tests) has no client cert to extract from. The INV-D14
-        //      body in specs/invariants.md records this deployment
-        //      requirement; administrators must configure SPIRE or equivalent
-        //      for this invariant to hold in production.
-        // TODO(INV-D14-middleware): implement peer-cert SAN extraction in
-        // tonic interceptor; match req.agent_address against cert_sans
-        // before accepting RegisterNode/UpdateNodeAddress.
+        // INV-D14: cert-SAN binding. The `SanValidator` on ApiState decides
+        // based on the deployment mode: AllowAllSanValidator in dev,
+        // BoundToPeerCertSanValidator in production. `peer_sans` is
+        // populated by the tonic TLS connection extractor when mTLS is
+        // active; in dev mode it is None, which AllowAll accepts.
+        if let Err(reason) = self
+            .state
+            .san_validator
+            .validate(&req.agent_address, peer_sans.as_ref())
+        {
+            tracing::warn!(
+                node_id = %req.node_id,
+                addr = %req.agent_address,
+                reason = %reason,
+                "RegisterNode rejected by cert-SAN binding"
+            );
+            return Ok(Response::new(pb::RegisterNodeResponse {
+                success: false,
+                reason,
+            }));
+        }
 
         let node = Node {
             id: req.node_id.clone(),
@@ -291,6 +301,10 @@ impl NodeService for LatticeNodeService {
         &self,
         request: Request<pb::UpdateNodeAddressRequest>,
     ) -> Result<Response<pb::UpdateNodeAddressResponse>, Status> {
+        let peer_sans = request
+            .extensions()
+            .get::<crate::middleware::cert_san::PeerCertSans>()
+            .cloned();
         let req = request.into_inner();
         if req.new_address.trim().is_empty() {
             return Ok(Response::new(pb::UpdateNodeAddressResponse {
@@ -302,6 +316,23 @@ impl NodeService for LatticeNodeService {
             return Ok(Response::new(pb::UpdateNodeAddressResponse {
                 success: false,
                 reason: "agent_address_invalid".into(),
+            }));
+        }
+        // INV-D14 applied to UpdateNodeAddress as well.
+        if let Err(reason) = self
+            .state
+            .san_validator
+            .validate(&req.new_address, peer_sans.as_ref())
+        {
+            tracing::warn!(
+                node_id = %req.node_id,
+                addr = %req.new_address,
+                reason = %reason,
+                "UpdateNodeAddress rejected by cert-SAN binding"
+            );
+            return Ok(Response::new(pb::UpdateNodeAddressResponse {
+                success: false,
+                reason,
             }));
         }
 
@@ -426,6 +457,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         })
     }
 
@@ -534,6 +566,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         });
 
         let svc = LatticeNodeService::new(state.clone());
@@ -582,6 +615,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         })
     }
 
@@ -615,6 +649,95 @@ mod tests {
             .unwrap();
         assert_eq!(got.get_ref().node_id, "x1000c0s0b0n0");
         assert_eq!(got.get_ref().gpu_type, "GH200");
+    }
+
+    /// Build a test ApiState with a custom SanValidator for INV-D14 tests.
+    async fn test_state_with_validator(
+        validator: crate::middleware::cert_san::SharedSanValidator,
+    ) -> Arc<ApiState> {
+        use lattice_common::config::QuorumConfig;
+        let quorum_config = QuorumConfig {
+            node_id: 1,
+            peers: Vec::new(),
+            data_dir: None,
+            ..Default::default()
+        };
+        let (quorum, _raft_handle) = lattice_quorum::create_quorum_from_config(&quorum_config)
+            .await
+            .unwrap();
+        let quorum = Arc::new(quorum);
+        Arc::new(ApiState {
+            allocations: quorum.clone(),
+            nodes: quorum.clone(),
+            audit: quorum.clone(),
+            checkpoint: Arc::new(lattice_test_harness::mocks::MockCheckpointBroker::new()),
+            quorum: Some(quorum.clone()),
+            events: crate::events::new_event_bus(),
+            tsdb: None,
+            storage: None,
+            accounting: None,
+            oidc: None,
+            rate_limiter: None,
+            sovra: None,
+            pty: None,
+            agent_pool: None,
+            data_dir: None,
+            oidc_config: None,
+            san_validator: validator,
+        })
+    }
+
+    #[tokio::test]
+    async fn register_node_rejected_when_address_not_in_cert_sans() {
+        // INV-D14: strict SanValidator rejects RegisterNode when
+        // agent_address is not present in the peer cert SANs.
+        use crate::middleware::cert_san::{bound_validator, PeerCertSans};
+
+        let state = test_state_with_validator(bound_validator(false)).await;
+        let svc = LatticeNodeService::new(state);
+
+        let mut req = Request::new(pb::RegisterNodeRequest {
+            node_id: "x-bad".to_string(),
+            agent_address: "10.99.99.99:50052".to_string(),
+            cpu_cores: 4,
+            memory_gb: 16,
+            ..Default::default()
+        });
+        // Simulate connection extractor having populated SANs at handshake.
+        req.extensions_mut()
+            .insert(PeerCertSans::new(vec!["10.0.0.1".into()]));
+
+        let resp = svc.register_node(req).await.unwrap().into_inner();
+        assert!(!resp.success);
+        assert!(
+            resp.reason.contains("address_not_in_cert_sans"),
+            "got {}",
+            resp.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn register_node_accepted_when_address_in_cert_sans() {
+        // INV-D14 positive path.
+        use crate::middleware::cert_san::{bound_validator, PeerCertSans};
+
+        let state = test_state_with_validator(bound_validator(false)).await;
+        let svc = LatticeNodeService::new(state);
+
+        let mut req = Request::new(pb::RegisterNodeRequest {
+            node_id: "x-good".to_string(),
+            agent_address: "agent.example.com:50052".to_string(),
+            cpu_cores: 4,
+            memory_gb: 16,
+            ..Default::default()
+        });
+        req.extensions_mut().insert(PeerCertSans::new(vec![
+            "10.0.0.2".into(),
+            "agent.example.com".into(),
+        ]));
+
+        let resp = svc.register_node(req).await.unwrap().into_inner();
+        assert!(resp.success, "rejected with: {}", resp.reason);
     }
 
     #[tokio::test]
@@ -737,6 +860,7 @@ mod tests {
             agent_pool: None,
             data_dir: None,
             oidc_config: None,
+            san_validator: crate::state::ApiState::default_dev_san_validator(),
         });
 
         let svc = LatticeNodeService::new(state);

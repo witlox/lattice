@@ -12,6 +12,7 @@ use lattice_common::tsdb_client::TsdbClient;
 use lattice_node_agent::pty::PtyBackend;
 
 use crate::events::EventBus;
+use crate::middleware::cert_san::{default_dev_validator, SharedSanValidator};
 use crate::middleware::oidc::{OidcConfig, OidcValidator};
 use crate::middleware::rate_limit::RateLimiter;
 use crate::mpi::NodeAgentPool;
@@ -48,4 +49,18 @@ pub struct ApiState {
     pub agent_pool: Option<Arc<dyn NodeAgentPool>>,
     /// Optional OIDC configuration for auth discovery endpoint.
     pub oidc_config: Option<OidcConfig>,
+    /// Cert-SAN validator for INV-D14. Dev/test deployments use
+    /// `AllowAllSanValidator`; production with mTLS uses
+    /// `BoundToPeerCertSanValidator`. Always present (never Option)
+    /// so handlers have a validator to call unconditionally.
+    pub san_validator: SharedSanValidator,
+}
+
+impl ApiState {
+    /// Convenience: construct a fresh dev-mode SAN validator. Used by
+    /// existing test harnesses that build `ApiState` struct-literal-style;
+    /// production code injects `bound_validator(false)`.
+    pub fn default_dev_san_validator() -> SharedSanValidator {
+        default_dev_validator()
+    }
 }

@@ -316,12 +316,25 @@ async fn main() -> Result<()> {
         lattice_node_agent::allocation_runner::AllocationManager::new(),
     ));
     let bare_runtime = std::sync::Arc::new(lattice_node_agent::runtime::BareProcessRuntime::new());
+    // Construct uenv + podman runtimes with default configuration. Both
+    // runtimes auto-degrade to simulation mode on non-Linux hosts or when
+    // the required binaries (squashfs-mount / podman) are absent — so they
+    // can be safely wired here even in dev/CI environments that don't have
+    // the full HPC stack installed.
+    let uenv_runtime: std::sync::Arc<dyn lattice_node_agent::runtime::Runtime> =
+        std::sync::Arc::new(lattice_node_agent::runtime::UenvRuntime::new(
+            lattice_node_agent::runtime::uenv::UenvConfig::default(),
+        ));
+    let podman_runtime: std::sync::Arc<dyn lattice_node_agent::runtime::Runtime> =
+        std::sync::Arc::new(lattice_node_agent::runtime::PodmanRuntime::new(
+            lattice_node_agent::runtime::podman::PodmanConfig::default(),
+        ));
     let bridge = lattice_node_agent::grpc_server::DispatchBridge {
         allocations: dispatch_alloc_mgr,
         reports: agent.completion_buffer(),
         bare: bare_runtime,
-        uenv: None,
-        podman: None,
+        uenv: Some(uenv_runtime),
+        podman: Some(podman_runtime),
     };
     let node_agent_server =
         lattice_node_agent::grpc_server::NodeAgentServer::new(args.node_id.clone())

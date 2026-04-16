@@ -322,6 +322,13 @@ pub struct DispatchCtx {
     pub last_visible_nodes: Vec<String>,
     pub alloc_name_to_id: std::collections::HashMap<String, uuid::Uuid>,
     pub state_version_before: u64,
+    pub completion_buffer: lattice_node_agent::allocation_runner::CompletionBuffer,
+    pub cert_sans: Vec<String>,
+    pub san_validation_result: Option<Result<(), String>>,
+    pub ambiguous_alloc: Option<lattice_common::types::Allocation>,
+    pub user_env_vars: Vec<(String, String)>,
+    pub prologue_panic: bool,
+    pub multi_node_ids: Vec<String>,
 }
 
 impl LatticeWorld {

@@ -486,6 +486,15 @@ async fn main() -> Result<()> {
         } else {
             None
         },
+        // INV-D14 cert-SAN binding. Production mTLS deployments should
+        // swap in `bound_validator(false)` which rejects requests whose
+        // `agent_address` is not in the peer cert SANs. Current default
+        // accepts everything (dev/no-TLS mode).
+        san_validator: if config.api.tls_cert.is_some() && config.api.tls_ca.is_some() {
+            lattice_api::middleware::cert_san::bound_validator(false)
+        } else {
+            lattice_api::middleware::cert_san::default_dev_validator()
+        },
     });
 
     let server_config = ServerConfig {

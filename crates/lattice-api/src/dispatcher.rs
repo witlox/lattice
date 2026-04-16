@@ -293,7 +293,17 @@ impl DispatcherHandle {
                 }
             };
             self.mark_in_flight(&alloc.id, node_id).await;
-            match self.attempt_single(alloc, node_id, &addr).await {
+            let outcome = self.attempt_single(alloc, node_id, &addr).await;
+            let result_label = match &outcome {
+                DispatchOutcome::Accepted => "accepted",
+                DispatchOutcome::AcceptedAlreadyRunning => "already_running",
+                DispatchOutcome::TransientFailure(_) => "transient",
+                DispatchOutcome::RefusalBusy(_) => "refusal_busy",
+                DispatchOutcome::RefusalUnsupported(_) => "refusal_unsupported",
+                DispatchOutcome::RefusalMalformed(_) => "refusal_malformed",
+            };
+            lattice_common::metrics::record_dispatch_attempt(node_id, result_label);
+            match outcome {
                 DispatchOutcome::Accepted => return DispatchOutcome::Accepted,
                 DispatchOutcome::AcceptedAlreadyRunning => {
                     return DispatchOutcome::AcceptedAlreadyRunning
@@ -431,7 +441,7 @@ impl DispatcherHandle {
                 .unwrap_or_default()
         };
 
-        // TODO(observability): lattice_dispatch_rollback_total{reason}.
+        lattice_common::metrics::record_dispatch_rollback(&reason);
         match self
             .quorum
             .propose(QuorumCommand::RollbackDispatch {
@@ -462,9 +472,14 @@ impl DispatcherHandle {
             let alloc_id = alloc.id;
             let node = n.clone();
             tokio::spawn(async move {
-                // TODO(observability): lattice_dispatch_rollback_stop_sent_total{result}.
-                if let Err(e) = send_stop_allocation(&qc, &node, alloc_id).await {
-                    warn!(alloc = %alloc_id, node = %node, error = %e, "StopAllocation cleanup failed (non-fatal)");
+                match send_stop_allocation(&qc, &node, alloc_id).await {
+                    Ok(()) => {
+                        lattice_common::metrics::record_rollback_stop_sent("success");
+                    }
+                    Err(e) => {
+                        lattice_common::metrics::record_rollback_stop_sent("failure");
+                        warn!(alloc = %alloc_id, node = %node, error = %e, "StopAllocation cleanup failed (non-fatal)");
+                    }
                 }
             });
         }
@@ -517,9 +532,9 @@ fn map_refusal_reason(code: Option<i32>) -> Option<RefusalReason> {
         Ok(pb::RefusalReason::RefusalUnspecified) => None,
         Err(_) => {
             // D-ADV-ARCH-10: unknown enum code from a newer agent is
-            // treated as MalformedRequest (safe-fail).
-            // TODO(observability): lattice_dispatch_unknown_refusal_reason_total{c}.
-            let _ = c;
+            // treated as MalformedRequest (safe-fail). Counter surfaces
+            // rolling-upgrade skew between agent and lattice-api versions.
+            lattice_common::metrics::record_unknown_refusal_reason(&format!("{c}"));
             None
         }
     }
