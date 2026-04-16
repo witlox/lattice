@@ -65,6 +65,16 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:50052")]
     grpc_addr: String,
 
+    /// Reachable address the control plane should use to call this agent
+    /// (INV-D1). Must resolve from wherever the Dispatcher runs —
+    /// typically a node hostname/FQDN or container-network IP, never
+    /// `0.0.0.0`. Defaults to `grpc_addr` when its host is already
+    /// routable; otherwise this flag (or `LATTICE_ADVERTISE_ADDR`) is
+    /// required. In docker-compose deployments, set it to
+    /// `<service-name>:<port>` (e.g., `lattice-agent:50052`).
+    #[arg(long, env = "LATTICE_ADVERTISE_ADDR")]
+    advertise_addr: Option<String>,
+
     /// Path to the agent state file for workload persistence across restarts.
     #[arg(long, default_value = state::STATE_FILE_PATH, env = "LATTICE_STATE_FILE")]
     state_file: PathBuf,
@@ -162,13 +172,22 @@ async fn main() -> Result<()> {
 
     // Register this node (INV-D1: agent_address is the reachable gRPC
     // endpoint on which the control plane dispatches RunAllocation).
+    // The bind address (`grpc_addr`, typically `0.0.0.0:<port>`) is not
+    // itself routable, so we separate "what I listen on" from "what the
+    // control plane should call me at". If no explicit advertise_addr
+    // was provided, fall back to the bind address — works for single-host
+    // deployments where the server reaches us on localhost.
+    let advertise_addr = match args.advertise_addr.as_deref() {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => args.grpc_addr.clone(),
+    };
     grpc_registry
-        .register_node(&args.node_id, &capabilities, &args.grpc_addr)
+        .register_node(&args.node_id, &capabilities, &advertise_addr)
         .await
         .map_err(|e| anyhow::anyhow!("failed to register node: {e}"))?;
     info!(
         "Node {} registered with agent_address {}",
-        args.node_id, args.grpc_addr
+        args.node_id, advertise_addr
     );
 
     // Set up heartbeat sink

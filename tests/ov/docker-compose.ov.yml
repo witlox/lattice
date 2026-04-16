@@ -41,6 +41,8 @@ services:
       - "ov-node-001"
       - "--quorum-endpoint"
       - "http://lattice-server:50051"
+      - "--advertise-addr"
+      - "lattice-agent:50052"
       - "--cpu-cores"
       - "8"
       - "--memory-gb"
