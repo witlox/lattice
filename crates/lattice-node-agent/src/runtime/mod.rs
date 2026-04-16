@@ -9,12 +9,14 @@
 //! - [`SarusRuntime`]: OCI container execution via the Sarus container runtime.
 //! - [`MockRuntime`]: In-memory mock for testing.
 
+pub mod bare_process;
 pub mod dmtcp;
 pub mod mock;
 pub mod podman;
 pub mod sarus;
 pub mod uenv;
 
+pub use bare_process::{BareProcessConfig, BareProcessRuntime};
 pub use dmtcp::DmtcpRuntime;
 pub use mock::{MockConfig, MockRuntime};
 pub use podman::PodmanRuntime;
@@ -22,7 +24,7 @@ pub use sarus::SarusRuntime;
 pub use uenv::UenvRuntime;
 
 use async_trait::async_trait;
-use lattice_common::types::{AllocId, DataMount, EnvPatch, ImageRef};
+use lattice_common::types::{AllocId, Allocation, DataMount, EnvPatch, ImageRef, RuntimeVariant};
 
 /// Exit status from a runtime process.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +139,40 @@ pub trait Runtime: Send + Sync {
 
     /// Clean up the environment after the process has exited (unmount, remove dirs).
     async fn cleanup(&self, alloc_id: AllocId) -> Result<(), RuntimeError>;
+}
+
+/// Select a Runtime variant for an allocation based on its Environment.
+///
+/// Selection rules (per spec DEC-DISP-05 + Ubiquitous Language § Runtime):
+/// - Environment.images contains both a Uenv image AND an Oci image →
+///   ambiguous → MalformedRequest (caller is responsible for mapping
+///   to refusal_reason).
+/// - Exactly one Uenv image → Uenv runtime.
+/// - Exactly one Oci image (or an images list consisting only of Oci) →
+///   Podman runtime.
+/// - No images in Environment → Bare-Process runtime (Slurm-compat
+///   bare binary).
+pub fn select_runtime_variant(alloc: &Allocation) -> Result<RuntimeVariant, String> {
+    use lattice_common::types::ImageType;
+    let has_uenv = alloc
+        .environment
+        .images
+        .iter()
+        .any(|i| matches!(i.image_type, ImageType::Uenv));
+    let has_oci = alloc
+        .environment
+        .images
+        .iter()
+        .any(|i| matches!(i.image_type, ImageType::Oci));
+    match (has_uenv, has_oci) {
+        (true, true) => Err(
+            "ambiguous runtime: environment.images contains both uenv and OCI references"
+                .to_string(),
+        ),
+        (true, false) => Ok(RuntimeVariant::Uenv),
+        (false, true) => Ok(RuntimeVariant::Podman),
+        (false, false) => Ok(RuntimeVariant::BareProcess),
+    }
 }
 
 #[cfg(test)]
