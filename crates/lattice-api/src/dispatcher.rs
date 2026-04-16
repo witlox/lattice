@@ -115,16 +115,25 @@ pub struct Dispatcher {
     /// When leadership was acquired (Instant). Used to enforce
     /// `leadership_pause` before first tick.
     leader_since: Arc<Mutex<Option<Instant>>>,
+    /// Global concurrency cap on in-flight Dispatch Attempts
+    /// (DEC-DISP-12 / D-ADV-IMPL-05 fix).
+    attempt_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Per-agent concurrency caps, keyed by node_id.
+    per_agent_semaphores: Arc<Mutex<HashMap<NodeId, Arc<tokio::sync::Semaphore>>>>,
 }
 
 impl Dispatcher {
     pub fn new(quorum: Arc<QuorumClient>, config: DispatcherConfig) -> Self {
+        let attempt_semaphore =
+            Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_attempts));
         Self {
             quorum,
             config,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             is_leader: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             leader_since: Arc::new(Mutex::new(None)),
+            attempt_semaphore,
+            per_agent_semaphores: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -184,6 +193,8 @@ impl Dispatcher {
             quorum: self.quorum.clone(),
             config: self.config.clone(),
             sessions: self.sessions.clone(),
+            attempt_semaphore: self.attempt_semaphore.clone(),
+            per_agent_semaphores: self.per_agent_semaphores.clone(),
         }
     }
 
@@ -225,6 +236,28 @@ struct DispatcherHandle {
     quorum: Arc<QuorumClient>,
     config: DispatcherConfig,
     sessions: Arc<Mutex<HashMap<AllocId, DispatchSession>>>,
+    attempt_semaphore: Arc<tokio::sync::Semaphore>,
+    per_agent_semaphores: Arc<Mutex<HashMap<NodeId, Arc<tokio::sync::Semaphore>>>>,
+}
+
+impl DispatcherHandle {
+    /// Acquire the per-agent semaphore, creating it on first use.
+    async fn per_agent_permit(&self, node_id: &NodeId) -> tokio::sync::OwnedSemaphorePermit {
+        let sem = {
+            let mut guard = self.per_agent_semaphores.lock().await;
+            guard
+                .entry(node_id.clone())
+                .or_insert_with(|| {
+                    Arc::new(tokio::sync::Semaphore::new(
+                        self.config.per_agent_concurrency,
+                    ))
+                })
+                .clone()
+        };
+        sem.acquire_owned()
+            .await
+            .expect("per-agent semaphore closed")
+    }
 }
 
 impl DispatcherHandle {
@@ -293,6 +326,15 @@ impl DispatcherHandle {
                 }
             };
             self.mark_in_flight(&alloc.id, node_id).await;
+            // DEC-DISP-12 / D-ADV-IMPL-05 rate limiting: acquire both
+            // global and per-agent permits before issuing the RPC.
+            let _global_permit = self
+                .attempt_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("attempt semaphore closed");
+            let _per_agent_permit = self.per_agent_permit(node_id).await;
             let outcome = self.attempt_single(alloc, node_id, &addr).await;
             let result_label = match &outcome {
                 DispatchOutcome::Accepted => "accepted",

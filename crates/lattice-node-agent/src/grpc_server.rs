@@ -124,22 +124,10 @@ impl pb::node_agent_service_server::NodeAgentService for NodeAgentServer {
             }));
         };
 
-        // INV-D3 idempotency: if the allocation is already tracked and not
-        // terminal, respond ALREADY_RUNNING without spawning.
-        {
-            let mgr = dispatch.allocations.lock().await;
-            if mgr.contains_active(&alloc_id) {
-                return Ok(Response::new(pb::RunAllocationResponse {
-                    accepted: true,
-                    message: "already_running".into(),
-                    refusal_reason: Some(pb::RefusalReason::RefusalAlreadyRunning as i32),
-                }));
-            }
-        }
-
         // Decide which Runtime to drive. The Dispatcher has already told us
         // the allocation's shape via the RunAllocationRequest's fields; we
-        // infer the variant by precedence: image > uenv > bare.
+        // infer the variant by precedence: image > uenv > bare. This is a
+        // pure function of `req`, so we compute it without holding any lock.
         let variant = if !req.image.trim().is_empty() {
             RuntimeVariant::Podman
         } else if !req.uenv.trim().is_empty() {
@@ -179,13 +167,24 @@ impl pb::node_agent_service_server::NodeAgentService for NodeAgentServer {
             },
         };
 
-        // Register the local allocation tracker BEFORE returning. This
-        // closes the INV-D3 window (a duplicate attempt racing with this
-        // one will observe contains_active()==true on the next call).
+        // INV-D3 idempotency + start: hold the lock across the
+        // contains_active check AND the start call to avoid a TOCTOU race
+        // between concurrent RunAllocation calls for the same allocation
+        // (D-ADV-IMPL-10 fix).
         {
             let mut mgr = dispatch.allocations.lock().await;
+            if mgr.contains_active(&alloc_id) {
+                return Ok(Response::new(pb::RunAllocationResponse {
+                    accepted: true,
+                    message: "already_running".into(),
+                    refusal_reason: Some(pb::RefusalReason::RefusalAlreadyRunning as i32),
+                }));
+            }
             if let Err(e) = mgr.start(alloc_id, req.entrypoint.clone()) {
-                // Duplicate start — mirror ALREADY_RUNNING response.
+                // Should not happen given the contains_active guard under
+                // the same lock, but we still handle it for belt-and-
+                // suspenders: a different caller inserted under a prior
+                // lock-cycle.
                 debug!(alloc_id = %alloc_id, error = %e, "start rejected — idempotent path");
                 return Ok(Response::new(pb::RunAllocationResponse {
                     accepted: true,

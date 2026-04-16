@@ -236,6 +236,8 @@ impl AllocationBuilder {
             state_version: 0,
             dispatch_retry_count: 0,
             last_completion_report_at: None,
+            assigned_at: None,
+            per_node_phase: std::collections::HashMap::new(),
         }
     }
 }

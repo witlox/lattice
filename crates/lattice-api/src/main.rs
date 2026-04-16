@@ -163,15 +163,28 @@ impl SchedulerCommandSink for QuorumCommandSink {
             .await
     }
 
-    async fn fail_allocation(
-        &self,
-        alloc_id: AllocId,
-        _reason: String,
-    ) -> Result<(), LatticeError> {
-        use lattice_common::traits::AllocationStore;
-        self.quorum
-            .update_state(&alloc_id, AllocationState::Failed)
-            .await
+    async fn fail_allocation(&self, alloc_id: AllocId, reason: String) -> Result<(), LatticeError> {
+        // Scheduler-owned failure path (silent-sweep, image-resolution
+        // timeout, etc). This is NOT an agent-emitted Completion Report:
+        // INV-D12 source-auth doesn't apply (there is no agent source).
+        // We use UpdateAllocationState directly so the reason flows into
+        // the allocation's `message` field and downstream observability
+        // can distinguish scheduler failures from agent-reported Failed.
+        // Fix for D-ADV-IMPL-04.
+        let resp = self
+            .quorum
+            .propose(lattice_quorum::QuorumCommand::UpdateAllocationState {
+                id: alloc_id,
+                state: AllocationState::Failed,
+                message: Some(reason),
+                exit_code: None,
+            })
+            .await?;
+        match resp {
+            lattice_quorum::QuorumResponse::Ok => Ok(()),
+            lattice_quorum::QuorumResponse::Error(e) => Err(LatticeError::Internal(e)),
+            _ => Err(LatticeError::Internal("unexpected response".into())),
+        }
     }
 
     async fn complete_drain(&self, node_id: String) -> Result<(), LatticeError> {

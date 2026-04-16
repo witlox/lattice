@@ -176,6 +176,14 @@ pub struct SchedulerLoopConfig {
     pub timeline_config: TimelineConfig,
     /// Rolling window for GPU-hours budget tracking (days).
     pub budget_period_days: u32,
+    /// Agent heartbeat interval in seconds. Used by the silent-sweep pass
+    /// (INV-D8) to compute the "node has gone silent" threshold. Should
+    /// match the agent's own `heartbeat_interval` configuration.
+    /// D-ADV-IMPL-08 fix.
+    pub heartbeat_interval_secs: u32,
+    /// Grace period (seconds) added to `heartbeat_interval_secs` before
+    /// the silent-sweep declares a node silent.
+    pub grace_period_secs: u32,
 }
 
 impl Default for SchedulerLoopConfig {
@@ -186,6 +194,8 @@ impl Default for SchedulerLoopConfig {
             energy_price: 0.5,
             timeline_config: TimelineConfig::default(),
             budget_period_days: 90,
+            heartbeat_interval_secs: 10,
+            grace_period_secs: 30,
         }
     }
 }
@@ -516,17 +526,28 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
     async fn silent_node_sweep(&self) -> Result<(), lattice_common::error::LatticeError> {
         let running = self.reader.running_allocations().await?;
         let now = Utc::now();
-        // Policy constants — could be externalised to config later.
-        let heartbeat_interval = chrono::Duration::seconds(10);
-        let grace_period = chrono::Duration::seconds(30);
+        // D-ADV-IMPL-08 fix: read timing bounds from config instead of
+        // hardcoded constants. Fall back to spec defaults (10s / 30s) if
+        // the config has zero values.
+        let heartbeat_interval =
+            chrono::Duration::seconds(self.config.heartbeat_interval_secs.max(1) as i64);
+        let grace_period = chrono::Duration::seconds(self.config.grace_period_secs.max(1) as i64);
         let fresh_exemption = heartbeat_interval + grace_period;
 
         for alloc in running {
             if alloc.assigned_nodes.is_empty() {
                 continue;
             }
-            // Fresh-allocation exemption (D-ADV-ARCH-07).
-            let assigned_at = alloc.started_at.unwrap_or(alloc.created_at);
+            // D-ADV-IMPL-07 fix: fresh-allocation exemption uses the
+            // allocation's `assigned_at` timestamp (set by the AssignNodes
+            // apply-step), not `created_at` (submit time) or `started_at`
+            // (first Running report). Fallback chain preserves correctness
+            // for allocations whose placement predates this field being
+            // introduced (they will be exempted for one cycle at worst).
+            let assigned_at = alloc
+                .assigned_at
+                .or(alloc.started_at)
+                .unwrap_or(alloc.created_at);
             if now - assigned_at < fresh_exemption {
                 continue;
             }

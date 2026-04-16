@@ -22,36 +22,10 @@ use sha2::{Digest, Sha256};
 use crate::commands::{Command, CommandResponse};
 use crate::TypeConfig;
 
-/// INV-D7: does the reported phase regress relative to the allocation's
-/// current state? Returns true if applying `phase` would move the state
-/// backward or laterally. Acceptable progressions:
-///   (pre-Staging) Pending → Staging → Running → Completed | Failed.
-fn is_phase_regression(current: &AllocationState, phase: CompletionPhase) -> bool {
-    // Terminal states never accept new reports other than idempotent repeats
-    // (idempotent repeats are caught by is_same_phase and short-circuited).
-    let current_rank = state_rank(current);
-    let reported_rank = phase_rank(phase);
-    reported_rank < current_rank
-}
-
-/// INV-D4: is this report a no-op idempotent replay of the current state?
-fn is_same_phase(current: &AllocationState, phase: CompletionPhase) -> bool {
-    state_rank(current) == phase_rank(phase)
-}
-
-fn state_rank(s: &AllocationState) -> u8 {
-    match s {
-        AllocationState::Pending => 0,
-        AllocationState::Staging => 1,
-        AllocationState::Running => 2,
-        AllocationState::Checkpointing => 2, // same level as Running for phase compare
-        AllocationState::Suspended => 2,
-        AllocationState::Completed => 3,
-        AllocationState::Failed => 3,
-        AllocationState::Cancelled => 3,
-    }
-}
-
+/// INV-D7: numeric rank of a CompletionPhase for monotonic ordering.
+/// Used by per-node phase-regression check in `apply_completion_report`.
+/// The aggregate `AllocationState` is derived from `per_node_phase`, not
+/// compared directly against incoming phases, so state_rank is unused.
 fn phase_rank(p: CompletionPhase) -> u8 {
     match p {
         CompletionPhase::Staging => 1,
@@ -471,6 +445,10 @@ impl GlobalState {
             return CommandResponse::Error(format!("Allocation vanished during assign: {id}"));
         };
         alloc.assigned_nodes = nodes;
+        // D-ADV-IMPL-07 fix: record when the allocation was placed, so
+        // the silent-sweep fresh-allocation exemption uses the correct
+        // timestamp rather than the much-older submission timestamp.
+        alloc.assigned_at = Some(Utc::now());
         CommandResponse::Ok
     }
 
@@ -781,44 +759,73 @@ impl GlobalState {
             ));
         }
 
-        // INV-D7 monotonicity: reject phases that regress relative to
-        // the current global state.
-        if is_phase_regression(&alloc.state, phase) {
-            lattice_common::metrics::record_phase_regression(
-                &format!("{:?}", alloc.state),
-                &format!("{phase:?}"),
-            );
-            return CommandResponse::Error(format!(
-                "phase_regression: allocation {allocation_id} current state {:?} vs reported {:?}",
-                alloc.state, phase
-            ));
+        // INV-D7 monotonicity + INV-D4 idempotency are applied at the
+        // per-node granularity below, because DEC-DISP-11 requires per-node
+        // tracking: aggregate `alloc.state` is a derived function of
+        // `per_node_phase`, not an independent variable. The aggregate
+        // cannot regress under the rules in use without a separate cancel
+        // or rollback command.
+        //
+        // Per-node phase tracking (DEC-DISP-11 conservative aggregation).
+        // Apply INV-D7 monotonicity at the per-node level, not just the
+        // aggregated level: a node's own phase must advance monotonically,
+        // else reject. Fix for D-ADV-IMPL-06.
+        if let Some(&prev_phase) = alloc.per_node_phase.get(&node_id) {
+            if phase_rank(phase) < phase_rank(prev_phase) {
+                lattice_common::metrics::record_phase_regression(
+                    &format!("{prev_phase:?}"),
+                    &format!("{phase:?}"),
+                );
+                return CommandResponse::Error(format!(
+                    "phase_regression_per_node: {node_id} current {prev_phase:?} vs reported {phase:?}"
+                ));
+            }
+            if phase_rank(phase) == phase_rank(prev_phase) {
+                // INV-D4 idempotency at per-node granularity.
+                return CommandResponse::Ok;
+            }
         }
+        alloc.per_node_phase.insert(node_id.clone(), phase);
 
-        // INV-D4 idempotency: a report whose phase matches current state
-        // is a harmless replay — short-circuit as success with no side effects.
-        if is_same_phase(&alloc.state, phase) {
-            return CommandResponse::Ok;
-        }
+        // DEC-DISP-11 aggregation:
+        //   Staging  : any assigned node is Staging (or no report yet).
+        //   Running  : ALL assigned nodes are Running or beyond.
+        //   Completed: ALL assigned nodes are Completed with exit 0.
+        //   Failed   : ANY assigned node is Failed, OR ALL are Completed
+        //              but at least one had non-zero exit_code.
+        let per_node = &alloc.per_node_phase;
+        let all_assigned: &[NodeId] = &alloc.assigned_nodes;
+        let any_failed = all_assigned
+            .iter()
+            .any(|n| per_node.get(n) == Some(&CompletionPhase::Failed));
+        let all_have_report = all_assigned.iter().all(|n| per_node.contains_key(n));
+        let all_running_plus = all_have_report
+            && all_assigned.iter().all(|n| {
+                matches!(
+                    per_node.get(n),
+                    Some(CompletionPhase::Running)
+                        | Some(CompletionPhase::Completed)
+                        | Some(CompletionPhase::Failed),
+                )
+            });
+        let all_completed = all_have_report
+            && all_assigned
+                .iter()
+                .all(|n| matches!(per_node.get(n), Some(CompletionPhase::Completed)));
 
-        // Apply state transition. DEC-DISP-11 aggregation rule for
-        // multi-node allocations: Staging if any node is in Prologue,
-        // Running only when ALL are Running+, Completed only when ALL exit 0,
-        // Failed if ANY fails. Per-node tracking lives in agent-side
-        // AllocationManager; at the quorum, we approximate by transitioning
-        // based on the latest-reported phase with the following rules:
-        //   - phase Failed → allocation Failed immediately
-        //   - phase Completed → only if this is the only assigned node or
-        //     all other nodes have already reported Completed (tracked via
-        //     last_completion_report_at per node — simplified: for now, any
-        //     Completed advances if allocation was Running)
-        //   - phase Running → allocation Running (DEC-DISP-11 "all nodes
-        //     running" aggregation is approximated; multi-node refinement
-        //     requires per-node tracking introduced in Impl 5/8)
-        let new_state = match phase {
-            CompletionPhase::Staging => AllocationState::Staging,
-            CompletionPhase::Running => AllocationState::Running,
-            CompletionPhase::Completed => AllocationState::Completed,
-            CompletionPhase::Failed => AllocationState::Failed,
+        let exit_nonzero = exit_code.is_some() && exit_code != Some(0);
+        let new_state = if any_failed {
+            AllocationState::Failed
+        } else if all_completed {
+            if exit_nonzero {
+                AllocationState::Failed
+            } else {
+                AllocationState::Completed
+            }
+        } else if all_running_plus {
+            AllocationState::Running
+        } else {
+            AllocationState::Staging
         };
         alloc.state = new_state;
         alloc.last_completion_report_at = Some(Utc::now());
@@ -887,8 +894,12 @@ impl GlobalState {
             }
         }
 
-        // Clear allocation's assigned_nodes and increment retry counter.
+        // Clear allocation's assigned_nodes, per-node phase tracking,
+        // and increment retry counter. Per-node phase must be cleared so
+        // the next dispatch attempt starts fresh aggregation.
         alloc.assigned_nodes.clear();
+        alloc.per_node_phase.clear();
+        alloc.assigned_at = None;
         alloc.dispatch_retry_count += 1;
         alloc.message = Some(reason);
 

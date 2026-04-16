@@ -115,6 +115,20 @@ pub struct Allocation {
     /// ghosting agents (heartbeating but no progress).
     #[serde(default)]
     pub last_completion_report_at: Option<DateTime<Utc>>,
+    /// Timestamp when the scheduler first assigned nodes to this allocation
+    /// (i.e., when it moved from Pending to Running-with-nodes). Set by the
+    /// `AssignNodes` apply-step. Used by INV-D8 silent-sweep to distinguish
+    /// freshly-placed allocations from genuinely stuck ones
+    /// (D-ADV-ARCH-07 fresh-allocation exemption).
+    #[serde(default)]
+    pub assigned_at: Option<DateTime<Utc>>,
+    /// Per-node phase tracking for DEC-DISP-11 conservative multi-node
+    /// aggregation. Written by the `ApplyCompletionReport` apply-step from
+    /// each Completion Report's (node_id, phase). The global
+    /// `AllocationState` is the conservative aggregate over these
+    /// per-node phases.
+    #[serde(default)]
+    pub per_node_phase: HashMap<NodeId, CompletionPhase>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
