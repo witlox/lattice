@@ -1,0 +1,62 @@
+# Operational Validation stack
+# Single server + single agent + registry (no Grafana/VictoriaMetrics)
+#
+# Usage:
+#   docker compose -f tests/ov/docker-compose.ov.yml up -d
+#   .venv/bin/python -m pytest tests/ov/ --cluster=docker --api-url=http://localhost:18080 --registry-url=localhost:15000
+#   docker compose -f tests/ov/docker-compose.ov.yml down -v
+
+services:
+  lattice-server:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.server
+    command:
+      - "--config"
+      - "/etc/lattice/config.yaml"
+      - "--bootstrap"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+      LATTICE_QUORUM_NODE_ID: "1"
+      LATTICE_API_GRPC_ADDRESS: "0.0.0.0:50051"
+      LATTICE_API_REST_ADDRESS: "0.0.0.0:8080"
+    ports:
+      - "18080:8080"
+      - "15051:50051"
+    volumes:
+      - ./ov-server.yaml:/etc/lattice/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 15s
+
+  lattice-agent:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.agent
+    command:
+      - "--node-id"
+      - "ov-node-001"
+      - "--quorum-endpoint"
+      - "http://lattice-server:50051"
+      - "--cpu-cores"
+      - "8"
+      - "--memory-gb"
+      - "32"
+    environment:
+      RUST_LOG: "info,lattice=debug"
+    depends_on:
+      lattice-server:
+        condition: service_healthy
+
+  registry:
+    image: registry:2
+    ports:
+      - "15000:5000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+      interval: 5s
+      timeout: 3s
+      retries: 3

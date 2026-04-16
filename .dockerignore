@@ -1,0 +1,51 @@
+# Build artifacts
+target/
+**/target/
+
+# Python venvs
+.venv/
+venv/
+**/.venv/
+**/venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Docs / research
+papers/
+docs/
+*.pdf
+
+# Editor + OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
+
+# Git metadata (Docker doesn't need it)
+.git/
+.gitignore
+
+# Local-only configs
+*.log
+*.env.local
+.secrets/
+
+# Tests & sweep outputs
+specs/fidelity/
+specs/findings/
+specs/integration/
+specs/escalations/
+
+# Node modules
+node_modules/
+
+# CI artifacts
+.github/
+
+# Memory / Claude
+.claude/

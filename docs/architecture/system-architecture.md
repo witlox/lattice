@@ -87,24 +87,58 @@ Lattice is a seven-layer architecture where each layer has a clear responsibilit
 4. vCluster scheduler runs scheduling cycle:
    a. Scores pending allocations with cost function
    b. Solves knapsack: maximize value subject to resource constraints
-   c. Proposes allocation → quorum
+   c. Proposes allocation → quorum (AssignNodes + UpdateAllocationState Running)
 5. Quorum validates (node ownership, quotas, sensitive isolation)
-6. Quorum commits: node ownership updated (strong consistency)
-7. Quorum notifies node agents of new allocation
+6. Quorum commits: node ownership + allocation.assigned_nodes updated
+7. Dispatcher (leader-only tick loop in lattice-api) observes the Running-
+   but-un-acked allocation and calls NodeAgentService.RunAllocation on each
+   assigned agent.
+   - Retries with bounded backoff on transient RPC failures
+   - Duplicate attempts are absorbed by the agent (INV-D3 idempotency)
+   - On unrecoverable failure: commits RollbackDispatch → ALL assigned
+     nodes released atomically, allocation returns to Pending (or Failed
+     at the retry cap). Best-effort StopAllocation is fanned out to any
+     agent that had accepted a prior attempt (DEC-DISP-07/08).
+   - Allocations whose assigned nodes are not Ready are skipped
+     (INT-3) and left for the scheduler to re-place.
 8. Node agents:
    a. Pull uenv squashfs image (from cache or registry)
    b. Mount via squashfs-mount
    c. Start processes in mount namespace
-   d. Begin log capture (ring buffer + S3 persistence)
-   e. Accept attach sessions (if user connects)
-   f. Report health/telemetry
+   d. Record spawned pid in LocalAllocation (INT-4 — enables attach/nsenter
+      and agent-restart reattach)
+   e. Begin log capture (ring buffer + S3 persistence)
+   f. Accept attach sessions (if user connects)
+   g. Report health/telemetry
+   h. Upsert a CompletionReport (phase ∈ Staging/Running/Completed/Failed)
+      into the agent-local, latest-wins-per-allocation CompletionBuffer
+      each time the workload's phase changes.
 8.5. During execution, users can:
    - Attach interactive terminal (nsenter into allocation namespace)
    - Stream logs (live tail from ring buffer or historical from S3)
    - Query metrics (lattice top → TSDB) or stream them (lattice watch → node agents)
    - View diagnostics (network health, storage performance)
    - Compare metrics across allocations (TSDB multi-query)
-9. On completion: node agents report, quorum releases nodes
+9. On each heartbeat (every heartbeat_interval), the agent drains the
+   CompletionBuffer and piggy-backs every buffered CompletionReport.
+   The quorum's ApplyCompletionReport Raft command validates each report
+   in order:
+     (1) INV-D12 source-auth — reporting node ∈ allocation.assigned_nodes
+     (2) INV-D7 monotonicity — phase strictly advances
+     (3) INV-D4 idempotency — duplicate (alloc, node, phase) is a no-op
+   On success: per-node phase advances, aggregate global state is
+   recomputed per DEC-DISP-11 (conservative multi-node aggregation),
+   last_completion_report_at is updated, and on Staging/Running the
+   node's consecutive_dispatch_failures is reset. Terminal phases
+   release the nodes.
+
+Dispatch-level operations (cancel, requeue):
+   - Cancel: quorum commits Cancelled, then the API fires best-effort
+     StopAllocation to every assigned agent (INT-1). Tracked via
+     lattice_cancel_stop_sent_total.
+   - Requeue: on service/job requeue, per_node_phase, assigned_at,
+     dispatch_retry_count, and last_completion_report_at are all cleared
+     so the next placement dispatches from a clean slate (INT-2).
 ```
 
 ### Preemption Flow

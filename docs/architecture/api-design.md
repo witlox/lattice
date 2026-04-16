@@ -19,6 +19,17 @@ POST   /v1/allocations/{id}/tasks   Launch tasks within an existing allocation (
 POST   /v1/allocations/{id}/checkpoint  Request checkpoint
 ```
 
+**Cancel semantics (INT-1).** `DELETE /v1/allocations/{id}` is a two-step
+operation: the quorum commits the transition to Cancelled, and the API
+then fan-outs a best-effort `NodeAgentService.StopAllocation` RPC to
+every assigned node (reason `"user_cancelled"`). The HTTP response
+returns as soon as the Raft commit succeeds; the StopAllocation
+fan-out is asynchronous (non-blocking). Agents treat StopAllocation
+idempotently — INV-D3 — so duplicate delivery is safe. Delivery
+failures are non-fatal and counted via
+`lattice_cancel_stop_sent_total`; the orphan-cleanup path (INV-D9)
+backstops any agent that missed the stop.
+
 **Observability** — User-facing debugging and monitoring.
 ```
 POST   /v1/allocations/{id}/attach           Attach interactive terminal (WebSocket upgrade)

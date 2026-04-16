@@ -20,6 +20,24 @@ Lattice exposes Prometheus-compatible metrics at `GET /metrics` on the REST port
 | `lattice_nodes_total` | Gauge | Nodes by state |
 | `lattice_checkpoint_duration_seconds` | Histogram | Checkpoint operation latency |
 
+#### Allocation Dispatch Metrics
+
+These cover the Dispatcher → agent bridge (RunAllocation, rollback,
+completion-report flow). Most have labels; see below for typical
+label values.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `lattice_dispatch_attempt_total` | Counter | `node_id`, `result` | One increment per `RunAllocation` RPC attempt. `result` ∈ `accepted` / `accepted_already_running` / `transient_failure` / `refusal_busy` / `refusal_unsupported` / `refusal_malformed`. |
+| `lattice_dispatch_rollback_total` | Counter | `reason` | `RollbackDispatch` commits. `reason` ∈ `retry_exhausted` / `partial_accept` / `unsupported_capability` / `malformed_request` / `silent_sweep`. |
+| `lattice_dispatch_rollback_stop_sent_total` | Counter | `result` | Best-effort `StopAllocation` RPCs issued after a rollback. `result` ∈ `success` / `failure`. |
+| `lattice_dispatch_skipped_unschedulable_total` | Counter | `node_id`, `node_state` | Dispatcher skipped an allocation because an assigned node was not Ready. Sustained non-zero rate suggests the scheduler is placing onto Draining / Degraded / Down nodes. |
+| `lattice_completion_report_cross_node_total` | Counter | `node_id` | Reports rejected because the source node is not in `allocation.assigned_nodes` (INV-D12). Non-zero indicates a buggy agent or spoofing attempt. |
+| `lattice_completion_report_phase_regression_total` | Counter | `current_phase`, `reported_phase` | Reports rejected for phase regression (INV-D7). |
+| `lattice_dispatch_unknown_refusal_reason_total` | Counter | `reason_code` | Unknown `refusal_reason` values received — indicates rolling-upgrade skew between agent and lattice-api versions. |
+| `lattice_node_degraded_by_dispatch_total` | Counter | `node_id` | Nodes transitioned to Degraded via the `max_node_dispatch_failures` cap. |
+| `lattice_cancel_stop_sent_total` | Counter | `result` | `StopAllocation` fan-out triggered by a user cancel (INT-1). |
+
 ### Scrape Configuration
 
 ```yaml
@@ -56,6 +74,10 @@ Pre-configured alerting rules in `infra/alerting/`:
 | `LatticeHighPreemptionRate` | > 10 preemptions/minute |
 | `LatticeCheckpointFailure` | Checkpoint success rate < 90% |
 | `LatticeDiskSpaceLow` | Raft data directory > 80% full |
+| `LatticeDispatchRollbackRate` | `rate(lattice_dispatch_rollback_total[5m]) > 0.1` for 10m |
+| `LatticeDispatchSkippedUnschedulable` | Non-zero `lattice_dispatch_skipped_unschedulable_total` sustained > 5m (scheduler placing on non-Ready nodes) |
+| `LatticeCrossNodeCompletionReports` | Any `lattice_completion_report_cross_node_total` increment (possible spoofing or buggy agent) |
+| `LatticeDispatchRefusalSkew` | Any `lattice_dispatch_unknown_refusal_reason_total` increment (agent/control-plane version skew) |
 
 ## TSDB Integration
 

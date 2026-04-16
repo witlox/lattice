@@ -117,15 +117,69 @@ Workloads survive agent restart because the systemd unit uses `KillMode=process`
 
 ## Allocation-Level Failures
 
+### Dispatch Failure (RunAllocation RPC)
+
+**Detection:** The Dispatcher's `RunAllocation` RPC to a target agent
+fails (connect/timeout/refusal), or an accepted attempt reports no
+Staging/Running CompletionReport within the silent-sweep interval
+(IP-15).
+
+**Recovery:**
+1. Transient failures (connect, timeout, `RefusalBusy`) are retried
+   with bounded backoff per `DispatcherConfig.attempt_backoff`
+   (default 3 attempts: 1s / 2s / 5s).
+2. On retry-budget exhaustion OR immediate unrecoverable refusal
+   (`RefusalUnsupportedCapability`, `RefusalMalformedRequest`), the
+   Dispatcher commits `RollbackDispatch` — all assigned nodes are
+   released atomically (DEC-DISP-07, all-or-nothing), the
+   allocation's `dispatch_retry_count` is incremented, and the
+   failed node's `consecutive_dispatch_failures` is incremented.
+3. Best-effort `StopAllocation` is fanned out to every agent that
+   had accepted a prior attempt (DEC-DISP-08) — prevents orphan
+   prologue processes.
+4. Allocation returns to `Pending` if `dispatch_retry_count <
+   max_dispatch_retries` (default 5), else transitions to `Failed`.
+5. Nodes reaching `max_node_dispatch_failures` (default 10) are
+   moved to `Degraded` in the same Raft entry, subject to the
+   cluster-wide Degraded-ratio guard (DEC-DISP-01).
+
+**Auto-recovery (DEC-DISP-01):** Degraded nodes are probe-released
+back to Ready every `degraded_probe_interval` (default 5 min). The
+probe-release halves `consecutive_dispatch_failures` so a node that
+flaps once then succeeds gradually returns to full confidence.
+
+**Observability counters:**
+- `lattice_dispatch_attempt_total{node_id,result}` (`result` ∈
+  `accepted` / `transient_failure` / `refusal_busy` /
+  `refusal_unsupported` / `refusal_malformed`)
+- `lattice_dispatch_rollback_total{reason}`
+- `lattice_dispatch_rollback_stop_sent_total{result}`
+- `lattice_dispatch_skipped_unschedulable_total{node_id,node_state}`
+  (INT-3: allocations assigned to a non-Ready node are skipped
+  rather than burning retries)
+- `lattice_node_degraded_by_dispatch_total{node_id}`
+
+**Common causes:** Agent restart during dispatch window, network
+partition, node disk full during prologue, capability mismatch
+(agent doesn't support a runtime variant the scheduler requested).
+
 ### Prologue Failure (uenv Pull/Mount)
 
-**Detection:** Node agent reports prologue error to quorum.
+**Detection:** Node agent accepted `RunAllocation` and reported a
+`Staging` CompletionReport, then reported a `Failed` CompletionReport
+with a prepare-stage error.
 
 **Recovery:**
 1. Node drained for this allocation (other allocations on the node unaffected)
 2. Allocation retried on different nodes (analogous to Slurm PrologSlurmctld failure)
 3. Max retries configurable (default: 3)
 4. After max retries: allocation moves to `Failed` state, user notified
+
+**Distinction from Dispatch Failure:** A prologue failure happens
+*after* the agent accepted the RPC, so `dispatch_retry_count` is not
+incremented — the agent has taken ownership and the failure is
+counted against `requeue_count` (per the allocation's
+`requeue_policy`) instead.
 
 **Common causes:** Corrupted uenv image (hash mismatch), local cache full (if NVMe present), registry unavailable.
 
@@ -192,6 +246,23 @@ Configurable per allocation at submission time:
 **Max requeue count:** Default 3. Configurable per allocation (max 100, validated at submission). After max requeues, allocation transitions to `Failed` regardless of policy. Requeue uses optimistic concurrency (`expected_requeue_count`) to prevent double-increment from concurrent reconcilers.
 
 **Requeue behavior:** Requeued allocations retain their original submission time for fair-share and wait-time calculations (no queue-jumping penalty, no starvation). Just-requeued allocations are excluded from the pending set in the same scheduler cycle (TOCTOU prevention).
+
+**State cleared on requeue (INT-2).** The Raft apply step for
+`RequeueAllocation` clears every field that is specific to the
+previous placement, so the next dispatch sees a clean slate:
+- `assigned_nodes`, `started_at`, `completed_at`, `exit_code`, `message`
+- `per_node_phase` — without this, `ApplyCompletionReport` would
+  aggregate over OLD nodes plus the newly assigned ones and produce
+  nonsense global-state transitions.
+- `assigned_at` — the silent-sweep pass (IP-15) uses this as a
+  fresh-allocation exemption; carrying a stale timestamp would make
+  a just-requeued allocation look silent and trip a rollback loop.
+- `dispatch_retry_count` — otherwise, a long-running service with
+  occasional node failures across many requeues would accumulate
+  dispatch retries and eventually hit `max_dispatch_retries`
+  permanently.
+- `last_completion_report_at` — otherwise the Dispatcher would
+  think the new placement has already been ack'd and skip it.
 
 ### Service Failure Detection (Liveness Probes)
 

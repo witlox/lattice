@@ -227,10 +227,22 @@ The node agent persists active allocation state to `/var/lib/lattice/agent-state
 1. Agent writes current allocation state (PIDs, cgroup paths, runtime type, mount points) to the state file
 2. Agent exits without killing workloads (systemd `KillMode=process`)
 
+The pid written to the state file is sourced from the in-memory
+`LocalAllocation.pid` field (INT-4): when the runtime monitor task
+spawns the workload, it calls `AllocationManager::set_pid()`
+immediately after `runtime.spawn()` returns a handle with a concrete
+pid. Without this wiring, reattach after agent restart would fall
+back to the cgroup-scan path only, and `lattice session attach`
+(which ultimately needs `nsenter` into the workload's namespaces)
+would have no way to look up the target pid locally.
+
 **On startup:**
 1. Agent reads the persisted state file
 2. For each allocation, checks if the process is still alive (`kill(pid, 0)`)
-3. Alive processes are reattached — agent resumes heartbeating their status
+3. Alive processes are reattached — agent resumes heartbeating their status;
+   the `reattach_in_progress` flag is raised on the next heartbeat
+   (one-way, cleared after a successful CompletionReport or the
+   reattach-grace timer elapses — INV-D5).
 4. Dead processes are treated as orphans — cgroup scopes are destroyed, mounts cleaned up
 5. Stray cgroup scopes under `workload.slice/alloc-*.scope` with no matching state entry are also cleaned up
 6. Agent re-registers with quorum and resumes normal operation
