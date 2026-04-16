@@ -23,6 +23,10 @@ allow = [
     "OpenSSL",
     "BlueOak-1.0.0",
     "CDLA-Permissive-2.0",
+    # CC0-1.0 (public-domain-equivalent) — pulled in transitively via
+    # tiny-keccak → const-random → dlv-list → ordered-multimap →
+    # rust-ini → config. FSF-approved as Free/Libre.
+    "CC0-1.0",
 ]
 
 [[licenses.clarify]]

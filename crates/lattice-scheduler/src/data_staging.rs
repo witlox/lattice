@@ -49,11 +49,9 @@ impl StagingPlan {
         });
 
         let total_bytes: u64 = requests.iter().map(|r| r.size_bytes).sum();
-        let estimated_time_secs = if Self::ASSUMED_THROUGHPUT_BPS == 0 {
-            0
-        } else {
-            total_bytes / Self::ASSUMED_THROUGHPUT_BPS
-        };
+        let estimated_time_secs = total_bytes
+            .checked_div(Self::ASSUMED_THROUGHPUT_BPS)
+            .unwrap_or(0);
 
         Self {
             requests,
