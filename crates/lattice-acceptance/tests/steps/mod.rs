@@ -11,6 +11,7 @@ mod conformance;
 mod cross_context;
 mod dag;
 mod data_staging;
+mod dispatch;
 mod failure_modes;
 mod federation;
 mod gpu_topology;

@@ -305,6 +305,23 @@ pub struct LatticeWorld {
     pub sd_cli_result: Option<String>,
     pub sd_persisted_container_ids: Vec<String>,
     pub sd_reattach_result: Option<String>,
+    // ── Dispatch (allocation_dispatch.feature) ───────────────────
+    /// A scenario-local GlobalState used by dispatch step defs to drive
+    /// Raft commands directly (applies are synchronous on a fresh state).
+    pub dispatch_state: Option<lattice_quorum::global_state::GlobalState>,
+    /// Per-scenario context: current node id, last response, named allocs.
+    pub dispatch_ctx: DispatchCtx,
+}
+
+/// Per-scenario scratch state for dispatch step definitions.
+#[derive(Default, Debug)]
+pub struct DispatchCtx {
+    pub node_id: String,
+    pub pending_address: String,
+    pub last_response: Option<lattice_quorum::commands::CommandResponse>,
+    pub last_visible_nodes: Vec<String>,
+    pub alloc_name_to_id: std::collections::HashMap<String, uuid::Uuid>,
+    pub state_version_before: u64,
 }
 
 impl LatticeWorld {
@@ -456,6 +473,8 @@ impl LatticeWorld {
             sd_cli_result: None,
             sd_persisted_container_ids: Vec::new(),
             sd_reattach_result: None,
+            dispatch_state: None,
+            dispatch_ctx: DispatchCtx::default(),
         }
     }
 
