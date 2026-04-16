@@ -15,6 +15,29 @@ use crate::convert::memory_topology_from_proto;
 use crate::convert;
 use crate::state::ApiState;
 
+/// Reject syntactically invalid agent addresses (INV-D1). Matches
+/// unroutable placeholders: empty host, port 0, or wildcards.
+fn is_trivially_invalid_address(addr: &str) -> bool {
+    let trimmed = addr.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let Some((host, port)) = trimmed.rsplit_once(':') else {
+        return true;
+    };
+    if host.is_empty() {
+        return true;
+    }
+    match port.parse::<u16>() {
+        Ok(0) => true,
+        Ok(_) => {
+            // Disallow unroutable hosts as construction-invalid.
+            matches!(host, "0.0.0.0" | "::" | "[::]")
+        }
+        Err(_) => true,
+    }
+}
+
 /// NodeService backed by trait-object NodeRegistry.
 pub struct LatticeNodeService {
     state: Arc<ApiState>,
@@ -176,6 +199,26 @@ impl NodeService for LatticeNodeService {
     ) -> Result<Response<pb::RegisterNodeResponse>, Status> {
         let req = request.into_inner();
 
+        // INV-D1: agent_address required + non-trivial validation.
+        if req.agent_address.trim().is_empty() {
+            tracing::warn!(node_id = %req.node_id, "RegisterNode rejected: empty agent_address");
+            return Ok(Response::new(pb::RegisterNodeResponse {
+                success: false,
+                reason: "agent_address_required".into(),
+            }));
+        }
+        if is_trivially_invalid_address(&req.agent_address) {
+            tracing::warn!(
+                node_id = %req.node_id,
+                addr = %req.agent_address,
+                "RegisterNode rejected: syntactically invalid agent_address"
+            );
+            return Ok(Response::new(pb::RegisterNodeResponse {
+                success: false,
+                reason: "agent_address_invalid".into(),
+            }));
+        }
+
         let node = Node {
             id: req.node_id.clone(),
             state: NodeState::Ready,
@@ -201,6 +244,11 @@ impl NodeService for LatticeNodeService {
             conformance_fingerprint: None,
             last_heartbeat: None,
             owner_version: 0,
+            agent_address: req.agent_address.clone(),
+            consecutive_dispatch_failures: 0,
+            degraded_at: None,
+            reattach_in_progress: false,
+            reattach_first_set_at: None,
         };
 
         // Propose through Raft if quorum is available
@@ -213,8 +261,56 @@ impl NodeService for LatticeNodeService {
             return Err(Status::unavailable("quorum not available"));
         }
 
-        tracing::info!(node_id = %req.node_id, "node registered via gRPC");
-        Ok(Response::new(pb::RegisterNodeResponse { success: true }))
+        tracing::info!(
+            node_id = %req.node_id,
+            agent_address = %req.agent_address,
+            "node registered via gRPC"
+        );
+        Ok(Response::new(pb::RegisterNodeResponse {
+            success: true,
+            reason: String::new(),
+        }))
+    }
+
+    async fn update_node_address(
+        &self,
+        request: Request<pb::UpdateNodeAddressRequest>,
+    ) -> Result<Response<pb::UpdateNodeAddressResponse>, Status> {
+        let req = request.into_inner();
+        if req.new_address.trim().is_empty() {
+            return Ok(Response::new(pb::UpdateNodeAddressResponse {
+                success: false,
+                reason: "agent_address_required".into(),
+            }));
+        }
+        if is_trivially_invalid_address(&req.new_address) {
+            return Ok(Response::new(pb::UpdateNodeAddressResponse {
+                success: false,
+                reason: "agent_address_invalid".into(),
+            }));
+        }
+
+        if let Some(ref quorum) = self.state.quorum {
+            quorum
+                .propose(lattice_quorum::QuorumCommand::UpdateNodeAddress {
+                    node_id: req.node_id.clone(),
+                    new_address: req.new_address.clone(),
+                })
+                .await
+                .map_err(|e| Status::internal(format!("raft propose failed: {e}")))?;
+        } else {
+            return Err(Status::unavailable("quorum not available"));
+        }
+
+        tracing::info!(
+            node_id = %req.node_id,
+            new_address = %req.new_address,
+            "node agent_address updated"
+        );
+        Ok(Response::new(pb::UpdateNodeAddressResponse {
+            success: true,
+            reason: String::new(),
+        }))
     }
 
     async fn heartbeat(
@@ -229,9 +325,45 @@ impl NodeService for LatticeNodeService {
                     id: req.node_id.clone(),
                     timestamp: chrono::Utc::now(),
                     owner_version: req.owner_version,
+                    reattach_in_progress: req.reattach_in_progress,
                 })
                 .await
                 .map_err(|e| Status::internal(format!("raft propose failed: {e}")))?;
+
+            // Apply any Completion Reports carried on this heartbeat.
+            // IP-03 / IP-14 / INV-D12-D7-D4 validation happens at apply-step
+            // inside ApplyCompletionReport's handler.
+            for report in req.completion_reports.iter() {
+                let phase = match pb::CompletionPhase::try_from(report.phase) {
+                    Ok(pb::CompletionPhase::Staging) => {
+                        lattice_common::types::CompletionPhase::Staging
+                    }
+                    Ok(pb::CompletionPhase::Running) => {
+                        lattice_common::types::CompletionPhase::Running
+                    }
+                    Ok(pb::CompletionPhase::Completed) => {
+                        lattice_common::types::CompletionPhase::Completed
+                    }
+                    Ok(pb::CompletionPhase::Failed) => {
+                        lattice_common::types::CompletionPhase::Failed
+                    }
+                    _ => continue, // unspecified/unknown: skip silently
+                };
+                let alloc_id = match uuid::Uuid::parse_str(&report.allocation_id) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                let _ = quorum
+                    .propose(lattice_quorum::QuorumCommand::ApplyCompletionReport {
+                        node_id: req.node_id.clone(),
+                        allocation_id: alloc_id,
+                        phase,
+                        pid: report.pid,
+                        exit_code: report.exit_code,
+                        reason: report.reason.clone(),
+                    })
+                    .await;
+            }
         } else {
             return Err(Status::unavailable("quorum not available"));
         }
@@ -451,6 +583,7 @@ mod tests {
                 cpu_cores: 72,
                 memory_gb: 512,
                 features: vec!["slingshot".to_string()],
+                agent_address: "10.0.0.1:50052".to_string(),
                 ..Default::default()
             }))
             .await
@@ -497,6 +630,8 @@ mod tests {
                 conformance_fingerprint: "abc123".to_string(),
                 sequence: 1,
                 owner_version: 0,
+                reattach_in_progress: false,
+                completion_reports: Vec::new(),
             }))
             .await
             .unwrap();
@@ -512,6 +647,7 @@ mod tests {
         let result = svc
             .register_node(Request::new(pb::RegisterNodeRequest {
                 node_id: "no-quorum".to_string(),
+                agent_address: "10.0.0.1:50052".to_string(),
                 ..Default::default()
             }))
             .await;

@@ -214,6 +214,7 @@ mod data_contracts {
                 id: "n1".into(),
                 timestamp: Utc::now(),
                 owner_version: 42,
+                reattach_in_progress: false,
             },
             Command::CreateNetworkDomain {
                 tenant: "t1".into(),
@@ -686,6 +687,7 @@ mod invariant_contracts {
                 id: "adv06".into(),
                 timestamp: Utc::now(),
                 owner_version: 0,
+                reattach_in_progress: false,
             }),
             CommandResponse::Ok
         ));
@@ -708,6 +710,7 @@ mod invariant_contracts {
                 id: "adv06".into(),
                 timestamp: Utc::now(),
                 owner_version: 0,
+            reattach_in_progress: false,
             }),
             CommandResponse::Error(e) if e.contains("Stale heartbeat")
         ));
@@ -718,6 +721,7 @@ mod invariant_contracts {
                 id: "adv06".into(),
                 timestamp: Utc::now(),
                 owner_version: 1,
+                reattach_in_progress: false,
             }),
             CommandResponse::Ok
         ));
@@ -823,6 +827,7 @@ mod failure_contracts {
                 id: "missing".into(),
                 timestamp: Utc::now(),
                 owner_version: 0,
+            reattach_in_progress: false,
             }),
             CommandResponse::Error(e) if e.contains("not found")
         ));
@@ -909,6 +914,7 @@ mod failure_contracts {
                 id: "x".into(),
                 timestamp: Utc::now(),
                 owner_version: 0,
+                reattach_in_progress: false,
             },
             Command::UpdateAllocationState {
                 id: Uuid::new_v4(),
@@ -999,6 +1005,7 @@ mod event_contracts {
                 id: "evt-n".into(),
                 timestamp: Utc::now(),
                 owner_version: 0,
+                reattach_in_progress: false,
             },
             Command::CreateNetworkDomain {
                 tenant: "evt-t".into(),

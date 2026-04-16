@@ -87,15 +87,48 @@ impl LocalAllocation {
 }
 
 /// Manages all allocations running on a single node.
+///
+/// **Note (2026-04-16):** This struct is scheduled to be rewritten as an
+/// actor owned by a dedicated tokio task (DEC-DISP-09). The Impl 4 phase of
+/// the dispatch rollout replaces direct `&mut self` mutation with
+/// `mpsc::Sender<AllocationManagerCmd>` routed through an actor loop. Until
+/// then, the existing synchronous API is preserved and the actor-shaped
+/// `completion_buffer` (INV-D13 keyed map) is added alongside.
 pub struct AllocationManager {
     allocations: HashMap<AllocId, LocalAllocation>,
+    /// INV-D13 latest-wins-per-allocation Completion Report buffer. Keyed
+    /// map, not a queue. Drained into each heartbeat payload.
+    completion_buffer: HashMap<AllocId, lattice_common::types::CompletionReport>,
 }
 
 impl AllocationManager {
     pub fn new() -> Self {
         Self {
             allocations: HashMap::new(),
+            completion_buffer: HashMap::new(),
         }
+    }
+
+    /// INV-D13: upsert a Completion Report. Replaces any prior report for
+    /// the same allocation. Because phases advance monotonically and the
+    /// local tracker enforces this, terminal reports are never overwritten
+    /// by non-terminal ones.
+    pub fn push_report(&mut self, report: lattice_common::types::CompletionReport) {
+        self.completion_buffer.insert(report.allocation_id, report);
+    }
+
+    /// Drain all buffered Completion Reports for the next heartbeat.
+    pub fn drain_reports(&mut self) -> Vec<lattice_common::types::CompletionReport> {
+        self.completion_buffer.drain().map(|(_, v)| v).collect()
+    }
+
+    /// INV-D3 idempotency check: returns true if the allocation is tracked
+    /// and has not reached a terminal phase.
+    pub fn contains_active(&self, id: &AllocId) -> bool {
+        self.allocations
+            .get(id)
+            .map(|a| a.is_active())
+            .unwrap_or(false)
     }
 
     /// Start tracking a new allocation.

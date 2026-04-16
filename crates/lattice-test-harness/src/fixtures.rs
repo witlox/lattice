@@ -233,6 +233,9 @@ impl AllocationBuilder {
             preempted_count: 0,
             resume_from_checkpoint: false,
             sensitive: self.sensitive,
+            state_version: 0,
+            dispatch_retry_count: 0,
+            last_completion_report_at: None,
         }
     }
 }
@@ -352,6 +355,11 @@ impl NodeBuilder {
             conformance_fingerprint: self.conformance_fingerprint,
             last_heartbeat: Some(Utc::now()),
             owner_version: 0,
+            agent_address: format!("10.0.0.1:{}", 50052 + (rand_node_suffix() % 10000)),
+            consecutive_dispatch_failures: 0,
+            degraded_at: None,
+            reattach_in_progress: false,
+            reattach_first_set_at: None,
         }
     }
 }

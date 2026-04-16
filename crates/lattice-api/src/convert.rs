@@ -218,6 +218,9 @@ pub fn allocation_from_proto(spec: &pb::AllocationSpec, user: &str) -> Result<Al
         resume_from_checkpoint: false,
         sensitive: spec.sensitive,
         liveness_probe: liveness_probe_from_proto(spec),
+        state_version: 0,
+        dispatch_retry_count: 0,
+        last_completion_report_at: None,
     })
 }
 
@@ -325,6 +328,9 @@ pub fn node_to_status(node: &Node) -> pb::NodeStatus {
             .as_ref()
             .map(|t| t.total_capacity_bytes)
             .unwrap_or(0),
+        agent_address: node.agent_address.clone(),
+        consecutive_dispatch_failures: node.consecutive_dispatch_failures,
+        reattach_in_progress: node.reattach_in_progress,
     }
 }
 

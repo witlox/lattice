@@ -96,6 +96,25 @@ pub struct Allocation {
     /// and single-session attach limits (INV-C2).
     #[serde(default)]
     pub sensitive: bool,
+
+    // ─── Dispatch fields (INV-D6, INV-D8, INV-D11) ─────────────────
+    /// Monotonic version counter for optimistic concurrency (INV-D6).
+    /// Incremented on every state-changing Raft command for this allocation
+    /// (SubmitAllocation, AssignNodes, UpdateAllocationState, ApplyCompletionReport,
+    /// RollbackDispatch, RequeueAllocation). Separate from `requeue_count`.
+    #[serde(default)]
+    pub state_version: u64,
+    /// Number of Dispatch Failures this allocation has experienced across
+    /// potentially different nodes. Bounded by `max_dispatch_retries`; when
+    /// reached, the allocation transitions to Failed rather than Pending
+    /// on next RollbackDispatch (INV-D11).
+    #[serde(default)]
+    pub dispatch_retry_count: u32,
+    /// Timestamp of the most recent ApplyCompletionReport that advanced this
+    /// allocation's phase. Used by INV-D8 extended silent-sweep to detect
+    /// ghosting agents (heartbeating but no progress).
+    #[serde(default)]
+    pub last_completion_report_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +135,84 @@ pub enum AllocationState {
     Failed,
     /// Cancelled by user
     Cancelled,
+}
+
+// ─── Completion Reports (INV-D4, INV-D7, INV-D12, INV-D13) ──────────
+
+/// Local allocation phase reported by the agent (mirrors proto
+/// `CompletionPhase`). The agent's per-allocation state progresses
+/// monotonically through these phases; INV-D7 rejects regressions at
+/// the quorum. INV-D13 uses latest-wins semantics in the agent buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompletionPhase {
+    /// Prologue in progress on this node; runtime prepared but no process yet.
+    Staging,
+    /// Workload Process spawned and running on this node.
+    Running,
+    /// Workload Process exited with exit_code 0 and epilogue complete.
+    Completed,
+    /// Workload Process exited non-zero, liveness probe failed, or runtime
+    /// error. `reason` on the report carries the cause.
+    Failed,
+}
+
+/// A per-allocation state-change record carried on a heartbeat (IP-03).
+/// Delivered by the node agent to the quorum at `heartbeat_interval`
+/// cadence, subject to INV-D4 idempotency, INV-D7 monotonicity, INV-D12
+/// source-auth, and INV-D13 latest-wins buffering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionReport {
+    pub allocation_id: AllocId,
+    pub phase: CompletionPhase,
+    /// Set on the first Running report for this allocation on this node.
+    pub pid: Option<u32>,
+    /// Set for Completed/Failed.
+    pub exit_code: Option<i32>,
+    /// Free-form for Failed; short annotation for others.
+    pub reason: Option<String>,
+}
+
+impl CompletionReport {
+    /// Map this agent-side phase to a global allocation state component.
+    /// Multi-node aggregation per DEC-DISP-11 is applied at the quorum;
+    /// this mapping gives the per-node contribution.
+    pub fn to_per_node_allocation_state(&self) -> AllocationState {
+        match self.phase {
+            CompletionPhase::Staging => AllocationState::Staging,
+            CompletionPhase::Running => AllocationState::Running,
+            CompletionPhase::Completed => AllocationState::Completed,
+            CompletionPhase::Failed => AllocationState::Failed,
+        }
+    }
+}
+
+/// Refusal reasons from agent to dispatcher (DEC-DISP-05). Mirrors proto
+/// `RefusalReason`. Dispatcher must treat unknown variants as
+/// `MalformedRequest` per D-ADV-ARCH-10 resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefusalReason {
+    /// Agent temporarily saturated; retry within attempt budget.
+    Busy,
+    /// Agent cannot fulfil this allocation shape; rollback to Pending so
+    /// the scheduler re-places on a capable node.
+    UnsupportedCapability,
+    /// Allocation spec is bad; transition directly to Failed.
+    MalformedRequest,
+    /// Agent already has this allocation (INV-D3 short-circuit).
+    AlreadyRunning,
+}
+
+/// Runtime variants for executing the allocation entrypoint.
+/// One Runtime is selected per allocation; they are not composed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuntimeVariant {
+    /// Bare-Process Runtime: spawns entrypoint directly in a cgroup scope,
+    /// no mount namespace. Used when neither `uenv` nor `image` is set.
+    BareProcess,
+    /// Uenv Runtime: mounts squashfs and spawns via nsenter.
+    Uenv,
+    /// Podman Runtime: pulls OCI image and spawns via podman run + nsenter.
+    Podman,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -725,6 +822,37 @@ pub struct Node {
     /// the current owner_version to be accepted (ADV-06).
     #[serde(default)]
     pub owner_version: u64,
+
+    // ─── Dispatch fields (INV-D1, INV-D11, INV-D14, INV-D5) ─────────
+    /// Reachable gRPC endpoint for this node's agent (host:port).
+    /// Required for the node to participate in scheduling (INV-D1).
+    /// Must match a SAN in the agent's workload certificate (INV-D14).
+    /// Empty string means "unregistered" — node is scheduler-invisible (INV-D2).
+    #[serde(default)]
+    pub agent_address: String,
+    /// Consecutive dispatch failures attributed to this node. Incremented
+    /// atomically with RollbackDispatch (INV-D11). Reset to 0 on any
+    /// successful dispatch on this node. Threshold `max_node_dispatch_failures`
+    /// transitions the node to Degraded (subject to cluster-wide ratio guard).
+    #[serde(default)]
+    pub consecutive_dispatch_failures: u32,
+    /// Timestamp when the node entered Degraded via INV-D11. Used by
+    /// DEC-DISP-01 auto-probe-recovery — after `degraded_probe_interval`
+    /// since this timestamp, the node is probed back to Ready with halved counter.
+    #[serde(default)]
+    pub degraded_at: Option<DateTime<Utc>>,
+    /// Agent has completed boot but is still reattaching to surviving
+    /// Workload Processes (DEC-DISP-10). Raft-committed via extended
+    /// Command::RecordHeartbeat. Silent-sweep (INV-D8) honours this flag
+    /// subject to the lifecycle rules in INV-D5.
+    #[serde(default)]
+    pub reattach_in_progress: bool,
+    /// Timestamp of the first heartbeat that set `reattach_in_progress = true`
+    /// after the most recent re-registration. Used by INV-D5 lifecycle:
+    /// the grace timer is absolute from this timestamp; it does not reset
+    /// on subsequent true-valued heartbeats.
+    #[serde(default)]
+    pub reattach_first_set_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

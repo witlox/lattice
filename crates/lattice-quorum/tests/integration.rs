@@ -393,6 +393,7 @@ async fn node_registration_and_heartbeat() {
             id: "x2000c0s1b0n0".into(),
             timestamp: hb_time,
             owner_version: 0,
+            reattach_in_progress: false,
         })
         .await
         .unwrap();
@@ -409,6 +410,7 @@ async fn node_registration_and_heartbeat() {
             id: "x2000c0s1b0n0".into(),
             timestamp: hb_time2,
             owner_version: 0,
+            reattach_in_progress: false,
         })
         .await
         .unwrap();

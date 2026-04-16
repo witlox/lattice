@@ -135,9 +135,14 @@ impl<S: HeartbeatSink, H: HealthObserver> HeartbeatLoop<S, H> {
             ));
         }
 
-        let heartbeat = self
-            .generator
-            .generate(healthy, issues, alloc_count, fingerprint);
+        let heartbeat = self.generator.generate(
+            healthy,
+            issues,
+            alloc_count,
+            fingerprint,
+            false,      // reattach_in_progress — wired in Impl 6 via AllocationManager bridge
+            Vec::new(), // completion_reports — wired in Impl 6
+        );
 
         debug!(
             seq = heartbeat.sequence,

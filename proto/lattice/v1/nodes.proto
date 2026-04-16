@@ -30,6 +30,11 @@ service NodeService {
   // Register a compute node with the quorum
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
 
+  // Update only the agent_address on an already-registered node (IP-13).
+  // Separate from RegisterNode for address-only changes after agent restart
+  // on a new port. Rate-limited at the quorum side (1 per 5s per node_id).
+  rpc UpdateNodeAddress(UpdateNodeAddressRequest) returns (UpdateNodeAddressResponse);
+
   // Send a heartbeat from a compute node
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 
@@ -125,6 +130,11 @@ message NodeStatus {
   repeated MemoryDomainProto memory_domains = 50;
   repeated MemoryInterconnectProto memory_interconnects = 51;
   uint64 total_memory_capacity_bytes = 52;
+
+  // Dispatch fields (INV-D1, INV-D11)
+  string agent_address = 60;
+  uint32 consecutive_dispatch_failures = 61;
+  bool reattach_in_progress = 62;
 }
 
 // ─── Memory Topology Messages ────────────────────────────────
@@ -158,10 +168,27 @@ message RegisterNodeRequest {
   repeated MemoryDomainProto memory_domains = 7;
   repeated MemoryInterconnectProto memory_interconnects = 8;
   uint64 total_memory_capacity_bytes = 9;
+  // Agent gRPC callback address (host:port). Required for dispatch (INV-D1).
+  // Must match a SAN in the workload certificate (INV-D14). Empty or
+  // 0.0.0.0:0 or localhost:0 are rejected.
+  string agent_address = 10;
 }
 
 message RegisterNodeResponse {
   bool success = 1;
+  // Rejection reason when success=false. E.g., "agent_address_required",
+  // "agent_address_invalid", "address_not_in_cert_sans".
+  string reason = 2;
+}
+
+message UpdateNodeAddressRequest {
+  string node_id = 1;
+  string new_address = 2;
+}
+
+message UpdateNodeAddressResponse {
+  bool success = 1;
+  string reason = 2;
 }
 
 // ─── Heartbeat ───────────────────────────────────────────────
@@ -175,10 +202,39 @@ message HeartbeatRequest {
   uint64 sequence = 6;
   // Owner version for stale heartbeat rejection (ADV-06)
   uint64 owner_version = 7;
+  // Agent is still reattaching to surviving workload processes (DEC-DISP-10).
+  // Silent-sweep (INV-D8) suppresses detection for allocations on this node
+  // while the flag is effective. Lifecycle rules in INV-D5.
+  bool reattach_in_progress = 8;
+  // Per-allocation state changes accumulated since the previous heartbeat,
+  // keyed by allocation_id (INV-D13 — latest-phase-wins per allocation).
+  repeated CompletionReport completion_reports = 9;
 }
 
 message HeartbeatResponse {
   bool accepted = 1;
+}
+
+// ─── Completion Report ───────────────────────────────────────
+
+message CompletionReport {
+  string allocation_id = 1;
+  // Phase at the agent (Prologue maps to Staging at the global level).
+  CompletionPhase phase = 2;
+  // Set when transitioning into Running.
+  optional uint32 pid = 3;
+  // Set for Completed/Failed.
+  optional int32 exit_code = 4;
+  // Free-form for Failed; short annotation for others.
+  optional string reason = 5;
+}
+
+enum CompletionPhase {
+  COMPLETION_PHASE_UNSPECIFIED = 0;
+  COMPLETION_PHASE_STAGING = 1;
+  COMPLETION_PHASE_RUNNING = 2;
+  COMPLETION_PHASE_COMPLETED = 3;
+  COMPLETION_PHASE_FAILED = 4;
 }
 
 // ─── Health Check ────────────────────────────────────────────

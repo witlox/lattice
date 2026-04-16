@@ -3,9 +3,9 @@
 use chrono::{DateTime, Utc};
 use lattice_common::traits::AuditEntry;
 use lattice_common::types::{
-    AllocId, Allocation, AllocationState, CostWeights, ImageRef, IsolationLevel, Node, NodeId,
-    NodeOwnership, NodeState, Session, SessionId, Tenant, TenantId, TenantQuota, TopologyModel,
-    VCluster, VClusterId,
+    AllocId, Allocation, AllocationState, CompletionPhase, CostWeights, ImageRef, IsolationLevel,
+    Node, NodeId, NodeOwnership, NodeState, Session, SessionId, Tenant, TenantId, TenantQuota,
+    TopologyModel, VCluster, VClusterId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -44,6 +44,14 @@ pub enum Command {
         state: NodeState,
         reason: Option<String>,
     },
+    /// Update only the agent_address for a registered node (IP-13).
+    /// Separate from RegisterNode so agents restarting on a new port don't
+    /// have to re-submit capabilities and topology.
+    /// Validated against INV-D14 (cert-SAN binding) at the API layer.
+    UpdateNodeAddress {
+        node_id: NodeId,
+        new_address: String,
+    },
     ClaimNode {
         id: NodeId,
         ownership: NodeOwnership,
@@ -58,6 +66,55 @@ pub enum Command {
         /// Heartbeats with stale versions are rejected to prevent
         /// post-claim stale health records.
         owner_version: u64,
+        /// DEC-DISP-10: agent is still reattaching to surviving workload
+        /// processes. Flag lifecycle rules (INV-D5) are enforced by the
+        /// apply step: set only on first HB after a fresh registration,
+        /// grace timer absolute from first-set, one-way clear.
+        #[serde(default)]
+        reattach_in_progress: bool,
+    },
+
+    /// Apply a Completion Report delivered via a heartbeat (IP-03).
+    /// Validated at apply-time in order:
+    ///   1. INV-D12 source-auth: reporting node ∈ allocation.assigned_nodes
+    ///   2. INV-D7 monotonicity: phase strictly advances
+    ///   3. INV-D4 idempotency: (allocation_id, node, phase) not already applied
+    ///
+    /// On success: advances per-node phase, recomputes aggregate global
+    /// state per DEC-DISP-11, updates allocation.last_completion_report_at,
+    /// resets node.consecutive_dispatch_failures on Staging/Running.
+    ApplyCompletionReport {
+        node_id: NodeId,
+        allocation_id: AllocId,
+        phase: CompletionPhase,
+        pid: Option<u32>,
+        exit_code: Option<i32>,
+        reason: Option<String>,
+    },
+
+    /// Atomic rollback when a Dispatch Failure is declared (INV-D6 /
+    /// DEC-DISP-07). Releases ALL assigned nodes (all-or-nothing) and
+    /// atomically increments dispatch_retry_count, transitions to Pending
+    /// (or Failed at cap), and increments failed_node's
+    /// consecutive_dispatch_failures. If `consecutive_dispatch_failures`
+    /// reaches the node-level cap AND the cluster-wide ratio guard
+    /// permits, the node also transitions to Degraded in the same entry.
+    RollbackDispatch {
+        allocation_id: AllocId,
+        released_nodes: Vec<NodeId>,
+        /// The node whose dispatch failed (for counter attribution).
+        /// May be None for rollback triggered by silent-sweep (IP-15).
+        failed_node: Option<NodeId>,
+        observed_state_version: u64,
+        reason: String,
+    },
+
+    /// DEC-DISP-01 auto-recovery: probe-release a Degraded node after
+    /// `degraded_probe_interval`. Halves consecutive_dispatch_failures and
+    /// transitions back to Ready for a trial dispatch.
+    ProbeReleaseDegradedNode {
+        node_id: NodeId,
+        expected_degraded_at: DateTime<Utc>,
     },
 
     // ── Tenant commands ─────────────────────────────────────
@@ -166,6 +223,33 @@ impl fmt::Display for Command {
             Command::CompactAuditLog {
                 entries_to_archive, ..
             } => write!(f, "CompactAuditLog({entries_to_archive} entries)"),
+            Command::UpdateNodeAddress {
+                node_id,
+                new_address,
+            } => {
+                write!(f, "UpdateNodeAddress({node_id}, {new_address})")
+            }
+            Command::ApplyCompletionReport {
+                node_id,
+                allocation_id,
+                phase,
+                ..
+            } => write!(
+                f,
+                "ApplyCompletionReport({node_id}, {allocation_id}, {phase:?})"
+            ),
+            Command::RollbackDispatch {
+                allocation_id,
+                released_nodes,
+                ..
+            } => write!(
+                f,
+                "RollbackDispatch({allocation_id}, {} nodes)",
+                released_nodes.len()
+            ),
+            Command::ProbeReleaseDegradedNode { node_id, .. } => {
+                write!(f, "ProbeReleaseDegradedNode({node_id})")
+            }
         }
     }
 }

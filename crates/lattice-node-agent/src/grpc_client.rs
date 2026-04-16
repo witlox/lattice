@@ -91,6 +91,11 @@ impl GrpcHeartbeatSink {
 #[async_trait]
 impl HeartbeatSink for GrpcHeartbeatSink {
     async fn send(&self, heartbeat: Heartbeat) -> Result<(), String> {
+        let completion_reports = heartbeat
+            .completion_reports
+            .into_iter()
+            .map(completion_report_to_proto)
+            .collect();
         let req = pb::HeartbeatRequest {
             node_id: heartbeat.node_id,
             healthy: heartbeat.healthy,
@@ -99,6 +104,8 @@ impl HeartbeatSink for GrpcHeartbeatSink {
             conformance_fingerprint: heartbeat.conformance_fingerprint.unwrap_or_default(),
             sequence: heartbeat.sequence,
             owner_version: heartbeat.owner_version,
+            reattach_in_progress: heartbeat.reattach_in_progress,
+            completion_reports,
         };
 
         let mut client = self.client.clone();
@@ -144,10 +151,14 @@ impl GrpcNodeRegistry {
     }
 
     /// Register this node with the quorum.
+    ///
+    /// `agent_address` is the gRPC endpoint on which the control plane will
+    /// dispatch RunAllocation to this agent (INV-D1). Must be non-empty.
     pub async fn register_node(
         &self,
         node_id: &str,
         capabilities: &NodeCapabilities,
+        agent_address: &str,
     ) -> Result<(), String> {
         let (memory_domains, memory_interconnects, total_memory_capacity_bytes) =
             match &capabilities.memory_topology {
@@ -164,15 +175,60 @@ impl GrpcNodeRegistry {
             memory_domains,
             memory_interconnects,
             total_memory_capacity_bytes,
+            agent_address: agent_address.to_string(),
         };
 
         let mut client = self.client.clone();
-        client
+        let resp = client
             .register_node(req)
             .await
             .map_err(|e| format!("register_node RPC failed: {e}"))?;
+        let inner = resp.into_inner();
+        if !inner.success {
+            return Err(format!("register_node rejected: {}", inner.reason));
+        }
 
         Ok(())
+    }
+
+    /// Update only the agent_address for an already-registered node (IP-13).
+    pub async fn update_node_address(
+        &self,
+        node_id: &str,
+        new_address: &str,
+    ) -> Result<(), String> {
+        let mut client = self.client.clone();
+        let resp = client
+            .update_node_address(pb::UpdateNodeAddressRequest {
+                node_id: node_id.to_string(),
+                new_address: new_address.to_string(),
+            })
+            .await
+            .map_err(|e| format!("update_node_address RPC failed: {e}"))?;
+        let inner = resp.into_inner();
+        if !inner.success {
+            return Err(format!("update_node_address rejected: {}", inner.reason));
+        }
+        Ok(())
+    }
+}
+
+/// Convert an in-memory CompletionReport into its protobuf representation.
+fn completion_report_to_proto(
+    report: lattice_common::types::CompletionReport,
+) -> pb::CompletionReport {
+    let phase = match report.phase {
+        lattice_common::types::CompletionPhase::Staging => pb::CompletionPhase::Staging,
+        lattice_common::types::CompletionPhase::Running => pb::CompletionPhase::Running,
+        lattice_common::types::CompletionPhase::Completed => pb::CompletionPhase::Completed,
+        lattice_common::types::CompletionPhase::Failed => pb::CompletionPhase::Failed,
+    } as i32;
+    pb::CompletionReport {
+        allocation_id: report.allocation_id.to_string(),
+        phase,
+        pid: report.pid,
+        exit_code: report.exit_code,
+        reason: report.reason,
     }
 }
 
@@ -365,6 +421,11 @@ fn node_from_status(status: pb::NodeStatus) -> Node {
             chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default()
         }),
         owner_version: 0,
+        agent_address: status.agent_address,
+        consecutive_dispatch_failures: status.consecutive_dispatch_failures,
+        degraded_at: None,
+        reattach_in_progress: status.reattach_in_progress,
+        reattach_first_set_at: None,
     }
 }
 

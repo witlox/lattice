@@ -160,12 +160,16 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to connect registry: {e}"))?;
     info!("Connected to quorum");
 
-    // Register this node
+    // Register this node (INV-D1: agent_address is the reachable gRPC
+    // endpoint on which the control plane dispatches RunAllocation).
     grpc_registry
-        .register_node(&args.node_id, &capabilities)
+        .register_node(&args.node_id, &capabilities, &args.grpc_addr)
         .await
         .map_err(|e| anyhow::anyhow!("failed to register node: {e}"))?;
-    info!("Node {} registered", args.node_id);
+    info!(
+        "Node {} registered with agent_address {}",
+        args.node_id, args.grpc_addr
+    );
 
     // Set up heartbeat sink
     let heartbeat_sink = GrpcHeartbeatSink::connect(&args.quorum_endpoint, tls_config)

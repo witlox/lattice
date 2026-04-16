@@ -69,9 +69,14 @@ impl pb::node_agent_service_server::NodeAgentService for NodeAgentServer {
     ) -> Result<Response<pb::RunAllocationResponse>, Status> {
         let req = request.into_inner();
         info!(alloc_id = %req.allocation_id, "RunAllocation received");
+        // NOTE: Stub acceptance path. The real dispatch implementation lives
+        // in the handler override registered in lattice-node-agent::main via
+        // AllocationManager actor wiring. This stub is kept only for unit
+        // tests that exercise the gRPC surface in isolation.
         Ok(Response::new(pb::RunAllocationResponse {
             accepted: true,
             message: "accepted".into(),
+            refusal_reason: None,
         }))
     }
 

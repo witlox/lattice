@@ -11,15 +11,55 @@ use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use lattice_common::error::LatticeError;
 use lattice_common::traits::{AuditEntry, AuditFilter};
 use lattice_common::types::{
-    AllocId, Allocation, AllocationState, IsolationLevel, NetworkDomain, NetworkDomainState, Node,
-    NodeId, NodeOwnership, NodeState, RegisteredEndpoint, ServiceRegistryEntry, Session, SessionId,
-    Tenant, TenantId, TenantQuota, TopologyModel, VCluster, VClusterId,
+    AllocId, Allocation, AllocationState, CompletionPhase, IsolationLevel, NetworkDomain,
+    NetworkDomainState, Node, NodeId, NodeOwnership, NodeState, RegisteredEndpoint,
+    ServiceRegistryEntry, Session, SessionId, Tenant, TenantId, TenantQuota, TopologyModel,
+    VCluster, VClusterId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::commands::{Command, CommandResponse};
 use crate::TypeConfig;
+
+/// INV-D7: does the reported phase regress relative to the allocation's
+/// current state? Returns true if applying `phase` would move the state
+/// backward or laterally. Acceptable progressions:
+///   (pre-Staging) Pending → Staging → Running → Completed | Failed.
+fn is_phase_regression(current: &AllocationState, phase: CompletionPhase) -> bool {
+    // Terminal states never accept new reports other than idempotent repeats
+    // (idempotent repeats are caught by is_same_phase and short-circuited).
+    let current_rank = state_rank(current);
+    let reported_rank = phase_rank(phase);
+    reported_rank < current_rank
+}
+
+/// INV-D4: is this report a no-op idempotent replay of the current state?
+fn is_same_phase(current: &AllocationState, phase: CompletionPhase) -> bool {
+    state_rank(current) == phase_rank(phase)
+}
+
+fn state_rank(s: &AllocationState) -> u8 {
+    match s {
+        AllocationState::Pending => 0,
+        AllocationState::Staging => 1,
+        AllocationState::Running => 2,
+        AllocationState::Checkpointing => 2, // same level as Running for phase compare
+        AllocationState::Suspended => 2,
+        AllocationState::Completed => 3,
+        AllocationState::Failed => 3,
+        AllocationState::Cancelled => 3,
+    }
+}
+
+fn phase_rank(p: CompletionPhase) -> u8 {
+    match p {
+        CompletionPhase::Staging => 1,
+        CompletionPhase::Running => 2,
+        CompletionPhase::Completed => 3,
+        CompletionPhase::Failed => 3,
+    }
+}
 
 /// Metadata about an archived chunk of audit log entries stored in external storage (S3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,7 +263,39 @@ impl GlobalState {
                 id,
                 timestamp,
                 owner_version,
-            } => self.record_heartbeat(id, timestamp, owner_version),
+                reattach_in_progress,
+            } => self.record_heartbeat(id, timestamp, owner_version, reattach_in_progress),
+            Command::UpdateNodeAddress {
+                node_id,
+                new_address,
+            } => self.update_node_address(node_id, new_address),
+            Command::ApplyCompletionReport {
+                node_id,
+                allocation_id,
+                phase,
+                pid,
+                exit_code,
+                reason,
+            } => {
+                self.apply_completion_report(node_id, allocation_id, phase, pid, exit_code, reason)
+            }
+            Command::RollbackDispatch {
+                allocation_id,
+                released_nodes,
+                failed_node,
+                observed_state_version,
+                reason,
+            } => self.rollback_dispatch(
+                allocation_id,
+                released_nodes,
+                failed_node,
+                observed_state_version,
+                reason,
+            ),
+            Command::ProbeReleaseDegradedNode {
+                node_id,
+                expected_degraded_at,
+            } => self.probe_release_degraded_node(node_id, expected_degraded_at),
             Command::CreateTenant(tenant) => self.create_tenant(tenant),
             Command::UpdateTenant {
                 id,
@@ -611,6 +683,7 @@ impl GlobalState {
         id: NodeId,
         timestamp: DateTime<Utc>,
         owner_version: u64,
+        reattach_in_progress: bool,
     ) -> CommandResponse {
         let Some(node) = self.nodes.get_mut(&id) else {
             return CommandResponse::Error(format!("Node not found: {id}"));
@@ -623,6 +696,257 @@ impl GlobalState {
             ));
         }
         node.last_heartbeat = Some(timestamp);
+
+        // INV-D5 flag lifecycle (DEC-DISP-03 / DEC-DISP-10 / D-ADV-ARCH-06):
+        //   1. The flag may only transition false → true on the first
+        //      heartbeat following a fresh RegisterNode / UpdateNodeAddress
+        //      (we cannot observe that here, but the first true-valued
+        //      heartbeat since the node had no prior first_set_at is the
+        //      proxy). Once set, reattach_first_set_at is the absolute
+        //      grace-window start.
+        //   2. Subsequent true-valued heartbeats during the grace window do
+        //      NOT reset the timer.
+        //   3. Set to false is one-way within a registration lifetime: once
+        //      cleared, the flag cannot return to true without a fresh
+        //      RegisterNode (which resets first_set_at).
+        //   4. After `reattach_grace_period` has elapsed since
+        //      reattach_first_set_at, INV-D8 treats the flag as false
+        //      regardless of its recorded value. Enforcement of that
+        //      deadline lives in the silent-sweep consumer, not here.
+        match (node.reattach_in_progress, reattach_in_progress) {
+            (false, true) => {
+                if node.reattach_first_set_at.is_none() {
+                    node.reattach_in_progress = true;
+                    node.reattach_first_set_at = Some(timestamp);
+                }
+                // Rule 3: once cleared, cannot return to true.
+            }
+            (true, true) => {
+                // No-op: flag already set; do not reset timer.
+            }
+            (true, false) => {
+                // One-way clear: leave first_set_at in place so the
+                // lifecycle remains observable.
+                node.reattach_in_progress = false;
+            }
+            (false, false) => {
+                // No-op.
+            }
+        }
+
+        CommandResponse::Ok
+    }
+
+    // ── Dispatch command handlers (INV-D1, INV-D4/D6/D7/D11/D12) ────────
+
+    fn update_node_address(&mut self, node_id: NodeId, new_address: String) -> CommandResponse {
+        // Syntactic invariants are checked at the API layer (INV-D1); this
+        // apply-step re-validates that the address is non-empty as a
+        // defense-in-depth against crafted proposals.
+        if new_address.trim().is_empty() {
+            return CommandResponse::Error("agent_address_required".into());
+        }
+        let Some(node) = self.nodes.get_mut(&node_id) else {
+            return CommandResponse::Error(format!("Node not found: {node_id}"));
+        };
+        if node.agent_address == new_address {
+            return CommandResponse::Ok;
+        }
+        node.agent_address = new_address;
+        // Re-registration semantics: a new address is observable like a
+        // fresh registration, so reset the reattach lifecycle tracker.
+        node.reattach_in_progress = false;
+        node.reattach_first_set_at = None;
+        CommandResponse::Ok
+    }
+
+    fn apply_completion_report(
+        &mut self,
+        node_id: NodeId,
+        allocation_id: AllocId,
+        phase: CompletionPhase,
+        pid: Option<u32>,
+        exit_code: Option<i32>,
+        reason: Option<String>,
+    ) -> CommandResponse {
+        let Some(alloc) = self.allocations.get_mut(&allocation_id) else {
+            return CommandResponse::Error(format!("Allocation not found: {allocation_id}"));
+        };
+
+        // INV-D12 source-auth: reporting node must be assigned to this allocation.
+        if !alloc.assigned_nodes.contains(&node_id) {
+            // Apply-time counter increment happens in the metrics layer at
+            // a higher level; here we just reject.
+            return CommandResponse::Error(format!(
+                "cross_node_report: {node_id} not in assigned_nodes for {allocation_id}"
+            ));
+        }
+
+        // INV-D7 monotonicity: reject phases that regress relative to
+        // the current global state. We compute the current per-node phase
+        // contribution from the allocation state (local phase tracking
+        // is mirrored from the quorum's knowledge of what has been applied).
+        if is_phase_regression(&alloc.state, phase) {
+            return CommandResponse::Error(format!(
+                "phase_regression: allocation {allocation_id} current state {:?} vs reported {:?}",
+                alloc.state, phase
+            ));
+        }
+
+        // INV-D4 idempotency: a report whose phase matches current state
+        // is a harmless replay — short-circuit as success with no side effects.
+        if is_same_phase(&alloc.state, phase) {
+            return CommandResponse::Ok;
+        }
+
+        // Apply state transition. DEC-DISP-11 aggregation rule for
+        // multi-node allocations: Staging if any node is in Prologue,
+        // Running only when ALL are Running+, Completed only when ALL exit 0,
+        // Failed if ANY fails. Per-node tracking lives in agent-side
+        // AllocationManager; at the quorum, we approximate by transitioning
+        // based on the latest-reported phase with the following rules:
+        //   - phase Failed → allocation Failed immediately
+        //   - phase Completed → only if this is the only assigned node or
+        //     all other nodes have already reported Completed (tracked via
+        //     last_completion_report_at per node — simplified: for now, any
+        //     Completed advances if allocation was Running)
+        //   - phase Running → allocation Running (DEC-DISP-11 "all nodes
+        //     running" aggregation is approximated; multi-node refinement
+        //     requires per-node tracking introduced in Impl 5/8)
+        let new_state = match phase {
+            CompletionPhase::Staging => AllocationState::Staging,
+            CompletionPhase::Running => AllocationState::Running,
+            CompletionPhase::Completed => AllocationState::Completed,
+            CompletionPhase::Failed => AllocationState::Failed,
+        };
+        alloc.state = new_state;
+        alloc.last_completion_report_at = Some(Utc::now());
+        if let Some(code) = exit_code {
+            alloc.exit_code = Some(code);
+        }
+        if reason.is_some() {
+            alloc.message = reason;
+        }
+        if pid.is_some() {
+            // PID is agent-local; not surfaced in the quorum state machine
+            // beyond acknowledging the transition.
+        }
+        match phase {
+            CompletionPhase::Completed | CompletionPhase::Failed => {
+                alloc.completed_at = Some(Utc::now());
+            }
+            CompletionPhase::Running if alloc.started_at.is_none() => {
+                alloc.started_at = Some(Utc::now());
+            }
+            _ => {}
+        }
+        alloc.state_version += 1;
+
+        // INV-D11 reset: a successful Staging/Running report is evidence
+        // that dispatch worked on this node, so clear its failure counter.
+        if matches!(phase, CompletionPhase::Staging | CompletionPhase::Running) {
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                node.consecutive_dispatch_failures = 0;
+            }
+        }
+
+        CommandResponse::Ok
+    }
+
+    fn rollback_dispatch(
+        &mut self,
+        allocation_id: AllocId,
+        released_nodes: Vec<NodeId>,
+        failed_node: Option<NodeId>,
+        observed_state_version: u64,
+        reason: String,
+    ) -> CommandResponse {
+        let Some(alloc) = self.allocations.get_mut(&allocation_id) else {
+            return CommandResponse::Error(format!("Allocation not found: {allocation_id}"));
+        };
+
+        // INV-D6 optimistic concurrency: reject if the allocation has
+        // advanced since the dispatcher's observation.
+        if alloc.state_version != observed_state_version {
+            return CommandResponse::Error(format!(
+                "state_version_mismatch: observed {observed_state_version}, current {}",
+                alloc.state_version
+            ));
+        }
+
+        const MAX_DISPATCH_RETRIES: u32 = 3;
+
+        // Release all assigned nodes (DEC-DISP-07 all-or-nothing).
+        for node_id in &released_nodes {
+            if let Some(node) = self.nodes.get_mut(node_id) {
+                if node.owner.as_ref().map(|o| o.allocation) == Some(allocation_id) {
+                    node.owner = None;
+                    node.owner_version += 1;
+                }
+            }
+        }
+
+        // Clear allocation's assigned_nodes and increment retry counter.
+        alloc.assigned_nodes.clear();
+        alloc.dispatch_retry_count += 1;
+        alloc.message = Some(reason);
+
+        // Cap check: move to Failed if we've exhausted the retry budget,
+        // otherwise return to Pending for re-placement.
+        if alloc.dispatch_retry_count >= MAX_DISPATCH_RETRIES {
+            alloc.state = AllocationState::Failed;
+            alloc.completed_at = Some(Utc::now());
+        } else {
+            alloc.state = AllocationState::Pending;
+            alloc.started_at = None;
+        }
+        alloc.state_version += 1;
+
+        // INV-D11: credit the specific node whose dispatch failed.
+        if let Some(node_id) = failed_node {
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                node.consecutive_dispatch_failures =
+                    node.consecutive_dispatch_failures.saturating_add(1);
+                // Degraded transition is subject to the cluster-wide guard
+                // (DEC-DISP-01); simplified here: transition when the
+                // node-level cap is reached.
+                const MAX_NODE_DISPATCH_FAILURES: u32 = 5;
+                if node.consecutive_dispatch_failures >= MAX_NODE_DISPATCH_FAILURES
+                    && matches!(node.state, NodeState::Ready)
+                {
+                    node.state = NodeState::Degraded {
+                        reason: "max_node_dispatch_failures".into(),
+                    };
+                    node.degraded_at = Some(Utc::now());
+                }
+            }
+        }
+
+        CommandResponse::Ok
+    }
+
+    fn probe_release_degraded_node(
+        &mut self,
+        node_id: NodeId,
+        expected_degraded_at: DateTime<Utc>,
+    ) -> CommandResponse {
+        let Some(node) = self.nodes.get_mut(&node_id) else {
+            return CommandResponse::Error(format!("Node not found: {node_id}"));
+        };
+        // Version check: bail if the node has been degraded again since
+        // the dispatcher observed the prior degraded_at timestamp.
+        if node.degraded_at != Some(expected_degraded_at) {
+            return CommandResponse::Error(format!(
+                "degraded_at_mismatch: observed {expected_degraded_at}, current {:?}",
+                node.degraded_at
+            ));
+        }
+        if !matches!(node.state, NodeState::Degraded { .. }) {
+            return CommandResponse::Error(format!("Node {node_id} is not Degraded"));
+        }
+        node.consecutive_dispatch_failures /= 2;
+        node.state = NodeState::Ready;
+        node.degraded_at = None;
         CommandResponse::Ok
     }
 
@@ -1466,6 +1790,7 @@ mod tests {
             id: "n1".into(),
             timestamp: Utc::now(),
             owner_version: 0,
+            reattach_in_progress: false,
         });
         assert!(matches!(resp, CommandResponse::Error(e) if e.contains("Stale heartbeat")));
 
@@ -1475,6 +1800,7 @@ mod tests {
             id: "n1".into(),
             timestamp: ts,
             owner_version: 1,
+            reattach_in_progress: false,
         });
         assert!(matches!(resp, CommandResponse::Ok));
         assert_eq!(state.nodes["n1"].last_heartbeat, Some(ts));
@@ -1551,6 +1877,7 @@ mod tests {
             id: "n1".into(),
             timestamp: ts,
             owner_version: 0, // matches initial version
+            reattach_in_progress: false,
         });
 
         assert_eq!(state.nodes["n1"].last_heartbeat, Some(ts));

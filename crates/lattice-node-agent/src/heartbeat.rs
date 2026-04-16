@@ -7,7 +7,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use lattice_common::types::NodeId;
+use lattice_common::types::{CompletionReport, NodeId};
 
 /// Payload sent from node agent to quorum every `heartbeat_interval`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +22,15 @@ pub struct Heartbeat {
     /// Owner version for stale heartbeat rejection (ADV-06).
     #[serde(default)]
     pub owner_version: u64,
+    /// Agent is still reattaching to surviving Workload Processes after
+    /// a restart (DEC-DISP-10 / INV-D5). Silent-sweep (INV-D8) honours this
+    /// flag subject to the lifecycle rules at the quorum.
+    #[serde(default)]
+    pub reattach_in_progress: bool,
+    /// Per-allocation state changes accumulated since the previous
+    /// heartbeat (INV-D13 latest-wins per allocation).
+    #[serde(default)]
+    pub completion_reports: Vec<CompletionReport>,
 }
 
 /// Generates heartbeats with monotonically increasing sequence numbers.
@@ -39,12 +48,15 @@ impl HeartbeatGenerator {
     }
 
     /// Generate a new heartbeat with current health data.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
         healthy: bool,
         issues: Vec<String>,
         running_allocations: u32,
         conformance_fingerprint: Option<String>,
+        reattach_in_progress: bool,
+        completion_reports: Vec<CompletionReport>,
     ) -> Heartbeat {
         let seq = self.next_sequence;
         self.next_sequence += 1;
@@ -57,6 +69,8 @@ impl HeartbeatGenerator {
             running_allocations,
             conformance_fingerprint,
             owner_version: 0, // Updated by agent when ownership changes
+            reattach_in_progress,
+            completion_reports,
         }
     }
 
@@ -158,14 +172,14 @@ mod tests {
     fn heartbeat_generator_increments_sequence() {
         let mut gen = HeartbeatGenerator::new("node-0".to_string());
 
-        let hb1 = gen.generate(true, vec![], 0, None);
+        let hb1 = gen.generate(true, vec![], 0, None, false, Vec::new());
         assert_eq!(hb1.sequence, 1);
         assert_eq!(hb1.node_id, "node-0");
 
-        let hb2 = gen.generate(true, vec![], 1, None);
+        let hb2 = gen.generate(true, vec![], 1, None, false, Vec::new());
         assert_eq!(hb2.sequence, 2);
 
-        let hb3 = gen.generate(false, vec!["gpu error".into()], 0, None);
+        let hb3 = gen.generate(false, vec!["gpu error".into()], 0, None, false, Vec::new());
         assert_eq!(hb3.sequence, 3);
         assert!(!hb3.healthy);
         assert_eq!(hb3.issues.len(), 1);
@@ -174,7 +188,14 @@ mod tests {
     #[test]
     fn heartbeat_carries_conformance_fingerprint() {
         let mut gen = HeartbeatGenerator::new("node-0".to_string());
-        let hb = gen.generate(true, vec![], 0, Some("abc123".to_string()));
+        let hb = gen.generate(
+            true,
+            vec![],
+            0,
+            Some("abc123".to_string()),
+            false,
+            Vec::new(),
+        );
         assert_eq!(hb.conformance_fingerprint.as_deref(), Some("abc123"));
     }
 
@@ -182,7 +203,7 @@ mod tests {
     fn tracker_records_heartbeat() {
         let mut tracker = HeartbeatTracker::standard();
         let mut gen = HeartbeatGenerator::new("node-0".to_string());
-        let hb = gen.generate(true, vec![], 0, None);
+        let hb = gen.generate(true, vec![], 0, None, false, Vec::new());
 
         assert!(tracker.record(&hb));
         assert_eq!(tracker.last_sequence(), 1);
@@ -193,8 +214,8 @@ mod tests {
         let mut tracker = HeartbeatTracker::standard();
         let mut gen = HeartbeatGenerator::new("node-0".to_string());
 
-        let hb1 = gen.generate(true, vec![], 0, None);
-        let hb2 = gen.generate(true, vec![], 0, None);
+        let hb1 = gen.generate(true, vec![], 0, None, false, Vec::new());
+        let hb2 = gen.generate(true, vec![], 0, None, false, Vec::new());
 
         assert!(tracker.record(&hb2));
         // hb1 has lower sequence than hb2 — should be rejected
@@ -214,6 +235,8 @@ mod tests {
             running_allocations: 0,
             conformance_fingerprint: None,
             owner_version: 0,
+            reattach_in_progress: false,
+            completion_reports: Vec::new(),
         };
 
         tracker.record(&hb);
@@ -235,6 +258,8 @@ mod tests {
             running_allocations: 0,
             conformance_fingerprint: None,
             owner_version: 0,
+            reattach_in_progress: false,
+            completion_reports: Vec::new(),
         };
 
         tracker.record(&hb);
@@ -275,6 +300,8 @@ mod tests {
             running_allocations: 0,
             conformance_fingerprint: None,
             owner_version: 0,
+            reattach_in_progress: false,
+            completion_reports: Vec::new(),
         };
         tracker.record(&hb);
         assert!(!tracker.is_timed_out(Utc::now()));

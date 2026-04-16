@@ -57,6 +57,29 @@ message RunAllocationRequest {
 message RunAllocationResponse {
   bool accepted = 1;
   string message = 2;
+  // Typed refusal reason when accepted=false (DEC-DISP-05). Unknown values
+  // (from a newer agent) MUST be treated as REFUSAL_MALFORMED_REQUEST
+  // by the Dispatcher (safe-fail path per D-ADV-ARCH-10).
+  optional RefusalReason refusal_reason = 3;
+}
+
+enum RefusalReason {
+  REFUSAL_UNSPECIFIED = 0;
+  // Agent temporarily saturated; Dispatcher should retry on the same node
+  // within the current attempt budget with attempt_backoff.
+  REFUSAL_BUSY = 1;
+  // Agent refuses this allocation shape (missing GPU driver, incompatible
+  // uenv, etc.). Dispatcher rolls back immediately to Pending so the
+  // scheduler re-places on a capable node.
+  REFUSAL_UNSUPPORTED_CAPABILITY = 2;
+  // Allocation spec is malformed (invalid image, missing entrypoint, both
+  // uenv and image set, forbidden env_var key). Dispatcher transitions
+  // allocation directly to Failed; user must resubmit.
+  REFUSAL_MALFORMED_REQUEST = 3;
+  // Agent already has this allocation in its AllocationManager (INV-D3
+  // idempotency). Dispatcher treats as success and waits for Completion
+  // Reports on subsequent heartbeats.
+  REFUSAL_ALREADY_RUNNING = 4;
 }
 
 // ─── StopAllocation ─────────────────────────────────────────

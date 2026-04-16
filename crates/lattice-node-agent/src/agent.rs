@@ -111,6 +111,8 @@ impl NodeAgent {
             health.issues(),
             self.allocations.active_count(),
             self.conformance_fingerprint.clone(),
+            false,
+            self.allocations.drain_reports(),
         )
     }
 
