@@ -2,7 +2,9 @@ Feature: Allocation Dispatch
   The bridge from a scheduler node-assignment to an actual Workload Process on
   the target node. Exercises the real wire (RunAllocation RPC, Completion
   Reports on Heartbeat) rather than the abstract state machine.
-  Maps to invariants INV-D1 through INV-D10 in specs/invariants.md.
+  Maps to invariants INV-D1 through INV-D14 in specs/invariants.md
+  and design decisions DEC-DISP-01..11 in
+  specs/architecture/interfaces/allocation-dispatch.md.
 
   Background:
     Given a quorum with one leader and two followers
@@ -224,3 +226,185 @@ Feature: Allocation Dispatch
     And Node 4's consecutive_dispatch_failures is incremented
     And Nodes 1, 2, 3 each receive a fire-and-forget StopAllocation RPC
     And counter lattice_dispatch_rollback_stop_sent_total is incremented 3 times
+
+  # ─── Node-level failure counter + Degraded transition (INV-D11, FM-D9) ──
+
+  Scenario: Node reaches max_node_dispatch_failures and transitions to Degraded (INV-D11)
+    Given a Ready node "x1000c0s0b0n0" with consecutive_dispatch_failures 4
+    And the global Degraded ratio guard is inactive
+    When a dispatch to "x1000c0s0b0n0" fails and triggers RollbackDispatch
+    Then the node's consecutive_dispatch_failures becomes 5
+    And the node state transitions to "Degraded" in the same Raft proposal
+    And the node's degraded_at timestamp is set to the commit time
+    And the scheduler's available_nodes() no longer includes "x1000c0s0b0n0"
+
+  Scenario: Degraded node returns to Ready after successful probe-dispatch (DEC-DISP-01)
+    Given a Degraded node "x1000c0s0b0n0" with consecutive_dispatch_failures 6
+    And degraded_at was set more than degraded_probe_interval ago
+    When the Dispatcher proposes ProbeReleaseDegradedNode
+    Then the node's consecutive_dispatch_failures is halved to 3
+    And the node state transitions back to "Ready"
+    When the next dispatch to "x1000c0s0b0n0" succeeds
+    Then consecutive_dispatch_failures resets to 0
+
+  Scenario: Cluster-wide Degraded ratio guard suspends INV-D11 auto-transition (DEC-DISP-01)
+    Given a cluster of 10 Ready nodes with consecutive_dispatch_failures 4 each
+    When 4 different allocations each fail dispatch on 4 different nodes in the guard_window
+    Then 3 nodes transition to Degraded (30% ratio threshold reached)
+    And the 4th node's consecutive_dispatch_failures increments but state stays "Ready"
+    And the gauge lattice_cluster_wide_dispatch_degradation_active is 1
+
+  # ─── Completion Report source authentication (INV-D12) ────────────
+
+  Scenario: Completion Report from node not in assigned_nodes is rejected (INV-D12)
+    Given allocation "alloc-1" with assigned_nodes ["node-A"]
+    When a heartbeat from "node-B" arrives carrying a Completion Report for "alloc-1" phase "Failed"
+    Then the quorum rejects the report at apply-step
+    And counter lattice_completion_report_cross_node_total{node_id="node-B"} is incremented
+    And allocation "alloc-1" state is unchanged
+    And no audit event for "alloc-1" is emitted
+
+  # ─── Buffer latest-wins per allocation (INV-D13) ───────────────────
+
+  Scenario: Agent buffer upserts Completion Report per allocation (INV-D13)
+    Given agent has a buffered Completion Report for allocation "alloc-1" with phase "Staging"
+    When the runtime pushes a new Completion Report for allocation "alloc-1" with phase "Running"
+    Then the buffer contains exactly one entry for "alloc-1"
+    And that entry has phase "Running"
+    And the heartbeat payload carries exactly one report for "alloc-1"
+
+  # ─── Cert-SAN binding for agent address (INV-D14) ──────────────────
+
+  Scenario: RegisterNode with agent_address not in cert SANs is rejected (INV-D14)
+    Given an agent for node "x1000c0s0b0n0" authenticated with a cert whose SANs are ["10.1.0.5", "agent-1.hsn.example"]
+    When the agent calls RegisterNode with agent_address "10.1.0.99:50052"
+    Then the quorum rejects the proposal with reason "address_not_in_cert_sans"
+    And the node record is not created
+
+  Scenario: UpdateNodeAddress with address in cert SANs is accepted (INV-D14)
+    Given a registered node "x1000c0s0b0n0" with cert SANs ["10.1.0.5", "10.1.0.6"]
+    When the agent calls UpdateNodeAddress with new_address "10.1.0.6:50062"
+    Then the quorum commits the update
+    And the node record's agent_address becomes "10.1.0.6:50062"
+
+  # ─── Silent-sweep ghosting detection (INV-D8 extended, D-ADV-ARCH-09) ──
+
+  Scenario: ALREADY_RUNNING ghost detected via no-progress predicate (INV-D8)
+    Given a Ready node "x1000c0s0b0n0" that is heartbeating normally
+    And an allocation "alloc-1" assigned to that node with assigned_at 5 minutes ago
+    And the agent responded "accepted: true, refusal_reason: ALREADY_RUNNING" but the allocation is not actually registered on the agent
+    And no Completion Report for "alloc-1" has ever arrived
+    When the scheduler's silent-sweep runs after heartbeat_interval + grace_period since last_completion_report_at
+    Then the allocation state transitions to "Failed" with reason "node_silent_or_no_progress"
+
+  Scenario: Freshly-placed allocation is exempt from silent-sweep (INV-D8, D-ADV-ARCH-07)
+    Given allocation "alloc-1" was just assigned to "x1000c0s0b0n0" 1 second ago
+    And no heartbeat from "x1000c0s0b0n0" has arrived since assignment
+    When the scheduler's silent-sweep runs
+    Then the sweep does not mark "alloc-1" as node_silent
+    And the allocation remains in state "Running"
+    When heartbeat_interval + grace_period elapses without a heartbeat or Completion Report
+    Then the next sweep marks "alloc-1" as "Failed" with reason "node_silent"
+
+  # ─── Reattach flag lifecycle (INV-D5, D-ADV-ARCH-06) ───────────────
+
+  Scenario: reattach_in_progress flag grace window is absolute from first-set (INV-D5)
+    Given node "x1000c0s0b0n0" just completed a RegisterNode
+    When the first heartbeat arrives with reattach_in_progress true
+    Then the quorum records reattach_first_set_at as the commit time
+    When 10 more heartbeats arrive each with reattach_in_progress true within reattach_grace_period
+    Then reattach_first_set_at is unchanged (grace timer does not reset)
+    When reattach_grace_period elapses
+    Then INV-D8 silent-sweep treats the flag as false regardless of subsequent heartbeat values
+
+  Scenario: Clearing reattach_in_progress is one-way within registration lifetime (INV-D5)
+    Given node "x1000c0s0b0n0" has reattach_in_progress cleared to false
+    When a heartbeat arrives with reattach_in_progress true but no new RegisterNode or UpdateNodeAddress
+    Then the quorum rejects the transition; reattach_in_progress stays false
+    And counter lattice_completion_report_phase_regression_total increments (anomaly)
+
+  # ─── Leadership change behavior (DEC-DISP-04, D-ADV-ARCH-04) ───────
+
+  Scenario: New Raft leader pauses Dispatcher for one heartbeat_interval (DEC-DISP-04)
+    Given a lattice-api cluster where node 1 is the Raft leader and running the Dispatcher
+    When node 1 loses leadership and node 2 becomes the new leader
+    Then node 1's Dispatcher halts any in-flight attempts
+    And node 2's Dispatcher does not begin its loop for at least heartbeat_interval
+    And any in-flight Completion Reports from node 1's attempts that arrive in the pause window are applied normally
+
+  # ─── Refusal reason handling (DEC-DISP-05) ─────────────────────────
+
+  Scenario: Agent returns BUSY and Dispatcher retries within budget (DEC-DISP-05)
+    Given a Ready node "x1000c0s0b0n0" whose agent is temporarily saturated
+    When the Dispatcher calls RunAllocation and receives accepted:false refusal_reason:BUSY
+    Then the attempt is counted toward the per-attempt budget but dispatch does not rollback
+    And the Dispatcher backs off per attempt_backoff schedule and retries
+    When the agent accepts on a later attempt
+    Then the allocation proceeds to Running normally
+
+  Scenario: Agent returns UNSUPPORTED_CAPABILITY triggering immediate rollback (DEC-DISP-05)
+    Given a Ready node "x1000c0s0b0n0" that lacks a required GPU type
+    And an allocation requesting GPU type "GH200"
+    When the Dispatcher calls RunAllocation and receives accepted:false refusal_reason:UNSUPPORTED_CAPABILITY
+    Then the Dispatcher immediately submits RollbackDispatch without exhausting the retry budget
+    And the allocation returns to Pending
+    And the scheduler re-places it on a node with matching capabilities
+
+  Scenario: Agent returns MALFORMED_REQUEST triggering terminal Failed (DEC-DISP-05)
+    Given a Ready node "x1000c0s0b0n0" with a valid agent
+    And an allocation with an invalid image reference "not-a-real:tag@"
+    When the Dispatcher calls RunAllocation and receives accepted:false refusal_reason:MALFORMED_REQUEST
+    Then the allocation state transitions directly to "Failed"
+    And dispatch_retry_count is not incremented (bad spec, not bad dispatch)
+
+  Scenario: Unknown refusal_reason is treated as MALFORMED_REQUEST (DEC-DISP-05, D-ADV-ARCH-10)
+    Given a Ready node "x1000c0s0b0n0" running a newer agent version
+    When the Dispatcher calls RunAllocation and receives accepted:false refusal_reason:RESERVED_FOR_FUTURE_USE (unknown code)
+    Then the Dispatcher treats the response as MALFORMED_REQUEST (safe-fail)
+    And counter lattice_dispatch_unknown_refusal_reason_total is incremented
+    And the allocation state transitions to "Failed"
+
+  # ─── Buffer cardinality pressure (FM-D8) ───────────────────────────
+
+  Scenario: Agent with more active allocations than buffer bound rejects new report appends (FM-D8)
+    Given an agent whose completion_buffer is at capacity with 256 distinct active allocations
+    When runtime monitoring attempts to push a Completion Report for a 257th allocation
+    Then the append is rejected locally with a dispatch_report_buffer_exhausted alarm
+    And counter lattice_dispatch_report_buffer_exhausted_total{node_id} is incremented
+    And the existing 256 allocations' reports are unaffected
+    When any of the 256 allocations reaches a terminal phase and its report flushes
+    Then a slot frees and the 257th allocation's next report can be appended
+
+  # ─── Dispatcher crash recovery (FM-D10) ────────────────────────────
+
+  Scenario: Dispatcher process crash mid-attempt is recovered on restart (FM-D10)
+    Given the Raft leader's Dispatcher has an in-flight attempt on allocation "alloc-1"
+    When the lattice-api process crashes before the attempt resolves
+    And the process restarts (still the Raft leader)
+    Then the new Dispatcher reads GlobalState and observes "alloc-1" still in state Running with no phase transition
+    And the new Dispatcher resumes attempts from attempt 1 for this allocation on this node
+    And INV-D3 idempotency absorbs any residual attempt that reached the agent before the crash
+
+  # ─── Runtime selection error paths ────────────────────────────────
+
+  Scenario: Allocation with both uenv and image set is rejected at agent (ambiguous runtime)
+    Given an allocation with both environment.uenv "prgenv-gnu:v1" AND environment.image "registry/app:latest"
+    When the Dispatcher calls RunAllocation
+    Then the agent returns accepted:false refusal_reason:MALFORMED_REQUEST with message "ambiguous runtime"
+    And the allocation state transitions to "Failed"
+
+  # ─── Bare-process env scrubbing (DEC-DISP-05 + allow/block lists) ──
+
+  Scenario: Bare-Process runtime strips secret env vars from the inherited environment
+    Given the lattice-agent has LATTICE_AGENT_TOKEN, VAULT_SECRET_ID, MY_API_TOKEN, PATH set
+    When a bare-process allocation with no image and no uenv spawns
+    Then the Workload Process environment does not contain LATTICE_AGENT_TOKEN
+    And does not contain VAULT_SECRET_ID
+    And does not contain MY_API_TOKEN
+    And does contain PATH
+
+  Scenario: Bare-Process rejects AllocationSpec.env_vars keys matching the block-list
+    Given an allocation with env_vars containing "SECRET_KEY"="super-secret"
+    When the agent's prologue processes the env_vars
+    Then prologue fails with MALFORMED_REQUEST reason "env_var_in_block_list: SECRET_KEY"
+    And the allocation state transitions to "Failed"
