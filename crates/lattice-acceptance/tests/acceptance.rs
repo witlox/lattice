@@ -329,6 +329,13 @@ pub struct DispatchCtx {
     pub user_env_vars: Vec<(String, String)>,
     pub prologue_panic: bool,
     pub multi_node_ids: Vec<String>,
+    /// INT-1: StopAllocation RPC targets recorded when cancel() runs.
+    pub int1_stop_targets: Vec<String>,
+    /// INT-3: allocation IDs that pass the Dispatcher's pending_dispatches
+    /// filter (after node-state check).
+    pub int3_pending_ids: Vec<uuid::Uuid>,
+    /// INT-4: agent-side AllocationManager for the pid-wiring scenario.
+    pub int4_alloc_mgr: Option<lattice_node_agent::allocation_runner::AllocationManager>,
 }
 
 impl LatticeWorld {

@@ -389,7 +389,11 @@ async fn main() -> Result<()> {
                 if la.is_active() {
                     Some(state::PersistedAllocation {
                         id: la.id,
-                        pid: None, // PIDs not tracked in AllocationManager yet
+                        // INT-4: LocalAllocation now carries the workload
+                        // pid (set by the runtime monitor on spawn), so
+                        // reattach after an agent restart can verify the
+                        // process is still alive via is_process_alive().
+                        pid: la.pid,
                         container_id: None,
                         cgroup_path: None,
                         entrypoint: la.entrypoint.clone(),

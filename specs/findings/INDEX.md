@@ -1,23 +1,25 @@
 # Adversarial Findings
 Last sweep: 2026-03-20
-Last targeted review: 2026-04-16 (dispatch analyst output)
-Status: ALL PRIOR SWEEP FINDINGS RESOLVED; DISPATCH REVIEW OPEN
+Last targeted review: 2026-04-16 (dispatch integrator pass — 4 cross-cutting fixes)
+Status: ALL PRIOR SWEEP FINDINGS RESOLVED; DISPATCH REVIEW CLOSED
 
 ## Summary
 
 | Severity | Count | Resolved | Open |
 |----------|-------|----------|------|
-| Critical | 10 | 10 | 0 |
-| High | 22 | 22 | 0 |
-| Medium | 20 | 19 | 1 |
+| Critical | 11 | 11 | 0 |
+| High | 24 | 24 | 0 |
+| Medium | 21 | 20 | 1 |
 | Low | 4 | 3 | 1 |
 
 Gate 2 adversary pass (dispatch-impl-review.md, 2026-04-16) found
 3 Critical + 4 High + 3 Medium + 2 Low defects. All Criticals + Highs
-now fixed. Remaining open: Medium-IMPL-08 (timeouts configurable but
-not plumbed through LatticeConfig → SchedulerLoopConfig in main.rs;
-needs a small wiring PR) and Low-IMPL-12 (automated step-coverage
-test — nice-to-have, not blocking).
+now fixed. Integrator pass (dispatch-cross-cutting.md, 2026-04-16)
+found 4 cross-cutting defects (1 Crit, 2 High, 1 Med), all fixed.
+Remaining open: Medium-IMPL-08 (timeouts configurable but not plumbed
+through LatticeConfig → SchedulerLoopConfig in main.rs; needs a small
+wiring PR) and Low-IMPL-12 (automated step-coverage test — nice-to-have,
+not blocking).
 
 ## Open findings (dispatch-impl-review.md — 2026-04-16)
 
@@ -25,6 +27,15 @@ test — nice-to-have, not blocking).
 |---|---|---|---|
 | D-ADV-IMPL-08 (residual) | Silent-sweep config is on SchedulerLoopConfig but main.rs doesn't map NodeAgentConfig.heartbeat_interval_seconds into it | Medium | Trivial wiring in lattice-api/src/main.rs — thread config.node_agent.heartbeat_interval_seconds into SchedulerLoopConfig. |
 | D-ADV-IMPL-12 | No automated test that every feature-file phrase has a step | Low | Add tests/step_coverage.rs integration test. |
+
+## Resolved during integrator pass (dispatch, 2026-04-16)
+
+| # | Title | Severity | Resolution |
+|---|---|---|---|
+| D-INT-01 | Cancel flips state but never sends StopAllocation to agent | Critical | `cancel()` in `crates/lattice-api/src/grpc/allocation_service.rs` now fires best-effort StopAllocation RPCs to every assigned node after the Cancelled state commits. `lattice_cancel_stop_sent_total` counter tracks outcomes; INV-D9 orphan-cleanup backstops failures. |
+| D-INT-02 | RequeueAllocation doesn't clear per_node_phase/assigned_at/dispatch_retry_count/last_completion_report_at | High | `requeue_allocation` apply step in `crates/lattice-quorum/src/global_state.rs` now clears all four dispatch-specific fields. Without this, a service requeued after transient failure carried stale per-node phase into its next placement and would eventually trip `max_dispatch_retries` over its lifetime. |
+| D-INT-03 | Dispatcher attempts on Draining/Degraded/Down nodes, wasting retry budget | High | `Dispatcher::pending_dispatches` in `crates/lattice-api/src/dispatcher.rs` now looks up each assigned node's state via the quorum and skips allocations whose nodes are not Ready. `lattice_dispatch_skipped_unschedulable_total` counter surfaces how often this fires. |
+| D-INT-04 | Attach can't find pid of dispatch-spawned workload (runtime holds pid, AllocationManager has None) | Medium | `LocalAllocation` gained a `pid: Option<u32>` field; `AllocationManager::set_pid()` wires it; `run_allocation_monitor` in `crates/lattice-node-agent/src/grpc_server.rs` calls it immediately after `runtime.spawn()` returns a handle. State persistence in `main.rs` now uses `la.pid` for reattach. |
 
 ## Resolved during adversary gate 2 (dispatch, 2026-04-16)
 

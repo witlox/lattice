@@ -533,9 +533,18 @@ async fn run_allocation_monitor(
         }
     };
     // Update local phase + emit Running report with pid.
+    // INT-4: wire the workload pid into the LocalAllocation so attach
+    // (nsenter) and reattach (state persistence) can find it. The runtime
+    // owns the ProcessHandle; before this, the pid was only emitted via
+    // the one-shot Completion Report to the quorum, so no agent-local
+    // consumer could look it up.
     {
         let mut mgr = allocations.lock().await;
-        let _ = mgr.advance(&alloc_id); // Prologue → Running
+        // Prologue → Running
+        let _ = mgr.advance(&alloc_id);
+        if let Some(pid) = handle.pid {
+            let _ = mgr.set_pid(&alloc_id, pid);
+        }
     }
     reports.push(CompletionReport {
         allocation_id: alloc_id,

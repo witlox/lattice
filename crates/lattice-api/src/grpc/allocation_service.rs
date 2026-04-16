@@ -283,6 +283,44 @@ impl AllocationService for LatticeAllocationService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        // INT-1: after the Cancelled state commits, fire best-effort
+        // StopAllocation RPCs so the workload on the agent is actually torn
+        // down. Without this, the allocation is flipped to Cancelled but the
+        // process keeps running. Failure to deliver the stop is non-fatal
+        // and surfaces via the `lattice_cancel_stop_sent_total` counter;
+        // INV-D9 orphan-cleanup acts as a backstop.
+        if !alloc.assigned_nodes.is_empty() {
+            if let Some(quorum) = self.state.quorum.clone() {
+                let alloc_id = id;
+                let nodes = alloc.assigned_nodes.clone();
+                tokio::spawn(async move {
+                    for node in nodes {
+                        match crate::dispatcher::send_stop_allocation_with_reason(
+                            &quorum,
+                            &node,
+                            alloc_id,
+                            "user_cancelled",
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                lattice_common::metrics::record_cancel_stop_sent("success");
+                            }
+                            Err(e) => {
+                                lattice_common::metrics::record_cancel_stop_sent("failure");
+                                tracing::warn!(
+                                    alloc = %alloc_id,
+                                    node = %node,
+                                    error = %e,
+                                    "StopAllocation on cancel failed (non-fatal)"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
         Ok(Response::new(pb::CancelResponse { success: true }))
     }
 

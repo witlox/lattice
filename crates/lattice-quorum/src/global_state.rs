@@ -525,6 +525,20 @@ impl GlobalState {
         alloc.completed_at = None;
         alloc.exit_code = None;
         alloc.message = None;
+        // INT-2: clear dispatch-specific fields so the next placement sees a
+        // clean slate. Without this, a requeue carries stale per_node_phase
+        // into its next dispatch (ApplyCompletionReport would aggregate over
+        // OLD nodes + the newly assigned ones), assigned_at would still
+        // point at the previous placement time (silent-sweep fresh-exemption
+        // would be wrong), dispatch_retry_count would accumulate across
+        // requeues (a long-running service with occasional node failures
+        // would eventually hit max_dispatch_retries and go to Failed
+        // permanently), and last_completion_report_at would make the
+        // Dispatcher think the new placement has already been ack'd.
+        alloc.per_node_phase.clear();
+        alloc.assigned_at = None;
+        alloc.dispatch_retry_count = 0;
+        alloc.last_completion_report_at = None;
         CommandResponse::Ok
     }
 

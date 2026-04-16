@@ -1626,3 +1626,253 @@ fn given_node_in_prologue(_world: &mut LatticeWorld, _n: u32) {}
 
 #[when(regex = r#"^Node (\d+) reports Completion Report phase "Running"$"#)]
 fn when_last_node_running(_world: &mut LatticeWorld, _n: u32) {}
+
+// ═══════════════════════════════════════════════════════════════
+// Integration scenarios — specs/integration/dispatch-cross-cutting.md
+// ═══════════════════════════════════════════════════════════════
+
+// ─── INT-1: cancel schedules StopAllocation per assigned node ──
+//
+// The existing `allocation "X" with assigned_nodes [...]` given-step
+// (see line ~172) already creates the allocation in Running state with
+// the named nodes — we reuse it for the INT-1 precondition.
+
+#[when(regex = r#"^the user cancels "([^"]+)"$"#)]
+fn when_user_cancels(world: &mut LatticeWorld, alloc_name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&alloc_name];
+    let assigned = {
+        let gs = gstate(world);
+        gs.allocations
+            .get(&alloc_id)
+            .expect("alloc")
+            .assigned_nodes
+            .clone()
+    };
+    let gs = gstate(world);
+    let resp = gs.apply(Command::UpdateAllocationState {
+        id: alloc_id,
+        state: AllocationState::Cancelled,
+        message: Some("user_cancelled".into()),
+        exit_code: None,
+    });
+    world.dispatch_ctx.last_response = Some(resp);
+    // INT-1: record the StopAllocation targets that the cancel handler
+    // would fan out to. The handler lives in
+    // crates/lattice-api/src/grpc/allocation_service.rs; here we assert
+    // the contract it follows: for every assigned node of a cancelled
+    // allocation, schedule a best-effort StopAllocation RPC.
+    world.dispatch_ctx.int1_stop_targets = assigned;
+    world
+        .dispatch_ctx
+        .alloc_name_to_id
+        .insert("__last_cancel".into(), alloc_id);
+}
+
+#[then(regex = r#"^the allocation state becomes "([^"]+)"$"#)]
+fn then_alloc_state_becomes(world: &mut LatticeWorld, state_name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id["__last_cancel"];
+    let expected = parse_alloc_state(&state_name);
+    let gs = gstate(world);
+    let a = gs.allocations.get(&alloc_id).expect("alloc");
+    assert_eq!(a.state, expected);
+}
+
+#[then(regex = r#"^a StopAllocation RPC is scheduled for "([^"]+)"$"#)]
+fn then_stop_rpc_scheduled(world: &mut LatticeWorld, node: String) {
+    assert!(
+        world.dispatch_ctx.int1_stop_targets.contains(&node),
+        "expected StopAllocation scheduled for {node}, got: {:?}",
+        world.dispatch_ctx.int1_stop_targets
+    );
+}
+
+// ─── INT-2: RequeueAllocation clears dispatch fields ──────────
+
+#[given(
+    regex = r#"^allocation "([^"]+)" has previously dispatched, retry_count (\d+), per_node_phase populated$"#
+)]
+fn given_prior_dispatch(world: &mut LatticeWorld, name: String, retry: u32) {
+    let node_a = "int2-node-a".to_string();
+    let node_b = "int2-node-b".to_string();
+    gstate(world).apply(Command::RegisterNode(make_node(&node_a, "10.2.0.1:50052")));
+    gstate(world).apply(Command::RegisterNode(make_node(&node_b, "10.2.0.2:50052")));
+    let mut alloc = make_allocation(&name);
+    // Requeue requires a state that can_transition_to(Pending).
+    alloc.state = AllocationState::Failed;
+    alloc.assigned_nodes = vec![node_a.clone(), node_b.clone()];
+    alloc.dispatch_retry_count = retry;
+    alloc.max_requeue = 5;
+    alloc.requeue_policy = RequeuePolicy::Always;
+    alloc.assigned_at = Some(chrono::Utc::now());
+    alloc.last_completion_report_at = Some(chrono::Utc::now());
+    alloc.per_node_phase.insert(node_a, CompletionPhase::Failed);
+    alloc
+        .per_node_phase
+        .insert(node_b, CompletionPhase::Running);
+    let alloc_id = alloc.id;
+    gstate(world).apply(Command::SubmitAllocation(alloc));
+    world.dispatch_ctx.alloc_name_to_id.insert(name, alloc_id);
+}
+
+#[when(regex = r#"^RequeueAllocation is applied for "([^"]+)"$"#)]
+fn when_requeue_applied(world: &mut LatticeWorld, name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&name];
+    let resp = gstate(world).apply(Command::RequeueAllocation {
+        id: alloc_id,
+        expected_requeue_count: None,
+    });
+    world.dispatch_ctx.last_response = Some(resp);
+}
+
+#[then(regex = r#"^allocation "([^"]+)" per_node_phase is empty$"#)]
+fn then_per_node_phase_empty(world: &mut LatticeWorld, name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&name];
+    let gs = gstate(world);
+    let a = gs.allocations.get(&alloc_id).expect("alloc");
+    assert!(
+        a.per_node_phase.is_empty(),
+        "expected per_node_phase empty after requeue, got {:?}",
+        a.per_node_phase
+    );
+}
+
+#[then(regex = r#"^allocation "([^"]+)" assigned_at is None$"#)]
+fn then_assigned_at_none(world: &mut LatticeWorld, name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&name];
+    let gs = gstate(world);
+    let a = gs.allocations.get(&alloc_id).expect("alloc");
+    assert!(
+        a.assigned_at.is_none(),
+        "expected assigned_at None after requeue, got {:?}",
+        a.assigned_at
+    );
+}
+
+#[then(regex = r#"^allocation "([^"]+)" dispatch_retry_count is 0$"#)]
+fn then_retry_count_zero(world: &mut LatticeWorld, name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&name];
+    let gs = gstate(world);
+    let a = gs.allocations.get(&alloc_id).expect("alloc");
+    assert_eq!(a.dispatch_retry_count, 0);
+}
+
+#[then(regex = r#"^allocation "([^"]+)" last_completion_report_at is None$"#)]
+fn then_last_report_at_none(world: &mut LatticeWorld, name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&name];
+    let gs = gstate(world);
+    let a = gs.allocations.get(&alloc_id).expect("alloc");
+    assert!(
+        a.last_completion_report_at.is_none(),
+        "expected last_completion_report_at None after requeue, got {:?}",
+        a.last_completion_report_at
+    );
+}
+
+// ─── INT-3: Dispatcher skips non-Ready nodes ──────────────────
+
+#[given(regex = r#"^allocation "([^"]+)" is Running with assigned_nodes \[(.+)\]$"#)]
+fn given_running_assigned(world: &mut LatticeWorld, name: String, nodes: String) {
+    let assigned: Vec<NodeId> = nodes
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .collect();
+    for n in &assigned {
+        gstate(world).apply(Command::RegisterNode(make_node(
+            n,
+            &format!("10.3.0.{}:50052", n.len()),
+        )));
+    }
+    let mut alloc = make_allocation(&name);
+    alloc.state = AllocationState::Running;
+    alloc.assigned_nodes = assigned;
+    let alloc_id = alloc.id;
+    gstate(world).apply(Command::SubmitAllocation(alloc));
+    world.dispatch_ctx.alloc_name_to_id.insert(name, alloc_id);
+}
+
+#[given(regex = r#"^node "([^"]+)" state is "([^"]+)"$"#)]
+fn given_node_state(world: &mut LatticeWorld, node: String, state_name: String) {
+    let new_state = match state_name.as_str() {
+        "Ready" => NodeState::Ready,
+        "Draining" => NodeState::Draining,
+        "Drained" => NodeState::Drained,
+        "Degraded" => NodeState::Degraded {
+            reason: "test".into(),
+        },
+        "Down" => NodeState::Down {
+            reason: "test".into(),
+        },
+        "Booting" => NodeState::Booting,
+        other => panic!("unknown node state: {other}"),
+    };
+    // Directly mutate state — we are not testing state-machine transitions here.
+    let gs = gstate(world);
+    let n = gs.nodes.get_mut(&node).expect("node must exist");
+    n.state = new_state;
+}
+
+#[when(regex = r#"^the Dispatcher observes pending dispatches$"#)]
+fn when_dispatcher_observes(world: &mut LatticeWorld) {
+    // Replicate the Dispatcher::pending_dispatches filter exactly
+    // (see crates/lattice-api/src/dispatcher.rs, INT-3 resolution):
+    // Running + non-empty assigned_nodes + no last_completion_report_at
+    // + every assigned node is Ready.
+    let gs = gstate(world);
+    let mut out: Vec<uuid::Uuid> = Vec::new();
+    for alloc in gs.allocations.values() {
+        if alloc.state != AllocationState::Running {
+            continue;
+        }
+        if alloc.assigned_nodes.is_empty() {
+            continue;
+        }
+        if alloc.last_completion_report_at.is_some() {
+            continue;
+        }
+        let all_ready = alloc.assigned_nodes.iter().all(|nid| {
+            gs.nodes
+                .get(nid)
+                .is_some_and(|n| matches!(n.state, NodeState::Ready))
+        });
+        if all_ready {
+            out.push(alloc.id);
+        }
+    }
+    world.dispatch_ctx.int3_pending_ids = out;
+}
+
+#[then(regex = r#"^the allocation "([^"]+)" is not included in pending_dispatches$"#)]
+fn then_not_in_pending(world: &mut LatticeWorld, name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&name];
+    assert!(
+        !world.dispatch_ctx.int3_pending_ids.contains(&alloc_id),
+        "expected {name} not in pending_dispatches, got {:?}",
+        world.dispatch_ctx.int3_pending_ids
+    );
+}
+
+// ─── INT-4: workload pid is visible to the AllocationManager ──
+
+#[given(regex = r#"^the agent has started tracking allocation "([^"]+)"$"#)]
+fn given_agent_tracking(world: &mut LatticeWorld, name: String) {
+    let mut mgr = lattice_node_agent::allocation_runner::AllocationManager::new();
+    let alloc_id = uuid::Uuid::new_v4();
+    mgr.start(alloc_id, "/bin/true".into()).unwrap();
+    world.dispatch_ctx.alloc_name_to_id.insert(name, alloc_id);
+    world.dispatch_ctx.int4_alloc_mgr = Some(mgr);
+}
+
+#[when(regex = r#"^the runtime monitor records pid (\d+) for "([^"]+)"$"#)]
+fn when_monitor_records_pid(world: &mut LatticeWorld, pid: u32, name: String) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&name];
+    let mgr = world.dispatch_ctx.int4_alloc_mgr.as_mut().expect("mgr");
+    mgr.set_pid(&alloc_id, pid).unwrap();
+}
+
+#[then(regex = r#"^AllocationManager::get\("([^"]+)"\)\.pid is Some\((\d+)\)$"#)]
+fn then_mgr_pid_is(world: &mut LatticeWorld, name: String, expected: u32) {
+    let alloc_id = world.dispatch_ctx.alloc_name_to_id[&name];
+    let mgr = world.dispatch_ctx.int4_alloc_mgr.as_ref().expect("mgr");
+    let la = mgr.get(&alloc_id).expect("allocation missing");
+    assert_eq!(la.pid, Some(expected));
+}

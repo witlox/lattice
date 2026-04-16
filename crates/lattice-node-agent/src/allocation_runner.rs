@@ -28,6 +28,12 @@ pub struct LocalAllocation {
     pub entrypoint: String,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// Workload PID once the runtime has spawned. INT-4: attach and
+    /// state-persistence both need the workload's pid, but the runtime
+    /// owns the ProcessHandle. The runtime monitor task calls
+    /// `AllocationManager::set_pid` once it has the pid so attach's
+    /// nsenter path and reattach persistence can both find it.
+    pub pid: Option<u32>,
 }
 
 impl LocalAllocation {
@@ -38,6 +44,7 @@ impl LocalAllocation {
             entrypoint,
             started_at: Utc::now(),
             completed_at: None,
+            pid: None,
         }
     }
 
@@ -143,6 +150,7 @@ impl CompletionBuffer {
 }
 
 /// Manages all allocations running on a single node.
+#[derive(Debug)]
 pub struct AllocationManager {
     allocations: HashMap<AllocId, LocalAllocation>,
     /// INV-D13 latest-wins-per-allocation Completion Report buffer.
@@ -202,6 +210,19 @@ impl AllocationManager {
             .get_mut(id)
             .ok_or_else(|| format!("allocation {id} not found"))?;
         alloc.advance()
+    }
+
+    /// INT-4: record the pid of the spawned workload so attach (nsenter)
+    /// and state-persistence (reattach after agent restart) can find it.
+    /// Called by the runtime monitor task once `runtime.spawn()` returns
+    /// a handle with a concrete pid. No-op if the pid is already set.
+    pub fn set_pid(&mut self, id: &AllocId, pid: u32) -> Result<(), String> {
+        let alloc = self
+            .allocations
+            .get_mut(id)
+            .ok_or_else(|| format!("allocation {id} not found"))?;
+        alloc.pid = Some(pid);
+        Ok(())
     }
 
     /// Mark an allocation as failed.

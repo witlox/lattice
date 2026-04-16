@@ -360,6 +360,38 @@ pub fn record_unknown_refusal_reason(reason_code: &str) {
         .inc();
 }
 
+fn cancel_stop_sent_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_cancel_stop_sent_total",
+            "StopAllocation RPC outcomes after user cancel (INT-1)",
+            &["result"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_cancel_stop_sent(result: &str) {
+    cancel_stop_sent_total().with_label_values(&[result]).inc();
+}
+
+fn dispatch_skipped_unschedulable_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_dispatch_skipped_unschedulable_total",
+            "Dispatch attempts skipped because assigned node is not Ready (INT-3)",
+            &["node_id", "node_state"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_dispatch_skipped_unschedulable(node_id: &str, node_state: &str) {
+    dispatch_skipped_unschedulable_total()
+        .with_label_values(&[node_id, node_state])
+        .inc();
+}
+
 fn node_degraded_by_dispatch_total() -> &'static CounterVec {
     static M: OnceLock<CounterVec> = OnceLock::new();
     M.get_or_init(|| {

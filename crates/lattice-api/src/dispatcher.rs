@@ -201,7 +201,19 @@ impl Dispatcher {
     /// Observe all Running allocations with non-empty assigned_nodes
     /// whose phase has not yet advanced (i.e., no Completion Report has
     /// set last_completion_report_at).
+    ///
+    /// INT-3: allocations whose assigned nodes are not Ready are skipped
+    /// here, not attempted and then failed: dispatching on a Draining /
+    /// Degraded / Down / Drained node either times out (wasting retry
+    /// budget across the full backoff chain) or races a drain that is
+    /// already underway. Skipping keeps the allocation pending so the
+    /// scheduler's reconciliation loop can re-place it on a healthy node.
+    /// The `lattice_dispatch_skipped_unschedulable_total` counter surfaces
+    /// when this is happening often enough to warrant operator attention.
     async fn pending_dispatches(&self) -> Result<Vec<(Allocation, Vec<NodeId>)>, String> {
+        use lattice_common::traits::NodeRegistry;
+        use lattice_common::types::NodeState;
+
         let filter = AllocationFilter {
             state: Some(AllocationState::Running),
             tenant: None,
@@ -222,10 +234,59 @@ impl Dispatcher {
                 // Dispatcher to do.
                 continue;
             }
+
+            // INT-3: skip allocations whose assigned nodes are not Ready.
+            let mut skip = false;
+            for node_id in &alloc.assigned_nodes {
+                match self.quorum.get_node(node_id).await {
+                    Ok(n) if matches!(n.state, NodeState::Ready) => {}
+                    Ok(n) => {
+                        lattice_common::metrics::record_dispatch_skipped_unschedulable(
+                            node_id.as_str(),
+                            node_state_label(&n.state),
+                        );
+                        debug!(
+                            alloc = %alloc.id,
+                            node = %node_id,
+                            state = node_state_label(&n.state),
+                            "Dispatcher skipping: assigned node not Ready"
+                        );
+                        skip = true;
+                        break;
+                    }
+                    Err(e) => {
+                        lattice_common::metrics::record_dispatch_skipped_unschedulable(
+                            node_id.as_str(),
+                            "unknown",
+                        );
+                        debug!(alloc = %alloc.id, node = %node_id, error = %e, "Dispatcher skipping: node lookup failed");
+                        skip = true;
+                        break;
+                    }
+                }
+            }
+            if skip {
+                continue;
+            }
+
             let nodes = alloc.assigned_nodes.clone();
             out.push((alloc, nodes));
         }
         Ok(out)
+    }
+}
+
+fn node_state_label(s: &lattice_common::types::NodeState) -> &'static str {
+    use lattice_common::types::NodeState;
+    match s {
+        NodeState::Unknown => "unknown",
+        NodeState::Booting => "booting",
+        NodeState::Ready => "ready",
+        NodeState::Degraded { .. } => "degraded",
+        NodeState::Down { .. } => "down",
+        NodeState::Draining => "draining",
+        NodeState::Drained => "drained",
+        NodeState::Failed { .. } => "failed",
     }
 }
 
@@ -556,6 +617,18 @@ async fn send_stop_allocation(
     node_id: &NodeId,
     alloc_id: AllocId,
 ) -> Result<(), String> {
+    send_stop_allocation_with_reason(quorum, node_id, alloc_id, "dispatch_rolled_back").await
+}
+
+/// Best-effort StopAllocation RPC. Used for rollback cleanup (DEC-DISP-08)
+/// and user-initiated cancel (INT-1). Looks up the agent address via the
+/// provided node registry each call (INV-D10: no caching).
+pub(crate) async fn send_stop_allocation_with_reason(
+    quorum: &Arc<QuorumClient>,
+    node_id: &NodeId,
+    alloc_id: AllocId,
+    reason: &str,
+) -> Result<(), String> {
     use lattice_common::traits::NodeRegistry;
     let addr = match quorum.get_node(node_id).await {
         Ok(n) if !n.agent_address.is_empty() => n.agent_address,
@@ -572,7 +645,7 @@ async fn send_stop_allocation(
     let req = tonic::Request::new(pb::StopAllocationRequest {
         allocation_id: alloc_id.to_string(),
         grace_period_seconds: 30,
-        reason: "dispatch_rolled_back".into(),
+        reason: reason.to_string(),
     });
     let _ = client
         .stop_allocation(req)
