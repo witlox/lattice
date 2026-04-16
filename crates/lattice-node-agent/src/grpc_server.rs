@@ -14,10 +14,15 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, info, warn};
 
 use lattice_common::proto::lattice::v1 as pb;
-use lattice_common::types::{CxiCredentials, LaunchId, PeerInfo, PmiMode};
+use lattice_common::types::{
+    AllocId, CompletionPhase, CompletionReport, CxiCredentials, LaunchId, PeerInfo, PmiMode,
+    RuntimeVariant,
+};
 
+use crate::allocation_runner::{AllocationManager, CompletionBuffer};
 use crate::pmi2::fence::{FenceCoordinator, FenceTransport};
 use crate::process_launcher::{LaunchConfig, ProcessLauncher};
+use crate::runtime::{BareProcessRuntime, PrepareConfig, Runtime, RuntimeError};
 
 /// State for an active MPI launch on this node.
 struct ActiveLaunch {
@@ -25,11 +30,31 @@ struct ActiveLaunch {
     abort_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// Optional dispatch bridge (Impl 5). When configured, the gRPC server's
+/// `run_allocation` handler actually registers with the AllocationManager,
+/// selects a Runtime, spawns the entrypoint, and emits Completion Reports.
+/// When not configured, `run_allocation` returns a stub acceptance (used
+/// by unit tests that exercise the gRPC surface in isolation).
+pub struct DispatchBridge {
+    pub allocations: Arc<Mutex<AllocationManager>>,
+    pub reports: CompletionBuffer,
+    pub bare: Arc<BareProcessRuntime>,
+    // Uenv/Podman runtimes are wired by the agent main.rs when enabled;
+    // we keep them as trait objects so the server doesn't depend on their
+    // concrete types. For now, Bare-Process is sufficient for the OV suite
+    // scenarios; additional runtimes slot in here.
+    pub uenv: Option<Arc<dyn Runtime>>,
+    pub podman: Option<Arc<dyn Runtime>>,
+}
+
 /// Node agent gRPC service implementation.
 pub struct NodeAgentServer {
     node_id: String,
     active_launches: Arc<Mutex<HashMap<LaunchId, ActiveLaunch>>>,
     fence_transport: Arc<dyn FenceTransport>,
+    /// When set, dispatch is real (Impl 5). When None, run_allocation is
+    /// a stub that returns accepted without spawning.
+    dispatch: Option<Arc<DispatchBridge>>,
 }
 
 impl NodeAgentServer {
@@ -38,6 +63,7 @@ impl NodeAgentServer {
             node_id,
             active_launches: Arc::new(Mutex::new(HashMap::new())),
             fence_transport: Arc::new(GrpcFenceTransport {}),
+            dispatch: None,
         }
     }
 
@@ -47,7 +73,14 @@ impl NodeAgentServer {
             node_id,
             active_launches: Arc::new(Mutex::new(HashMap::new())),
             fence_transport: transport,
+            dispatch: None,
         }
+    }
+
+    /// Enable real dispatch (Impl 5). Without this, run_allocation stubs.
+    pub fn with_dispatch(mut self, dispatch: DispatchBridge) -> Self {
+        self.dispatch = Some(Arc::new(dispatch));
+        self
     }
 
     #[allow(clippy::result_large_err)]
@@ -69,10 +102,123 @@ impl pb::node_agent_service_server::NodeAgentService for NodeAgentServer {
     ) -> Result<Response<pb::RunAllocationResponse>, Status> {
         let req = request.into_inner();
         info!(alloc_id = %req.allocation_id, "RunAllocation received");
-        // NOTE: Stub acceptance path. The real dispatch implementation lives
-        // in the handler override registered in lattice-node-agent::main via
-        // AllocationManager actor wiring. This stub is kept only for unit
-        // tests that exercise the gRPC surface in isolation.
+
+        // Parse allocation_id.
+        let alloc_id = match uuid::Uuid::parse_str(&req.allocation_id) {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(Response::new(pb::RunAllocationResponse {
+                    accepted: false,
+                    message: format!("invalid allocation_id: {e}"),
+                    refusal_reason: Some(pb::RefusalReason::RefusalMalformedRequest as i32),
+                }));
+            }
+        };
+
+        // No dispatch bridge wired: stub acceptance for isolated unit tests.
+        let Some(dispatch) = self.dispatch.as_ref().cloned() else {
+            return Ok(Response::new(pb::RunAllocationResponse {
+                accepted: true,
+                message: "accepted (stub: no dispatch bridge wired)".into(),
+                refusal_reason: None,
+            }));
+        };
+
+        // INV-D3 idempotency: if the allocation is already tracked and not
+        // terminal, respond ALREADY_RUNNING without spawning.
+        {
+            let mgr = dispatch.allocations.lock().await;
+            if mgr.contains_active(&alloc_id) {
+                return Ok(Response::new(pb::RunAllocationResponse {
+                    accepted: true,
+                    message: "already_running".into(),
+                    refusal_reason: Some(pb::RefusalReason::RefusalAlreadyRunning as i32),
+                }));
+            }
+        }
+
+        // Decide which Runtime to drive. The Dispatcher has already told us
+        // the allocation's shape via the RunAllocationRequest's fields; we
+        // infer the variant by precedence: image > uenv > bare.
+        let variant = if !req.image.trim().is_empty() {
+            RuntimeVariant::Podman
+        } else if !req.uenv.trim().is_empty() {
+            RuntimeVariant::Uenv
+        } else {
+            RuntimeVariant::BareProcess
+        };
+
+        // For Uenv and Podman, the DispatchBridge must have the concrete
+        // runtime wired. Otherwise we return UNSUPPORTED_CAPABILITY so the
+        // Dispatcher can rollback and re-place on a capable node.
+        let runtime: Arc<dyn Runtime> = match variant {
+            RuntimeVariant::BareProcess => dispatch.bare.clone() as Arc<dyn Runtime>,
+            RuntimeVariant::Uenv => match dispatch.uenv.as_ref() {
+                Some(rt) => rt.clone(),
+                None => {
+                    return Ok(Response::new(pb::RunAllocationResponse {
+                        accepted: false,
+                        message: "uenv runtime not available on this agent".into(),
+                        refusal_reason: Some(
+                            pb::RefusalReason::RefusalUnsupportedCapability as i32,
+                        ),
+                    }));
+                }
+            },
+            RuntimeVariant::Podman => match dispatch.podman.as_ref() {
+                Some(rt) => rt.clone(),
+                None => {
+                    return Ok(Response::new(pb::RunAllocationResponse {
+                        accepted: false,
+                        message: "podman runtime not available on this agent".into(),
+                        refusal_reason: Some(
+                            pb::RefusalReason::RefusalUnsupportedCapability as i32,
+                        ),
+                    }));
+                }
+            },
+        };
+
+        // Register the local allocation tracker BEFORE returning. This
+        // closes the INV-D3 window (a duplicate attempt racing with this
+        // one will observe contains_active()==true on the next call).
+        {
+            let mut mgr = dispatch.allocations.lock().await;
+            if let Err(e) = mgr.start(alloc_id, req.entrypoint.clone()) {
+                // Duplicate start — mirror ALREADY_RUNNING response.
+                debug!(alloc_id = %alloc_id, error = %e, "start rejected — idempotent path");
+                return Ok(Response::new(pb::RunAllocationResponse {
+                    accepted: true,
+                    message: "already_running (race)".into(),
+                    refusal_reason: Some(pb::RefusalReason::RefusalAlreadyRunning as i32),
+                }));
+            }
+        }
+
+        // Spawn the monitor task. It runs prologue → spawn → wait →
+        // epilogue, emitting Completion Reports into the shared buffer at
+        // each phase transition. We do NOT block the RPC response on this.
+        let node_id = self.node_id.clone();
+        let allocations = dispatch.allocations.clone();
+        let reports = dispatch.reports.clone();
+        let entrypoint = req.entrypoint.clone();
+        // `req.args` does not exist on RunAllocationRequest today; we pass
+        // an empty args vec and rely on the entrypoint being a full command
+        // line parsed by the runtime.
+        let args: Vec<String> = Vec::new();
+        tokio::spawn(async move {
+            run_allocation_monitor(
+                alloc_id,
+                node_id,
+                entrypoint,
+                args,
+                runtime,
+                allocations,
+                reports,
+            )
+            .await;
+        });
+
         Ok(Response::new(pb::RunAllocationResponse {
             accepted: true,
             message: "accepted".into(),
@@ -269,6 +415,171 @@ impl pb::node_agent_service_server::NodeAgentService for NodeAgentServer {
 }
 
 /// Real gRPC fence transport (calls peer node agents).
+/// Background monitor for a dispatched allocation.
+///
+/// Drives the Runtime lifecycle (prologue → spawn → wait → epilogue) and
+/// emits Completion Reports into the shared `CompletionBuffer` at each
+/// phase transition. Called by `run_allocation` from a detached task so
+/// the RPC returns promptly after registering the allocation.
+async fn run_allocation_monitor(
+    alloc_id: AllocId,
+    node_id: String,
+    entrypoint: String,
+    args: Vec<String>,
+    runtime: Arc<dyn Runtime>,
+    allocations: Arc<Mutex<AllocationManager>>,
+    reports: CompletionBuffer,
+) {
+    // ── Prologue ────────────────────────────────────────────────
+    let prepare_config = PrepareConfig {
+        alloc_id,
+        uenv: None,
+        view: None,
+        image: None,
+        workdir: None,
+        env_vars: Vec::new(),
+        memory_policy: None,
+        is_unified_memory: false,
+        data_mounts: Vec::new(),
+        scratch_per_node: None,
+        resource_limits: None,
+        images: Vec::new(),
+        env_patches: Vec::new(),
+    };
+    if let Err(e) = runtime.prepare(&prepare_config).await {
+        warn!(
+            alloc_id = %alloc_id,
+            node = %node_id,
+            error = %e,
+            "prologue failed; emitting Failed Completion Report"
+        );
+        reports.push(CompletionReport {
+            allocation_id: alloc_id,
+            phase: CompletionPhase::Failed,
+            pid: None,
+            exit_code: None,
+            reason: Some(format!("prepare_failed: {e}")),
+        });
+        let mut mgr = allocations.lock().await;
+        let _ = mgr.fail(&alloc_id, format!("prepare_failed: {e}"));
+        return;
+    }
+    // Emit Staging (phase after Prologue).
+    reports.push(CompletionReport {
+        allocation_id: alloc_id,
+        phase: CompletionPhase::Staging,
+        pid: None,
+        exit_code: None,
+        reason: None,
+    });
+
+    // ── Spawn ────────────────────────────────────────────────────
+    let handle = match runtime.spawn(alloc_id, &entrypoint, &args).await {
+        Ok(h) => h,
+        Err(e) => {
+            warn!(
+                alloc_id = %alloc_id,
+                node = %node_id,
+                error = %e,
+                "spawn failed; emitting Failed Completion Report"
+            );
+            reports.push(CompletionReport {
+                allocation_id: alloc_id,
+                phase: CompletionPhase::Failed,
+                pid: None,
+                exit_code: None,
+                reason: Some(format!("spawn_failed: {e}")),
+            });
+            let mut mgr = allocations.lock().await;
+            let _ = mgr.fail(&alloc_id, format!("spawn_failed: {e}"));
+            return;
+        }
+    };
+    // Update local phase + emit Running report with pid.
+    {
+        let mut mgr = allocations.lock().await;
+        let _ = mgr.advance(&alloc_id); // Prologue → Running
+    }
+    reports.push(CompletionReport {
+        allocation_id: alloc_id,
+        phase: CompletionPhase::Running,
+        pid: handle.pid,
+        exit_code: None,
+        reason: None,
+    });
+    debug!(alloc_id = %alloc_id, pid = ?handle.pid, "workload running");
+
+    // ── Wait ─────────────────────────────────────────────────────
+    match runtime.wait(&handle).await {
+        Ok(status) => {
+            let (phase, code, reason) = classify_exit(&status);
+            debug!(
+                alloc_id = %alloc_id,
+                exit_status = ?status,
+                "workload exited"
+            );
+            let _ = runtime.cleanup(alloc_id).await;
+            {
+                let mut mgr = allocations.lock().await;
+                if phase == CompletionPhase::Failed {
+                    let _ = mgr.fail(&alloc_id, reason.clone().unwrap_or_default());
+                } else {
+                    // Running → Epilogue → Completed
+                    let _ = mgr.advance(&alloc_id);
+                    let _ = mgr.advance(&alloc_id);
+                }
+            }
+            reports.push(CompletionReport {
+                allocation_id: alloc_id,
+                phase,
+                pid: handle.pid,
+                exit_code: code,
+                reason,
+            });
+        }
+        Err(e) => {
+            warn!(
+                alloc_id = %alloc_id,
+                error = %e,
+                "wait() failed; emitting Failed Completion Report"
+            );
+            reports.push(CompletionReport {
+                allocation_id: alloc_id,
+                phase: CompletionPhase::Failed,
+                pid: handle.pid,
+                exit_code: None,
+                reason: Some(format!("wait_failed: {e}")),
+            });
+            let mut mgr = allocations.lock().await;
+            let _ = mgr.fail(&alloc_id, format!("wait_failed: {e}"));
+        }
+    }
+}
+
+fn classify_exit(
+    status: &crate::runtime::ExitStatus,
+) -> (CompletionPhase, Option<i32>, Option<String>) {
+    use crate::runtime::ExitStatus;
+    match status {
+        ExitStatus::Code(0) => (CompletionPhase::Completed, Some(0), None),
+        ExitStatus::Code(c) => (
+            CompletionPhase::Failed,
+            Some(*c),
+            Some(format!("non_zero_exit: {c}")),
+        ),
+        ExitStatus::Signal(s) => (
+            CompletionPhase::Failed,
+            Some(-(*s)),
+            Some(format!("killed_by_signal: {s}")),
+        ),
+        ExitStatus::Unknown => (
+            CompletionPhase::Failed,
+            None,
+            Some("exit_status_unknown".into()),
+        ),
+    }
+}
+
 struct GrpcFenceTransport;
 
 #[async_trait::async_trait]

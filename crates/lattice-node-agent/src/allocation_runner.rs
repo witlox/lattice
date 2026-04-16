@@ -86,40 +86,94 @@ impl LocalAllocation {
     }
 }
 
-/// Manages all allocations running on a single node.
+/// INV-D13 latest-wins-per-allocation Completion Report buffer. The
+/// struct is cheaply clonable (internal Arc<Mutex<_>>) so multiple
+/// concurrent producers (runtime monitor tasks, reattach worker, gRPC
+/// handler) can write while the heartbeat loop drains, without explicit
+/// locking at each call site and without the full actor-channel pattern
+/// originally envisioned in DEC-DISP-09. Concurrency correctness still
+/// follows from the invariant (keyed map: multiple upserts for the same
+/// key collapse to the most recent phase).
 ///
-/// **Note (2026-04-16):** This struct is scheduled to be rewritten as an
-/// actor owned by a dedicated tokio task (DEC-DISP-09). The Impl 4 phase of
-/// the dispatch rollout replaces direct `&mut self` mutation with
-/// `mpsc::Sender<AllocationManagerCmd>` routed through an actor loop. Until
-/// then, the existing synchronous API is preserved and the actor-shaped
-/// `completion_buffer` (INV-D13 keyed map) is added alongside.
+/// Architecture deviation note (2026-04-16): DEC-DISP-09 recommended an
+/// actor loop via mpsc::Sender<AllocationManagerCmd>. This implementation
+/// uses `Arc<Mutex<HashMap<..>>>` instead. Both patterns satisfy INV-D13
+/// (latest-wins), INV-D3 (idempotency serialization), and D-ADV-ARCH-03
+/// thread-safety. Rationale: attach.rs already uses the same Arc<Mutex<>>
+/// idiom for AllocationManager, so this choice keeps the agent codebase
+/// uniform; the actor rewrite is deferred until a measurable lock-
+/// contention issue arises.
+#[derive(Debug, Clone, Default)]
+pub struct CompletionBuffer {
+    inner:
+        std::sync::Arc<std::sync::Mutex<HashMap<AllocId, lattice_common::types::CompletionReport>>>,
+}
+
+impl CompletionBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Upsert a Completion Report. INV-D13 semantics — replaces any prior
+    /// entry for this allocation. Never blocks beyond the mutex hold.
+    pub fn push(&self, report: lattice_common::types::CompletionReport) {
+        let mut guard = self.inner.lock().expect("CompletionBuffer mutex poisoned");
+        guard.insert(report.allocation_id, report);
+    }
+
+    /// Drain all buffered reports. Called by the heartbeat loop at each
+    /// heartbeat interval.
+    pub fn drain(&self) -> Vec<lattice_common::types::CompletionReport> {
+        let mut guard = self.inner.lock().expect("CompletionBuffer mutex poisoned");
+        guard.drain().map(|(_, v)| v).collect()
+    }
+
+    /// Current buffered count. Useful for observability + cardinality-pressure
+    /// detection per FM-D8.
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("CompletionBuffer mutex poisoned")
+            .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Manages all allocations running on a single node.
 pub struct AllocationManager {
     allocations: HashMap<AllocId, LocalAllocation>,
-    /// INV-D13 latest-wins-per-allocation Completion Report buffer. Keyed
-    /// map, not a queue. Drained into each heartbeat payload.
-    completion_buffer: HashMap<AllocId, lattice_common::types::CompletionReport>,
+    /// INV-D13 latest-wins-per-allocation Completion Report buffer.
+    /// Extracted as a shared handle so the gRPC handler (running in
+    /// parallel tokio tasks) can push reports while the heartbeat loop
+    /// (holding `&mut self`) drains — see `completion_buffer()`.
+    completion_buffer: CompletionBuffer,
 }
 
 impl AllocationManager {
     pub fn new() -> Self {
         Self {
             allocations: HashMap::new(),
-            completion_buffer: HashMap::new(),
+            completion_buffer: CompletionBuffer::new(),
         }
     }
 
-    /// INV-D13: upsert a Completion Report. Replaces any prior report for
-    /// the same allocation. Because phases advance monotonically and the
-    /// local tracker enforces this, terminal reports are never overwritten
-    /// by non-terminal ones.
+    /// Get a cheaply-clonable handle to the completion buffer. Used by the
+    /// gRPC server to hand runtime monitor tasks a writable reference.
+    pub fn completion_buffer(&self) -> CompletionBuffer {
+        self.completion_buffer.clone()
+    }
+
+    /// INV-D13: upsert a Completion Report (delegates to the buffer).
     pub fn push_report(&mut self, report: lattice_common::types::CompletionReport) {
-        self.completion_buffer.insert(report.allocation_id, report);
+        self.completion_buffer.push(report);
     }
 
     /// Drain all buffered Completion Reports for the next heartbeat.
     pub fn drain_reports(&mut self) -> Vec<lattice_common::types::CompletionReport> {
-        self.completion_buffer.drain().map(|(_, v)| v).collect()
+        self.completion_buffer.drain()
     }
 
     /// INV-D3 idempotency check: returns true if the allocation is tracked
