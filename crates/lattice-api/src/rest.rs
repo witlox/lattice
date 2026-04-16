@@ -1878,7 +1878,10 @@ async fn get_node(State(state): State<Arc<ApiState>>, Path(id): Path<String>) ->
                 memory_gb: node.capabilities.memory_gb,
                 agent_address: node.agent_address.clone(),
                 last_heartbeat: node.last_heartbeat.map(|t| t.to_rfc3339()),
-                owner: node.owner.as_ref().and_then(|o| serde_json::to_value(o).ok()),
+                owner: node
+                    .owner
+                    .as_ref()
+                    .and_then(|o| serde_json::to_value(o).ok()),
             };
             (StatusCode::OK, Json(resp)).into_response()
         }

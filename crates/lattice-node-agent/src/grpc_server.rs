@@ -769,10 +769,7 @@ mod tests {
 
     #[test]
     fn shell_words_backslash_escapes() {
-        assert_eq!(
-            parse_shell_words(r"echo a\ b"),
-            vec!["echo", "a b"]
-        );
+        assert_eq!(parse_shell_words(r"echo a\ b"), vec!["echo", "a b"]);
     }
 
     #[test]
