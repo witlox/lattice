@@ -307,8 +307,25 @@ async fn main() -> Result<()> {
         .grpc_addr
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid grpc_addr: {e}"))?;
+
+    // ── Dispatch bridge (Impl 5) ───────────────────────────────────
+    // Share the agent's Completion Buffer with the gRPC RunAllocation
+    // handler so runtime monitor tasks can push state-change reports that
+    // the heartbeat loop drains on each tick (IP-03 / INV-D13).
+    let dispatch_alloc_mgr = std::sync::Arc::new(tokio::sync::Mutex::new(
+        lattice_node_agent::allocation_runner::AllocationManager::new(),
+    ));
+    let bare_runtime = std::sync::Arc::new(lattice_node_agent::runtime::BareProcessRuntime::new());
+    let bridge = lattice_node_agent::grpc_server::DispatchBridge {
+        allocations: dispatch_alloc_mgr,
+        reports: agent.completion_buffer(),
+        bare: bare_runtime,
+        uenv: None,
+        podman: None,
+    };
     let node_agent_server =
-        lattice_node_agent::grpc_server::NodeAgentServer::new(args.node_id.clone());
+        lattice_node_agent::grpc_server::NodeAgentServer::new(args.node_id.clone())
+            .with_dispatch(bridge);
     let grpc_svc =
         lattice_common::proto::lattice::v1::node_agent_service_server::NodeAgentServiceServer::new(
             node_agent_server,

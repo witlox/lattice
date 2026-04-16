@@ -217,6 +217,12 @@ impl NodeAgent {
         &self.allocations
     }
 
+    /// Return a cheaply-clonable handle to the Completion Report buffer.
+    /// Used by main.rs to wire the dispatch path on the gRPC server.
+    pub fn completion_buffer(&self) -> crate::allocation_runner::CompletionBuffer {
+        self.allocations.completion_buffer()
+    }
+
     /// Access the allocation manager mutably.
     pub fn allocations_mut(&mut self) -> &mut AllocationManager {
         &mut self.allocations
@@ -296,6 +302,11 @@ impl NodeAgent {
             interval,
             cancel_rx.clone(),
         );
+
+        // Wire the Completion Report buffer into the heartbeat loop so
+        // runtime monitor tasks' state-change reports are drained and
+        // delivered to the quorum on each heartbeat (IP-03 / INV-D13).
+        heartbeat_loop.set_completion_buffer(self.allocations.completion_buffer());
 
         // Share allocation count with the heartbeat loop so it stays current.
         let alloc_count = heartbeat_loop.allocation_count_handle();

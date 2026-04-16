@@ -69,6 +69,13 @@ pub struct HeartbeatLoop<S: HeartbeatSink, H: HealthObserver> {
     cancel_rx: tokio::sync::watch::Receiver<bool>,
     active_allocation_count: std::sync::Arc<std::sync::atomic::AtomicU32>,
     conformance_fingerprint: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
+    /// DEC-DISP-10: Completion Reports buffered by runtime monitor tasks
+    /// are drained into each heartbeat. When `None`, the loop sends empty
+    /// `completion_reports` (unit tests and pre-Impl-6 deployments).
+    completion_buffer: Option<crate::allocation_runner::CompletionBuffer>,
+    /// DEC-DISP-03: reattach-in-progress flag sourced from the agent's
+    /// reattach state. When `None`, the loop sends `false`.
+    reattach_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<S: HeartbeatSink, H: HealthObserver> HeartbeatLoop<S, H> {
@@ -94,6 +101,8 @@ impl<S: HeartbeatSink, H: HealthObserver> HeartbeatLoop<S, H> {
             cancel_rx,
             active_allocation_count: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             conformance_fingerprint: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            completion_buffer: None,
+            reattach_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -105,6 +114,20 @@ impl<S: HeartbeatSink, H: HealthObserver> HeartbeatLoop<S, H> {
     /// Get a handle that can update the conformance fingerprint.
     pub fn conformance_handle(&self) -> std::sync::Arc<tokio::sync::RwLock<Option<String>>> {
         self.conformance_fingerprint.clone()
+    }
+
+    /// Wire a shared CompletionBuffer so the heartbeat drains per-allocation
+    /// state change reports into each outgoing heartbeat (IP-03 / INV-D13).
+    pub fn set_completion_buffer(&mut self, buf: crate::allocation_runner::CompletionBuffer) {
+        self.completion_buffer = Some(buf);
+    }
+
+    /// Get a shared handle for signalling the reattach flag. Producers
+    /// (typically the reattach startup path) flip this to true while
+    /// reattach is in progress; the heartbeat loop reads it each tick and
+    /// clears it once the reattach routine completes (DEC-DISP-03 / INV-D5).
+    pub fn reattach_flag_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.reattach_flag.clone()
     }
 
     /// Execute a single heartbeat cycle: observe, generate, send.
@@ -135,14 +158,18 @@ impl<S: HeartbeatSink, H: HealthObserver> HeartbeatLoop<S, H> {
             ));
         }
 
-        let heartbeat = self.generator.generate(
-            healthy,
-            issues,
-            alloc_count,
-            fingerprint,
-            false,      // reattach_in_progress — wired in Impl 6 via AllocationManager bridge
-            Vec::new(), // completion_reports — wired in Impl 6
-        );
+        let reattach = self
+            .reattach_flag
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let reports = self
+            .completion_buffer
+            .as_ref()
+            .map(|b| b.drain())
+            .unwrap_or_default();
+
+        let heartbeat =
+            self.generator
+                .generate(healthy, issues, alloc_count, fingerprint, reattach, reports);
 
         debug!(
             seq = heartbeat.sequence,
