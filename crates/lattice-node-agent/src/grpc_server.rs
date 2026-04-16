@@ -22,7 +22,7 @@ use lattice_common::types::{
 use crate::allocation_runner::{AllocationManager, CompletionBuffer};
 use crate::pmi2::fence::{FenceCoordinator, FenceTransport};
 use crate::process_launcher::{LaunchConfig, ProcessLauncher};
-use crate::runtime::{BareProcessRuntime, PrepareConfig, Runtime, RuntimeError};
+use crate::runtime::{BareProcessRuntime, PrepareConfig, Runtime};
 
 /// State for an active MPI launch on this node.
 struct ActiveLaunch {

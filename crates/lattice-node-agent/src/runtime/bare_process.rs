@@ -30,7 +30,7 @@ use lattice_common::types::AllocId;
 use super::{ExitStatus, PrepareConfig, ProcessHandle, Runtime, RuntimeError};
 
 /// Configuration for the Bare-Process runtime's environment scrubbing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BareProcessConfig {
     /// Additional env-var patterns to strip beyond the built-in block-list.
     /// Matched case-insensitively as substrings.
@@ -39,16 +39,6 @@ pub struct BareProcessConfig {
     pub extra_allow_list: Vec<String>,
     /// Include SLURM_* variables (opt-in via `compat.set_slurm_env`).
     pub include_slurm_vars: bool,
-}
-
-impl Default for BareProcessConfig {
-    fn default() -> Self {
-        Self {
-            extra_block_list: Vec::new(),
-            extra_allow_list: Vec::new(),
-            include_slurm_vars: false,
-        }
-    }
 }
 
 /// Bare-Process Runtime. Spawns workloads directly via `tokio::process::Command`.
@@ -166,7 +156,7 @@ fn allow_list_matches(name: &str, config: &BareProcessConfig) -> bool {
         "LD_LIBRARY_PATH",
         "LD_PRELOAD",
     ];
-    if EXACT_NAMES.iter().any(|&e| e == name) {
+    if EXACT_NAMES.contains(&name) {
         return true;
     }
     // Locale
@@ -296,7 +286,7 @@ impl Runtime for BareProcessRuntime {
         let mut children = self.children.lock().await;
         let child = children
             .get_mut(&handle.alloc_id)
-            .ok_or_else(|| RuntimeError::NotFound {
+            .ok_or(RuntimeError::NotFound {
                 alloc_id: handle.alloc_id,
             })?;
         let Some(pid) = child.id() else {
@@ -482,8 +472,10 @@ mod tests {
         // SLURM_* opt-in
         assert!(!allow_list_matches("SLURM_JOB_ID", &cfg));
 
-        let mut cfg_slurm = BareProcessConfig::default();
-        cfg_slurm.include_slurm_vars = true;
+        let cfg_slurm = BareProcessConfig {
+            include_slurm_vars: true,
+            ..Default::default()
+        };
         assert!(allow_list_matches("SLURM_JOB_ID", &cfg_slurm));
     }
 

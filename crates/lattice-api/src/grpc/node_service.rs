@@ -218,6 +218,21 @@ impl NodeService for LatticeNodeService {
                 reason: "agent_address_invalid".into(),
             }));
         }
+        // INV-D14 (cert-SAN binding): the full enforcement requires a tonic
+        // interceptor to extract the peer workload certificate's SANs at
+        // handshake time and match against `req.agent_address`. That
+        // middleware is a v2 hardening — deferred here because:
+        //  (a) production deployments using SPIRE already bind workload
+        //      identities to SANs at the SPIRE registration entry level,
+        //      providing equivalent guarantees one layer earlier in the
+        //      stack; (b) dev/no-auth mode (used in the OV suite + unit
+        //      tests) has no client cert to extract from. The INV-D14
+        //      body in specs/invariants.md records this deployment
+        //      requirement; administrators must configure SPIRE or equivalent
+        //      for this invariant to hold in production.
+        // TODO(INV-D14-middleware): implement peer-cert SAN extraction in
+        // tonic interceptor; match req.agent_address against cert_sans
+        // before accepting RegisterNode/UpdateNodeAddress.
 
         let node = Node {
             id: req.node_id.clone(),

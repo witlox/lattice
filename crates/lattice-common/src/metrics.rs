@@ -258,6 +258,125 @@ pub fn set_nodes_ready(count: f64) {
     nodes_ready().set(count);
 }
 
+// ─── Dispatch metrics (INV-D / DEC-DISP) ─────────────────────
+
+fn dispatch_attempt_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_dispatch_attempt_total",
+            "Total Dispatch Attempts to node agents (DEC-DISP-04)",
+            &["node_id", "result"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_dispatch_attempt(node_id: &str, result: &str) {
+    dispatch_attempt_total()
+        .with_label_values(&[node_id, result])
+        .inc();
+}
+
+fn dispatch_rollback_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_dispatch_rollback_total",
+            "Total RollbackDispatch commits (INV-D6 / DEC-DISP-07)",
+            &["reason"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_dispatch_rollback(reason: &str) {
+    dispatch_rollback_total().with_label_values(&[reason]).inc();
+}
+
+fn dispatch_rollback_stop_sent_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_dispatch_rollback_stop_sent_total",
+            "StopAllocation cleanup outcomes after rollback (DEC-DISP-08)",
+            &["result"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_rollback_stop_sent(result: &str) {
+    dispatch_rollback_stop_sent_total()
+        .with_label_values(&[result])
+        .inc();
+}
+
+fn completion_report_cross_node_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_completion_report_cross_node_total",
+            "Completion Reports rejected because source node is not assigned (INV-D12)",
+            &["node_id"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_cross_node_report(node_id: &str) {
+    completion_report_cross_node_total()
+        .with_label_values(&[node_id])
+        .inc();
+}
+
+fn completion_report_phase_regression_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_completion_report_phase_regression_total",
+            "Completion Reports rejected for phase regression (INV-D7)",
+            &["current_phase", "reported_phase"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_phase_regression(current: &str, reported: &str) {
+    completion_report_phase_regression_total()
+        .with_label_values(&[current, reported])
+        .inc();
+}
+
+fn dispatch_unknown_refusal_reason_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_dispatch_unknown_refusal_reason_total",
+            "Unknown refusal_reason values received from agent (D-ADV-ARCH-10)",
+            &["reason_code"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_unknown_refusal_reason(reason_code: &str) {
+    dispatch_unknown_refusal_reason_total()
+        .with_label_values(&[reason_code])
+        .inc();
+}
+
+fn node_degraded_by_dispatch_total() -> &'static CounterVec {
+    static M: OnceLock<CounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        register_counter_vec!(
+            "lattice_node_degraded_by_dispatch_total",
+            "Nodes transitioned to Degraded via INV-D11 cap",
+            &["node_id"]
+        )
+        .unwrap()
+    })
+}
+pub fn record_node_degraded(node_id: &str) {
+    node_degraded_by_dispatch_total()
+        .with_label_values(&[node_id])
+        .inc();
+}
+
 // ─── Encoding ───────────────────────────────────────────────
 
 /// Encode all registered metrics in Prometheus text exposition format.

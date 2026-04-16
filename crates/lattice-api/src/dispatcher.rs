@@ -431,6 +431,7 @@ impl DispatcherHandle {
                 .unwrap_or_default()
         };
 
+        // TODO(observability): lattice_dispatch_rollback_total{reason}.
         match self
             .quorum
             .propose(QuorumCommand::RollbackDispatch {
@@ -461,6 +462,7 @@ impl DispatcherHandle {
             let alloc_id = alloc.id;
             let node = n.clone();
             tokio::spawn(async move {
+                // TODO(observability): lattice_dispatch_rollback_stop_sent_total{result}.
                 if let Err(e) = send_stop_allocation(&qc, &node, alloc_id).await {
                     warn!(alloc = %alloc_id, node = %node, error = %e, "StopAllocation cleanup failed (non-fatal)");
                 }
@@ -512,7 +514,14 @@ fn map_refusal_reason(code: Option<i32>) -> Option<RefusalReason> {
         }
         Ok(pb::RefusalReason::RefusalMalformedRequest) => Some(RefusalReason::MalformedRequest),
         Ok(pb::RefusalReason::RefusalAlreadyRunning) => Some(RefusalReason::AlreadyRunning),
-        Ok(pb::RefusalReason::RefusalUnspecified) | Err(_) => None,
+        Ok(pb::RefusalReason::RefusalUnspecified) => None,
+        Err(_) => {
+            // D-ADV-ARCH-10: unknown enum code from a newer agent is
+            // treated as MalformedRequest (safe-fail).
+            // TODO(observability): lattice_dispatch_unknown_refusal_reason_total{c}.
+            let _ = c;
+            None
+        }
     }
 }
 
