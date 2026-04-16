@@ -73,6 +73,16 @@ pub trait SchedulerStateReader: Send + Sync {
     ) -> Result<Vec<lattice_common::types::Allocation>, lattice_common::error::LatticeError> {
         Ok(vec![])
     }
+
+    /// Fetch a single node by id. Used by the silent-sweep pass (IP-15)
+    /// to check heartbeat/reattach state for allocations in Running.
+    /// Default returns None (opt-in for silent-sweep).
+    async fn get_node(
+        &self,
+        _node_id: &lattice_common::types::NodeId,
+    ) -> Result<Option<lattice_common::types::Node>, lattice_common::error::LatticeError> {
+        Ok(None)
+    }
 }
 
 /// Applies scheduling decisions to the cluster.
@@ -480,7 +490,83 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
             }
         }
 
+        // ── Silent-node sweep (IP-15, INV-D8) ─────────────────────────
+        // Detect allocations stuck in Running whose assigned nodes have
+        // gone silent OR whose Completion Reports have ceased (ghost
+        // detection via ALREADY_RUNNING liar, D-ADV-ARCH-09).
+        //
+        // Freshly-placed allocations are exempt until they've had a
+        // reasonable chance to deliver their first heartbeat
+        // (D-ADV-ARCH-07: now - assigned_at > heartbeat_interval + grace).
+        if let Err(e) = self.silent_node_sweep().await {
+            warn!(error = %e, "silent-node sweep failed (non-fatal)");
+        }
+
         Ok(placed_count)
+    }
+
+    /// Silent-node sweep pass. Marks allocations Failed (or eligible for
+    /// requeue) when their assigned nodes have not reported progress.
+    ///
+    /// Two predicates per INV-D8:
+    ///   (a) node heartbeat older than `grace_period` (node is silent),
+    ///       unless reattach_in_progress is currently set per INV-D5.
+    ///   (b) node IS heartbeating but `last_completion_report_at` for this
+    ///       allocation is older than `grace_period` (ghost detection).
+    async fn silent_node_sweep(&self) -> Result<(), lattice_common::error::LatticeError> {
+        let running = self.reader.running_allocations().await?;
+        let now = Utc::now();
+        // Policy constants — could be externalised to config later.
+        let heartbeat_interval = chrono::Duration::seconds(10);
+        let grace_period = chrono::Duration::seconds(30);
+        let fresh_exemption = heartbeat_interval + grace_period;
+
+        for alloc in running {
+            if alloc.assigned_nodes.is_empty() {
+                continue;
+            }
+            // Fresh-allocation exemption (D-ADV-ARCH-07).
+            let assigned_at = alloc.started_at.unwrap_or(alloc.created_at);
+            if now - assigned_at < fresh_exemption {
+                continue;
+            }
+
+            // Check each assigned node.
+            let mut is_stuck = false;
+            for node_id in &alloc.assigned_nodes {
+                let node = match self.reader.get_node(node_id).await {
+                    Ok(Some(n)) => n,
+                    _ => continue,
+                };
+                // Predicate (a): node silent?
+                let node_silent = match node.last_heartbeat {
+                    Some(ts) => now - ts > grace_period && !node.reattach_in_progress,
+                    None => true,
+                };
+                if node_silent {
+                    is_stuck = true;
+                    break;
+                }
+            }
+            // Predicate (b): no progress even though node is alive
+            // (D-ADV-ARCH-09 ghost detection).
+            let no_progress = match alloc.last_completion_report_at {
+                Some(ts) => now - ts > grace_period,
+                None => now - assigned_at > fresh_exemption + grace_period,
+            };
+            if is_stuck || no_progress {
+                // Propose ApplyCompletionReport(Failed, node_silent_or_no_progress)
+                // via the command sink (silent sweep reconciliation).
+                if let Err(e) = self
+                    .sink
+                    .fail_allocation(alloc.id, "node_silent_or_no_progress".into())
+                    .await
+                {
+                    warn!(alloc_id = %alloc.id, error = %e, "silent-sweep failed to fail allocation");
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Determine if a failed allocation should be automatically requeued.
@@ -604,7 +690,23 @@ impl SchedulerStateReader for TraitStateReader {
             state: Some(lattice_common::types::NodeState::Ready),
             ..Default::default()
         };
-        self.nodes.list_nodes(&filter).await
+        let all = self.nodes.list_nodes(&filter).await?;
+        // INV-D2: addressless nodes are scheduler-invisible even if Ready.
+        Ok(all
+            .into_iter()
+            .filter(|n| !n.agent_address.trim().is_empty())
+            .collect())
+    }
+
+    async fn get_node(
+        &self,
+        node_id: &lattice_common::types::NodeId,
+    ) -> Result<Option<lattice_common::types::Node>, lattice_common::error::LatticeError> {
+        match self.nodes.get_node(node_id).await {
+            Ok(n) => Ok(Some(n)),
+            Err(lattice_common::error::LatticeError::NodeNotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn tenants(

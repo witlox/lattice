@@ -11,6 +11,7 @@
 
 pub mod convert;
 pub mod diagnostics;
+pub mod dispatcher;
 pub mod events;
 pub mod grpc;
 pub mod middleware;
@@ -19,6 +20,7 @@ pub mod rest;
 pub mod server;
 pub mod state;
 
+pub use dispatcher::{Dispatcher, DispatcherConfig};
 pub use events::{AllocationEvent, EventBus};
 pub use grpc::admin_service::LatticeAdminService;
 pub use grpc::allocation_service::LatticeAllocationService;
