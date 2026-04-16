@@ -58,6 +58,9 @@ Allocation {
   // Lifecycle
   lifecycle: Lifecycle,           // Bounded | Unbounded | Reactive
   state: AllocationState,
+  state_version: u64,             // Monotonic; ++ on every state-changing command (INV-D6)
+  dispatch_retry_count: u32,      // Bounded by max_dispatch_retries (INV-D11, DEC-DISP-02)
+  last_completion_report_at: Option<Timestamp>,  // Updated on every ApplyCompletionReport commit; used by INV-D8 no-progress detection
   walltime: Option<Duration>,     // Bounded only
   preemption_class: u8,           // 0-10, set by Tenant contract
 
@@ -147,6 +150,13 @@ Node {
   topology_position: Option<TopologyPosition>,
   last_heartbeat: Option<Timestamp>,
   heartbeat_sequence: u64,
+
+  // Dispatch (INV-D1, INV-D11, INV-D14, DEC-DISP-01, DEC-DISP-06)
+  agent_address: String,                    // Required; host:port; must match cert SAN
+  consecutive_dispatch_failures: u32,       // Reset on successful dispatch
+  degraded_at: Option<Timestamp>,           // Set when INV-D11 degrades; used for probe-recovery
+  reattach_in_progress: bool,               // Raft-committed via extended RecordHeartbeat (DEC-DISP-10)
+  reattach_first_set_at: Option<Timestamp>, // Start of the grace window; flag ignored by INV-D8 after this + reattach_grace_period (INV-D5 lifecycle)
 }
 ```
 

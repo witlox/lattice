@@ -63,38 +63,61 @@ hpc-core integration (trait-based, no code coupling):
 
 ---
 
-### IP-02: Consensus → Node Management (Assignment Notification)
+### IP-02: Scheduling → Node Management (Dispatch, via Dispatcher)
 
-**Direction:** Consensus notifies node agents of committed allocations.
+*Rewritten 2026-04-16 after OV suite exposed that the previously-documented "Consensus → Node Management notification" was never implemented. The correct flow is polled by a Dispatcher component in Node Management, not pushed by Consensus.*
+
+**Direction:** Scheduling commits placement to Consensus; a Dispatcher (in Node Management, hosted by the `lattice-api` process) observes committed state and hands off to the target node agent.
 
 **Contract:**
-- Input: Committed allocation assignment (allocation spec, assigned nodes)
-- Action: Node agent begins prologue (uenv pull, mount, data stage, scratch setup)
-- Guarantee: Notification only after Raft commit (INV-O1)
-- Node agent acknowledges receipt (gRPC response)
+- Input (Raft-observed): an Allocation with `state == Running` whose `assigned_nodes` is non-empty and for which no Completion Report has yet advanced the phase to Staging or beyond.
+- Action: Dispatcher resolves each assigned Node's `agent_address` from GlobalState and issues `NodeAgentService.RunAllocation` on each.
+- Output: Agent responds `accepted` (normal case, or `already_running` per INV-D3); the allocation moves to Staging on first Completion Report from the agent.
+- Guarantee: Dispatch is at-least-once from the server's perspective (retries on failure), at-most-once from the agent's perspective (INV-D3).
+
+**Why Dispatcher, not direct-from-Scheduler:** The scheduler's concern is "what runs where." The Dispatcher's concern is "making sure the agent heard us." Separating them lets the scheduler advance to its next cycle without blocking on agent I/O, and lets dispatch retries occur independently of scheduling cadence.
 
 **Failure modes:**
-- Node agent unreachable → quorum retries notification. If node becomes Down during retry, allocation requeued.
-- Notification delivered but prologue fails → node agent reports failure to quorum → allocation retried on different nodes (max 3 retries).
-- Duplicate notification → node agent idempotent (checks if allocation already running).
+- Agent unreachable → bounded retry (3 attempts, 1s/2s/5s backoff) → Dispatch Failure → Rollback via IP-14 (allocation returns to Pending). Both counters from INV-D11 are incremented: `allocation.dispatch_retry_count` and `node.consecutive_dispatch_failures`.
+- Prologue fails inside the agent → agent emits Completion Report phase "Failed" on next heartbeat (IP-03) → quorum applies state transition → standard requeue path per RequeuePolicy.
+- Duplicate dispatch (dispatcher restart, network duplication) → agent's `AllocationManager` deduplicates (INV-D3); no second Workload Process.
+- Address change between attempts → Dispatcher re-reads per attempt (INV-D10). Eventually-consistent: a lag between `UpdateNodeAddress` commit and the next attempt may still see the stale address, absorbed by retries or rollback.
+- Node with working heartbeat but broken RunAllocation (agent up, handler failing) → `node.consecutive_dispatch_failures` (INV-D11) increments across allocations. Reaching `max_node_dispatch_failures` transitions the node to `Degraded` and removes it from `available_nodes()`. A successful Dispatch on the node resets the counter.
+
+**Ordering:** Not required between allocations. A Dispatcher worker pool may process multiple allocations in parallel.
+
+**Duplication:** Same allocation seen across multiple scheduler cycles without a phase transition: dispatcher retries on each observation (bounded by attempt budget). INV-D3 absorbs the agent-side.
 
 ---
 
-### IP-03: Node Management → Consensus (Heartbeat / State Report)
+### IP-03: Node Management → Consensus (Heartbeat, including Completion Reports)
 
 **Direction:** Node agents report to quorum.
 
 **Contract:**
-- Input: Heartbeat (health, conformance fingerprint, running allocation count, sequence number)
-- Processing: Quorum updates in-memory capacity state (eventually consistent). NOT Raft-committed.
-- Node ownership changes (Degraded, Down) triggered by missed heartbeats ARE Raft-committed.
+- Input: Heartbeat (health, conformance fingerprint, running allocation count, sequence number, **Completion Reports list**).
+- Completion Reports are per-allocation state-change records accumulated since the previous heartbeat; each carries `(allocation_id, phase, optional pid, optional exit_code, optional reason)`. Bounded list (default 256 entries; oldest-drop plus alarm on overflow).
+- Processing:
+  - Node health updates are in-memory (eventually consistent), not Raft-committed.
+  - Node ownership state changes (Degraded, Down) triggered by missed heartbeats ARE Raft-committed.
+  - Completion Reports ARE Raft-committed — each report that advances an allocation's state produces a Raft proposal, subject to idempotency (INV-D4) and monotonicity (INV-D7).
 
 **Failure modes:**
 - Heartbeat missed → Degraded (after heartbeat_timeout). Down (after grace_period).
 - Heartbeat storm → quorum-side rate limiting (max 1 per interval per node).
 - Stale heartbeat (replay) → sequence number check rejects.
+- Duplicate Completion Report (same allocation_id/phase) → applied once by INV-D4; acknowledged to caller so agent stops retransmitting. Idempotency check happens at Raft command-apply step, not at submit-time.
+- Completion Report with regressed phase (e.g., Running after Completed) → rejected + logged per INV-D7; counter `lattice_completion_report_phase_regression_total` emitted; acknowledged so agent does not retransmit.
+- Completion Report from a node not in the allocation's `assigned_nodes` → rejected per INV-D12; counter `lattice_completion_report_cross_node_total` emitted. Check happens before monotonicity and idempotency checks.
+- Completion Reports buffer cardinality limit — keyed by allocation_id per INV-D13. The buffer holds at most one entry per allocation with latest-phase-wins semantics; no FIFO eviction. If distinct active-allocation cardinality exceeds the bound (anomalous for typical HPC nodes), new allocations' first reports are rejected locally with a `dispatch_report_buffer_exhausted` alarm until a slot frees (see FM-D8).
 
-**Ordering:** Heartbeats are idempotent. Out-of-order heartbeats: latest sequence number wins.
+**Validation order at the receiver** (Raft command-apply step):
+  1. **INV-D12** — is `reporting_node ∈ allocation.assigned_nodes`? If not → reject + `cross_node_report` anomaly.
+  2. **INV-D7** — does `report.phase` strictly advance the current phase? If not → reject + phase-regression counter.
+  3. **INV-D4** — has this `(allocation_id, phase)` already been applied? If so → short-circuit (no-op ack).
+  4. Apply state transition.
+
+**Ordering:** Heartbeats are idempotent by sequence number. Completion Reports within a heartbeat are processed in order; across heartbeats, INV-D7 enforces allocation-phase monotonicity regardless of delivery order.
 
 ---
 
@@ -471,3 +494,81 @@ These constants supplement (not replace) hpc-audit's well-known actions. Shared 
 **Scenario:** Walltime timer fires while checkpoint is writing.
 **Resolution:** Walltime takes priority (INV-E4). If checkpoint completes within SIGTERM grace period (30s): usable. Otherwise: discarded, allocation Failed.
 **Impact:** Potential loss of checkpoint. Tracked by `lattice_checkpoint_walltime_conflict_total` counter.
+
+### Race: Late Completion Report vs. Dispatch Rollback (INV-D6)
+
+**Scenario:** Dispatcher decides a Dispatch Failure has occurred (retry budget exhausted) and is about to submit `RollbackDispatch` at observed `state_version = 5`. Simultaneously, a delayed heartbeat arrives carrying a successful Completion Report for the same allocation; the quorum applies it, advancing `state_version` to 6.
+**Resolution:** `RollbackDispatch` carries the observed `state_version`. The quorum rejects any proposal whose observed version is stale. Completion Report wins; the allocation reaches its terminal state normally; node ownership is released via the normal completion path.
+**Impact:** None. Retry budget was consumed but the allocation succeeded. No user-visible failure. Counter `lattice_dispatch_rollback_raced_by_completion_total` increments for observability.
+
+### Race: Completion Report vs. StopAllocation (user cancel during exit)
+
+**Scenario:** User calls cancel on an allocation that is in the middle of exiting normally. The server issues `StopAllocation` to the agent; the agent has already observed the process exit and queued a Completion Report.
+**Resolution:** Agent's `StopAllocation` handler is idempotent — if the allocation is already in a terminal phase or being epilogued, it acknowledges without sending additional signals. The first Completion Report to reach the quorum wins: either `Completed` (natural exit beat cancel) or `Cancelled` (cancel landed first). INV-D7 prevents a later `Completed` from overriding `Cancelled`.
+**Impact:** User may see `Completed` instead of `Cancelled`, or vice versa, depending on timing. Both are legitimate outcomes; documented in CLI help text.
+
+## Dispatch Cross-Context Contracts
+
+Introduced 2026-04-16 after the OV suite exposed that the dispatch bridge was not implemented. These contracts complement IP-02 (dispatch itself) and IP-03 (completion reporting) with the supporting flows.
+
+---
+
+### IP-13: Node Management → Consensus (Node Registration with Agent Address)
+
+**Direction:** Node agent registers its Node record with the quorum at startup and on address change.
+
+**Contract:**
+- Input: `RegisterNodeRequest { node_id, capabilities, agent_address, conformance_fingerprint }`. `agent_address` is a required non-empty host:port. Validation rejects empty, syntactically malformed, or construction-unreachable addresses (`0.0.0.0:0`, `0.0.0.0:<port>`, `localhost:0`).
+- Raft-committed: Yes — the Node record is strong-consistency state (enforces INV-D1).
+- Re-registration: Idempotent on `node_id`. A repeat `RegisterNode` with the same `agent_address` is a no-op-but-ack; a repeat with a new `agent_address` atomically updates the record.
+- Separate command: `UpdateNodeAddress { node_id, new_address }` for address-only changes without full re-registration.
+
+**Failure modes:**
+- Agent crash between `RegisterNode` commit and binding its gRPC listener → quorum has a stale address. The first `RunAllocation` attempt fails with connection-refused; absorbed by IP-02 retry/rollback.
+- Concurrent `RegisterNode` from two agents claiming the same `node_id` → Raft serializes. Second is rejected with `NodeIdOwnedByDifferentAgent`. This is a misconfiguration, not a failure mode — flagged as an error, no retry.
+- Agent repeatedly re-registers on different ports (flapping) → quorum rate-limits `UpdateNodeAddress` commits per `node_id` to one per 5s; excess are throttled.
+
+**Ordering:** `RegisterNode` must commit before the node is eligible for placement (INV-D1). The scheduler is free to place on the new address once the commit is visible to its reader.
+
+**Duplication:** Deduplicated by `(node_id, agent_address)` tuple; repeat registration with identical fields is a no-op-ack.
+
+---
+
+### IP-14: Scheduling ↔ Consensus (Rollback Dispatch)
+
+**Direction:** Dispatcher (Node Management) submits a rollback proposal to Consensus when a Dispatch Failure occurs.
+
+**Contract:**
+- Input: `RollbackDispatch { allocation_id, observed_state_version, reason: String }`
+- Raft-committed atomic operation (enforces INV-D6): in a single log entry, the quorum (a) transitions the allocation's state from `Running` to `Pending`, (b) increments `dispatch_retry_count`, (c) releases the allocation's node-ownership record.
+- Optimistic concurrency: the proposal includes `observed_state_version`. If the allocation's current `state_version` differs (because a Completion Report or another proposal landed first), the quorum rejects the proposal with `StateVersionMismatch`.
+- Retry budget cap (allocation-level only): if `allocation.dispatch_retry_count >= max_dispatch_retries` (default 3), the allocation transitions to `Failed` with reason `dispatch_exhausted` instead of `Pending`. This cap answers "is this workload broken?" — e.g., a bad image digest or bad uenv view that no node can start. Node health is tracked separately by INV-D11 / `node.consecutive_dispatch_failures`; a broken node gets marked Degraded independently of any one allocation's retry count.
+
+**Failure modes:**
+- Version mismatch → Dispatcher discards the rollback and moves on. Either completion succeeded (race in IP-D6 above) or another dispatcher instance already rolled back.
+- Quorum unavailable → rollback proposal queued and retried on next dispatcher tick. The allocation stays Running-without-process until the proposal commits, which is bounded by INV-D8 silent-node sweep.
+- Allocation already in terminal state at rollback time (edge case: completion + rollback racing both lose the version check) → rollback rejected, no-op.
+
+**Ordering:** Rollback proposals for different allocations are independent. Rollback for the same allocation across multiple dispatcher instances or retries: serialized by Raft, first wins, others see version mismatch.
+
+**Duplication:** Inherent in the retry model. Version check makes duplicates harmless.
+
+---
+
+### IP-15: Scheduling → Consensus (Silent Node Reconciliation)
+
+**Direction:** Scheduler's reconciliation pass detects allocations Running on nodes that have gone silent, and proposes terminal-state transitions to Consensus.
+
+**Contract:**
+- Input (Raft-observed): allocations with `state == Running` whose assigned nodes have not delivered a heartbeat within `heartbeat_interval + grace_period` (INV-D8).
+- Output: Raft proposal to transition the allocation to `Failed` with reason `node_silent`, or `Pending` with `requeue_count++` if RequeuePolicy permits (OnNodeFailure, Always).
+- Enforcement: Runs on every scheduler cycle. At most one reconciliation attempt per (allocation, cycle).
+
+**Failure modes:**
+- Node resumes heartbeating during reconciliation → the heartbeat's Completion Reports may land first. Version-check race identical to IP-14: whichever lands first wins.
+- Heartbeat and silent-sweep commit simultaneously at different Raft terms → Raft serializes; later becomes a no-op by INV-D4 (idempotency) or INV-D7 (phase monotonicity).
+- Node comes back with a different `agent_address` and recovered allocations — handled in IP-13 and IP-02 respectively; reconciliation is only responsible for the "allocation is stuck" case.
+
+**Ordering:** Reconciliation runs after normal placement within a scheduler cycle, so that a newly-placed allocation isn't immediately silent-swept.
+
+**Duplication:** The reconciliation proposal is idempotent per (allocation_id, state_version). Multiple reconciliation attempts across cycles see monotonically-advancing state_version and only one commits.

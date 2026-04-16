@@ -79,7 +79,9 @@ Configured with: `period_secs`, `initial_delay_secs`, `failure_threshold`, `time
 
 **Node State** — The lifecycle state of a Node: Unknown, Booting, Ready, Degraded, Down, Draining, Drained, Failed. See node-lifecycle in architecture docs for the full state machine.
 
-**Heartbeat** — Periodic message (default: 10s) from a Node Agent to the quorum reporting health, conformance fingerprint, and running allocation count. Lightweight (~200 bytes), sent over management traffic class.
+**Heartbeat** — Periodic message (default: 10s) from a Node Agent to the quorum reporting health, conformance fingerprint, running allocation count, and any **Completion Reports** accumulated since the previous heartbeat. Lightweight (~200 bytes baseline plus per-report payload), sent over management traffic class. Heartbeat is the completion-reporting channel: there is no separate RPC for agent→server allocation state changes (decided 2026-04-16; chosen over a standalone RPC because heartbeats are already reliable, periodic, and deliver a natural at-least-once guarantee per `Grace Period`).
+
+**Agent Address** — The reachable gRPC endpoint on which a Node Agent accepts control-plane RPCs (`RunAllocation`, `StopAllocation`, `Attach`). Recorded on the Node record during `register_node` and updated on re-registration. Required: without it the server cannot dispatch allocations. Bound to the `Bind Network` (HSN in production, `any` in dev). Changes across agent restarts if the port is re-assigned; stale addresses produce `Dispatch Failure`.
 
 **Grace Period** — The window between a missed heartbeat (Degraded) and declaring the node Down. Standard: 60s. Sensitive: 5 minutes. Borrowed: 30s.
 
@@ -190,6 +192,37 @@ Configured with: `period_secs`, `initial_delay_secs`, `failure_threshold`, `time
 **Secret Field** — A configuration field whose value is a credential, token, or key material. Secret fields are: `storage.vast_username`, `storage.vast_password`, `accounting.waldur_token`, `quorum.audit_signing_key`, `sovra.key_path`. TLS certificates and private keys are NOT secret fields — they are managed by the hpc-identity cascade.
 
 **AppRole** — The Vault authentication method used by Lattice server components. A role ID and secret ID are provided via config or environment variables to obtain a Vault token at startup. Not used by lattice-cli (which uses hpc-auth for OIDC).
+
+## Allocation Dispatch
+
+**Dispatch** — The act of the control plane instructing a specific Node Agent to begin executing a previously-assigned Allocation. Mechanism: server-side call to `NodeAgentService.RunAllocation` on the Agent Address recorded in the Node record. Dispatch follows `assign_nodes` commit in Raft; the two are NOT atomic (see `Dispatch Attempt`). "Dispatch" is reserved for this cross-process hand-off; the within-agent transition of a Local Allocation from registration to prologue is called "starting", not "dispatching".
+
+**Dispatcher** — The server-side component that watches for Running allocations with assigned nodes whose dispatch has not yet been acknowledged, resolves the target Node's Agent Address, and performs the Dispatch Attempt. Lives in `lattice-api`, sits downstream of the scheduler loop. Idempotent per allocation: the same allocation may be observed across multiple scheduler cycles; dispatcher must not spawn duplicates.
+
+**Dispatch Attempt** — A single RPC call of `RunAllocation` from server to agent for one allocation. Attempts are bounded-retry on the same agent (default: 3 attempts, 1s/2s/5s backoff). All attempts for one allocation must be idempotent — the agent recognizes an allocation ID it has already accepted and re-acknowledges without spawning a second Workload Process.
+
+**Dispatch Failure** — Terminal outcome of the retry budget for a given (allocation, node) pair: all attempts failed (agent unreachable, agent rejected, or RPC timed out). Triggers `Requeue On Dispatch Failure`.
+
+**Requeue On Dispatch Failure** — Rollback transition executed when Dispatch Failure occurs: the allocation's state returns to `Pending`, the node-ownership record in the Raft `GlobalState` is released, and the next scheduler cycle is free to pick a different node. Distinct from service `Reconciliation` (which handles post-Running failures for Unbounded/Reactive allocations); this concerns pre-Running dispatch.
+
+**Workload Process** — The OS-level process that carries an Allocation's `entrypoint` on a specific Node. For non-MPI allocations: exactly one Workload Process per LocalAllocation on that node. For MPI allocations: one Workload Process per rank, all belonging to one LocalAllocation, managed together by a Launch (see below). Tracked by `pid` in the agent's `AllocationManager` and persisted in `PersistedAllocation.pid` for reattach across agent restart. If `pid` is `None`, no Workload Process exists — the LocalAllocation is either in Prologue or has failed before spawn.
+
+**Runtime** — The subsystem in the Node Agent that prepares the execution environment and spawns the Workload Process. Three variants, selected at prologue time from the allocation's `Environment`:
+- **Bare-Process Runtime** — Spawns the entrypoint directly on the host under a cgroup scope; no mount namespace, no container. Used when neither `uenv` nor `image` is specified. Minimal isolation; acceptable for Slurm-compatible bare-binary jobs. Added 2026-04-16 (Q1 decision).
+- **Uenv Runtime** — Mounts a squashfs image via `squashfs-mount` and spawns the entrypoint inside a mount namespace (`nsenter`). Near-zero overhead once mounted. Default when `uenv` is set.
+- **Podman Runtime** — Pulls an OCI image and spawns the entrypoint inside a container via `podman run` + `nsenter`. Used when `image` is set and no `uenv`. Full filesystem isolation.
+
+Only one Runtime is used per allocation; they are not composed. The prior term "Runtime" in `NodeAgent` was used loosely — this definition makes it a concrete abstraction with three implementations.
+
+**Completion Report** — A per-allocation state-change record carried on a Heartbeat. Contents: `allocation_id`, `phase` (`Staging`/`Running`/`Completed`/`Failed`), optional `pid`, optional `exit_code`, optional `reason`. The agent buffers at most one report per allocation with latest-phase-wins semantics (INV-D13) — the buffer is a keyed map, not a queue, and the bound (default: 256) caps the distinct-allocation cardinality, not total phase transitions. Reports are idempotent on the receiver side keyed by `(allocation_id, phase)` — replaying the same report produces no state change. The receiver applies checks in order: source-auth (INV-D12) → monotonicity (INV-D7) → idempotency (INV-D4) → apply. Chosen over a standalone RPC on 2026-04-16 (Q2 decision).
+
+**Local Allocation Phase** — The per-agent phase machine for an allocation on a single node, distinct from the global `Allocation State`: `Prologue` → `Running` → `Epilogue` → `Completed` | `Failed`. Already implemented in `allocation_runner.rs` pre-dispatch-fix. The mapping to global state is: `Prologue` → `Staging`, `Running`/`Epilogue` → `Running`, `Completed` → `Completed`, `Failed` → `Failed`.
+
+**Orphan Process** — A Workload Process whose parent Agent has exited or restarted, and which is not re-adopted via the reattach path. Orphans should be detected on next agent startup by scanning `workload.slice/` cgroup scopes whose allocation IDs are not in the state file. Orphan handling: cleanup cgroup and emit a lost-workload audit event.
+
+**Launch** — MPI rank fan-out on a single node: the act of spawning `tasks_per_node` Workload Processes for a single Allocation under a shared PMI-2 KVS and CXI credential, coordinated via `LaunchProcesses` RPC (`proto/lattice/v1/mpi.proto`). Launch is **layered on top of** Runtime and Dispatch, not parallel to them: a single Dispatch calls RunAllocation once, the agent selects a Runtime (Bare-Process / Uenv / Podman), and for MPI jobs the Runtime then performs a Launch that produces multiple Workload Processes plus a KVS for inter-rank fence. A non-MPI allocation never Launches; it has exactly one Workload Process. The term "Launch" is reserved for this MPI machinery and MUST NOT be used to describe general process spawn or runtime selection — use "spawn" or "Runtime" for those.
+
+**Service (not a launch mode)** — The term "service" in Lattice is a description of an Allocation's **Lifecycle variant** (Unbounded or Reactive), not a Runtime variant and not a Launch variant. A service allocation uses one of the three Runtimes (typically Podman or Uenv) exactly like a batch allocation; what makes it a service is (a) the lifecycle doesn't auto-complete on entrypoint exit, (b) the scheduler's Reconciliation requeues it on failure per its RequeuePolicy, and (c) it typically has a LivenessProbe. There is no fourth Runtime for services and no fourth dispatch path.
 
 ## External Systems
 

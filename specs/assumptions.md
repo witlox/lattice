@@ -295,3 +295,159 @@ These paths prevent configuration drift between the two systems.
 **Assumption:** The JWT token identifies the user (authentication). Waldur allocation state determines which vClusters the user can access (authorization). Authorization is checked at request time, not login time.
 **If wrong:** Would need to bake vCluster permissions into JWT claims, coupling IdP configuration to Lattice vCluster topology.
 **Critical:** No — alternative model works but is operationally more complex.
+
+## Dispatch Assumptions
+
+Introduced 2026-04-16 after the OV suite exposed the dispatch gap. Every assumption here was surfaced during analyst Layers 1–5 for the dispatch fix. Architect must resolve every **[UNKNOWN]** before Gate 1; every **[CRITICAL]** if wrong would invalidate the design.
+
+### Validated (checked against code)
+
+### A-D2: Runtime Subsystems Actually Spawn Processes *(validated)*
+**Source:** Layer 1 edge validation (2026-04-16).
+**Assumption:** `UenvRuntime` and `PodmanRuntime` really spawn OS processes, not simulate.
+**Validation:** `crates/lattice-node-agent/src/runtime/uenv.rs:156` calls `tokio::process::Command` for `squashfs-mount`; `podman.rs:339` calls `nsenter` to spawn the entrypoint. Simulation guards exist but only activate when Linux binaries are absent.
+**If wrong:** No runtime to hook up; dispatch fix would need to build runtimes from scratch. Multi-week delta.
+**Critical:** No — validated.
+
+### A-D3: AllocationManager Supports Idempotent Registration *(validated)*
+**Source:** Layer 2 INV-D3.
+**Assumption:** The agent's `AllocationManager` can answer "is allocation X already registered?" so that duplicate `RunAllocation` RPCs can short-circuit.
+**Validation:** `crates/lattice-node-agent/src/allocation_runner.rs` has `AllocationManager::get(id)` returning `Option<&LocalAllocation>`. `contains()` is a trivial wrapper; if not present, trivial to add.
+**If wrong:** INV-D3 enforcement needs a new mechanism. Low risk — add a hashmap check.
+**Critical:** No.
+
+### A-D4: Existing Reattach Path Only Needs Real PIDs To Work *(validated)*
+**Source:** Layer 1 edge validation.
+**Assumption:** The reattach code (`state.rs`, `reattach.rs`) is structurally correct; it has been dead only because no PID was ever populated. Once `run_allocation` spawns real processes and writes real PIDs into `PersistedAllocation.pid`, reattach works without further changes.
+**Validation:** `reattach::reattach()` calls `is_process_alive(pid)`; `state::save_state()` serializes `PersistedAllocation` including `pid: Option<u32>`. Code paths exercise correctly when pid is Some(n) for a live n.
+**If wrong:** Reattach requires additional work on top of PID tracking. Medium risk.
+**Critical:** No.
+
+### A-D5: `KillMode=process` in the systemd unit *(partially validated)*
+**Source:** FM-D3 correctness relies on Workload Process surviving agent crash. Memory says this is configured.
+**Validation:** Memory entry states "systemd: `KillMode=process` (workloads survive agent restart in own cgroup scopes)". Not re-verified against the current unit file.
+**If wrong:** FM-D3 becomes full data loss on every agent crash. Architect must spot-check the unit file before relying on this.
+**Critical:** **[CRITICAL]** — unvalidated claim that determines production correctness.
+
+### A-D6: Protobuf Field Addition Is Back-Compat *(validated by protocol)*
+**Source:** Layer 4 IP-13 (extend `RegisterNodeRequest` with `agent_address`) and IP-03 (extend `Heartbeat` with `completion_reports`).
+**Assumption:** Adding optional fields to protobuf messages is forward- and backward-compatible.
+**Validation:** Protobuf3 wire format; all added fields use new tag numbers. No existing consumer should break when the new fields are present (ignored) or absent (default).
+**If wrong:** Rolling upgrade of server before agent (or vice versa) would fail. Known protobuf property; would indicate misuse.
+**Critical:** No.
+
+### A-D7: Allocation State Machine Already Supports Pending→Staging→Running Transitions *(validated)*
+**Source:** Layer 3 happy-path scenarios.
+**Validation:** `AllocationState` enum has `Pending, Staging, Running, ..., Completed, Failed, Cancelled` (crates/lattice-common). The scheduler currently skips `Staging` and goes directly Pending→Running; dispatch fix will add the Staging transition driven by the agent's first Completion Report.
+**If wrong:** State machine extension required. Low risk.
+**Critical:** No.
+
+### Accepted (known trade-off)
+
+### A-D8: Heartbeat-Bounded Completion Latency Is Acceptable
+**Source:** Q2(a), INV-D8.
+**Assumption:** A completion latency of up to `2 × heartbeat_interval` (default ~20s) is acceptable because scheduler cycles are 5s+ anyway and HPC workload runtimes are minutes-to-hours.
+**Trade-off:** Short workloads (e.g., OV `/bin/echo` test) see proportionally higher overhead (a 10ms process ships a 10s-latency Completion Report). Accepted because operational validation tolerates this; production workloads are long-lived.
+**If wrong:** Need lower-latency completion path — would require a separate RPC (rejected in Q2) or much shorter heartbeat interval (increases baseline traffic).
+**Critical:** No.
+
+### A-D9: Default Policy Knobs Are Site-Adjustable, Not Workload-Adjustable
+**Source:** Layer 4 IP-14 (max_dispatch_retries=3), INV-D11 (max_node_dispatch_failures=5), A-D8 (heartbeat_interval).
+**Assumption:** These thresholds live in site configuration, not per-allocation spec. Users cannot ask for "more aggressive retry" on a single job.
+**Trade-off:** Simpler API and deployment-wide consistency; some users may want per-allocation override.
+**If wrong:** Add per-allocation overrides to AllocationSpec. Non-invasive extension.
+**Critical:** No.
+
+### A-D10: Bare-Process Runtime Inherits Agent Environment
+**Source:** Q1(a) decision, Layer 1 Runtime variants.
+**Assumption:** A Bare-Process Runtime spawns the entrypoint with the lattice-agent process's environment (minus agent-specific variables). No synthetic environment construction; no chroot.
+**Trade-off:** Matches Slurm's default behaviour where jobs inherit the slurmd environment. Less isolated than Uenv or Podman; users wanting isolation must opt in to one of those.
+**If wrong:** Security-conscious sites require isolation by default. Override via site policy: "require image or uenv" flag at allocation admission.
+**Critical:** No.
+
+### A-D11: Completion Report Buffer Size (256) Is Ample
+**Source:** Layer 1 Completion Report definition.
+**Assumption:** 256 buffered reports per agent is more than enough given <10 simultaneously-active allocations per node and a 10s heartbeat interval.
+**Trade-off:** If a site runs thousands of short-lived allocations on one node between heartbeats, overflow is possible. FM-D8 degrades gracefully (drop oldest, keep terminal-state). Not a correctness risk; observability degradation only.
+**If wrong:** Raise the bound or move to a streaming RPC.
+**Critical:** No.
+
+### A-D12: FM-D5 Orphan Output Loss Is Tolerable
+**Source:** Layer 5 FM-D5.
+**Assumption:** An orphan Workload Process (no state-file entry) had no checkpoint; its output cannot be associated with any allocation; killing it is the only reasonable response.
+**Trade-off:** Unavoidable by construction. Operator sees it in audit log; can investigate.
+**If wrong:** Would need to rebuild allocation association from cgroup-scope name (if we encode allocation_id in the scope path). Possible but adds complexity.
+**Critical:** No.
+
+### Unknown (architect must resolve)
+
+### A-D13: Optimistic Concurrency For Allocation State Transitions *(partially validated)*
+**Source:** INV-D6 optimistic version check, IP-14 RollbackDispatch contract.
+**Assumption:** A monotonic version mechanism exists so that RollbackDispatch can detect a late Completion Report winning the race.
+**Validation:** `crates/lattice-quorum/src/commands.rs:30` has `expected_version: Option<u64>` on scheduler `Propose` commands, with doc: "Heartbeats with stale versions are rejected to prevent post-claim stale health records." `owner_version: u64` also exists (line 60). Mechanism is command-level, not an Allocation field.
+**Architect decision needed:** (a) attach `state_version` directly to Allocation entity, or (b) continue the command-level pattern — thread `expected_version` through `RollbackDispatch`. Either works; INV-D6 phrasing can be adapted.
+**If absent entirely:** Would have required Raft log index or pessimistic lock. Not required — mechanism is there.
+**Critical:** No — validated, but mechanism shape (field vs. command-param) is an architect choice.
+
+### A-D14: Dispatcher Component Placement **[UNKNOWN]**
+**Source:** Layer 4 IP-02 claims the Dispatcher lives in `lattice-api`.
+**Assumption:** The Dispatcher is a background component inside the `lattice-api` process, not a separate binary.
+**Validation gap:** I asserted this placement for Layer 4. Architect may want it in a separate process for independent scaling or restart.
+**If different:** New deployment unit, new systemd/Dockerfile, new config. Non-trivial infra impact.
+**Critical:** No — either placement works; choice affects operational model.
+
+### A-D15: Dispatcher Concurrency Model **[UNKNOWN]**
+**Source:** Layer 4 IP-02 is silent on whether the Dispatcher is single-threaded per lattice-api instance, worker-pooled, or per-allocation-task.
+**Assumption:** Single background task that iterates over un-acked Running allocations and processes them with some parallelism. Concrete model: architect's call.
+**Validation gap:** Not designed.
+**If wrong:** Performance at scale (hundreds of dispatches per minute) may require pooling.
+**Critical:** No — single-threaded is correct, just potentially slow.
+
+### A-D16: `node.consecutive_dispatch_failures` Commit Granularity **[UNKNOWN]**
+**Source:** INV-D11.
+**Assumption:** The counter is Raft-committed on every increment, OR in-memory with only the Degraded transition committed.
+**Validation gap:** Not decided.
+**If wrong:** Per-increment commits generate Raft traffic; in-memory loses the counter on lattice-api restart. Architect picks.
+**Critical:** No — both approaches work with slightly different trade-offs.
+
+### A-D17: Completion Report Raft Proposal Granularity **[UNKNOWN]**
+**Source:** IP-03 says Completion Reports are Raft-committed.
+**Assumption:** One Raft proposal per phase transition (per Completion Report), OR one proposal per heartbeat that batches all reports in it.
+**Validation gap:** Not decided.
+**If wrong:** Per-report is simple but generates more Raft traffic; per-heartbeat batches are more efficient but complicate atomicity (what if half the reports in a batch are invalid?).
+**Critical:** No — architect choice.
+
+### A-D18: BareProcessRuntime and PACT Mode Interaction **[UNKNOWN]**
+**Source:** Layer 1 Bare-Process definition; dual-mode operation is documented but BareProcessRuntime is new.
+**Assumption:** BareProcessRuntime follows the same cgroup-scope-creation pattern as Uenv/Podman (standalone: self-service `unshare(2)` or cgroup create; PACT-managed: handoff from PACT). It simply skips the mount-namespace and image-mount steps.
+**Validation gap:** Not validated against `CgroupManager` trait from hpc-node.
+**If wrong:** Bare-Process may need its own isolation path. Low risk — the existing trait accommodates any runtime.
+**Critical:** No.
+
+### A-D19: Final-State Completion Report Preservation Under Buffer Pressure *(validated)*
+**Source:** FM-D8.
+**Assumption:** The buffer preserves final-state reports (`Completed`, `Failed`) regardless of intermediate churn.
+**Validation:** Resolved 2026-04-16 via INV-D13 (latest-wins keyed map). Mechanism: the buffer is keyed by `allocation_id`, holds at most one entry per allocation, and replaces earlier-phase reports with later-phase ones. Because Local Allocation Phases are monotonic, a terminal report once enqueued cannot be overwritten by a non-terminal one. No priority queue or two-tier structure needed.
+**If wrong:** Would require falling back to priority queue or separate terminal-state channel. Not needed — INV-D13's construction is correct.
+**Critical:** No — mechanism specified and correct-by-construction.
+
+### A-D20: Dispatcher Leader Election Not Required **[UNKNOWN]**
+**Source:** FM-D10 claims dispatcher is stateless-over-Raft and multiple instances are safe due to INV-D3.
+**Assumption:** Two lattice-api replicas both acting as dispatchers simultaneously is safe — duplicate dispatches are absorbed by the agent's idempotency (INV-D3). No leader election needed.
+**Validation gap:** Adversary likely to attack this. Fan-out RPC traffic is 2× at minimum; concurrent rollback proposals race in IP-14 but one wins via version check.
+**If wrong:** Add leader election (e.g., via Raft leadership — only leader runs Dispatcher). Non-trivial.
+**Critical:** No — correct either way by INV-D3 + version check; efficiency-only concern.
+
+### A-D22: Degraded Node Auto-Recovery Thresholds Are Policy, Not Invariant
+**Source:** DEC-DISP-01 (architect, 2026-04-16).
+**Assumption:** The degraded-node probe-recovery mechanism uses `degraded_probe_interval` (default 5 min) and a cluster-wide guard `node_dispatch_failure_ratio_threshold` (default 0.3 over `guard_window` 10 min). These are site-tunable knobs, not runtime invariants — an operator may disable auto-recovery by setting the interval to infinity, or disable the ratio guard by setting the threshold to 1.0.
+**Trade-off:** Defaults balance "don't trap operators in permanent Degraded state" (the cluster-wide image case) against "don't thrash a genuinely broken node." An aggressive ratio threshold (e.g., 0.9) effectively disables the guard; a loose one (0.1) suspends auto-Degrade for minor issues.
+**If wrong:** Operator tunes values per site. Production deployment docs should surface these.
+**Critical:** No — both defaults and operator overrides give reasonable behavior; wrong defaults are a tuning bug, not a correctness bug.
+
+### A-D21: Existing BDD Steps Drive State Machine Abstractly *(validated and accepted as limitation)*
+**Source:** Layer 3 analysis.
+**Assumption:** `crates/lattice-acceptance/features/allocation_lifecycle.feature` and `node_agent.feature` drive state transitions abstractly (e.g., "When the allocation transitions to 'Running'") rather than via the actual RPC wire. This is why these acceptance tests passed while the dispatch bridge was absent.
+**Validation:** Confirmed in Layer 3 reading of the feature files and step definitions.
+**Implication:** Cannot rely on existing BDD to catch dispatch bugs. `allocation_dispatch.feature` (Layer 3) must drive the real wire. Architect must ensure step implementations create actual agents and actual RPCs, not state-machine harness.
+**Critical:** No — known limitation of existing tests; new feature covers the gap.

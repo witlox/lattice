@@ -123,11 +123,15 @@ Cross-context coordination mechanisms (not contexts themselves):
 
 **Node** — A physical compute node identified by xname (e.g., `x1000c0s0b0n0`).
 - State machine: Unknown → Booting → Ready ⇄ Degraded → Down; Ready → Draining → Drained → Ready; Booting → Failed
-- Has: NodeCapabilities (GPU type/count, memory, features), ConformanceFingerprint, TopologyPosition (dragonfly group), MemoryTopology
+- Has: NodeCapabilities (GPU type/count, memory, features), ConformanceFingerprint, TopologyPosition (dragonfly group), MemoryTopology, **AgentAddress** (reachable gRPC endpoint for Dispatch; required for a node to participate in scheduling), **consecutive_dispatch_failures** counter (health signal independent of heartbeat, see INV-D11)
 - Sensitive nodes have extended grace periods, mandatory wipe-on-release, strict conformance enforcement
+- A Ready node with no valid AgentAddress is scheduler-invisible (covered by INV-D2)
+- A node reaching `max_node_dispatch_failures` via `consecutive_dispatch_failures` transitions Ready → Degraded even while heartbeating (covered by INV-D11): this catches agents whose heartbeat path works but whose RunAllocation path is broken
 
 **NodeAgent** — Per-node daemon managing runtime lifecycle.
-- Owns: uenv mount, Podman container (sarus-suite), DMTCP checkpoint, eBPF telemetry loading, health reporting, PMI-2 server
+- Owns: `AgentAddress` (reachable gRPC endpoint, registered with quorum), `AllocationManager` (local phase tracker + `pid` index for reattach), one Runtime per allocation (Bare-Process | Uenv | Podman), DMTCP checkpoint, eBPF telemetry loading, health reporting, PMI-2 server
+- Receives: `RunAllocation` RPC (Dispatcher → agent); `StopAllocation` RPC
+- Emits: Heartbeat (every `heartbeat_interval`, carries aggregated node health AND per-allocation Completion Reports since last heartbeat)
 - Executes prologue (image resolve check, pull/stage, mount/setns, view activation, data stage) and epilogue (cleanup, container stop, scratch wipe)
 - Implements hpc-node contracts: `CgroupManager` (standalone), `NamespaceConsumer` (dual-mode), `MountManager` (dual-mode)
 - Dual-mode operation: detects PACT presence at runtime. When PACT is present, delegates namespace creation and mount management to PACT via hpc-node handoff protocol. When standalone, self-services all resource isolation.
@@ -139,6 +143,29 @@ Cross-context coordination mechanisms (not contexts themselves):
 **MemoryTopology** — NUMA domains, memory interconnects (UPI, CXL, NVLink), superchip detection (GH200, MI300A). Informs scheduler f4 and prologue numactl policy.
 
 **MPI ProcessManager** — Native PMI-2 server over Unix domain socket. Cross-node KV exchange (fence) via gRPC between node agents. Optional PMIx sidecar behind feature flag.
+
+**Dispatcher** — Control-plane component (lives in `lattice-api`) that bridges the Scheduling context's node-assignment decisions to the Node Management context's execution machinery. After the scheduler commits `assign_nodes` to Raft, the Dispatcher resolves the target Node's AgentAddress, calls `NodeAgentService.RunAllocation`, and enforces bounded retry with rollback to Pending on exhaustion (see Dispatch Failure and Requeue On Dispatch Failure in the ubiquitous language). The Dispatcher is the ONLY component that calls agent RPCs for allocation lifecycle; the scheduler itself never talks to agents directly.
+
+**Workload Process** — The OS process that carries an Allocation's entrypoint on a specific Node. One per LocalAllocation (MPI fan-out creates additional ranks via a separate Launch; those are also Workload Processes but tracked under a single allocation). Identified by `pid` and cgroup scope path. Tracked by the agent's AllocationManager; persisted in the agent state file for reattach.
+
+**Dispatch Flow (happy path):**
+```
+Scheduler          Quorum                Dispatcher          Agent              Runtime
+   │                 │                       │                 │                    │
+   ├─ assign_nodes ─>│                       │                 │                    │
+   │                 │── committed ─────────>│                 │                    │
+   │                 │                       ├─ RunAllocation ─>│                  │
+   │                 │                       │                 ├─ select runtime ─>│
+   │                 │                       │<── accepted ────│                    │
+   │                 │                       │                 ├─ prologue ─────>  │
+   │                 │<── Heartbeat[Staging] ───────────────────┤                   │
+   │                 │                       │                 ├─ spawn ────────>  pid
+   │                 │<── Heartbeat[Running, pid] ──────────────┤                   │
+   │                 │                       │                 ├─ wait ─────────>  │
+   │                 │<── Heartbeat[Completed, exit=0] ─────────┤                   │
+   │                 │── Raft: set Completed ┤                  │                   │
+```
+The Dispatcher is stateless across retries — its only state is "I have not yet received a Completion Report for allocation X on node Y". Derivable by inspecting Raft state; does not require a separate store.
 
 ### Tenant & Access Context
 

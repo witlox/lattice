@@ -124,10 +124,11 @@ Module boundaries, responsibilities, and ownership. Each module maps to a Rust c
 **Owns:**
 - 3 gRPC services: AllocationService (18 RPCs), NodeService (7 RPCs), AdminService (8 RPCs)
 - REST gateway: 30+ routes mirroring gRPC surface
-- Middleware stack: OIDC validation, RBAC enforcement, rate limiting
+- Middleware stack: OIDC validation, RBAC enforcement, rate limiting, **mTLS cert-SAN extraction for dispatch (INV-D14)**
 - Request validation: admission checks before proposals reach quorum
 - Event bus: streaming state changes (Watch, StreamLogs, StreamMetrics)
 - `ApiState`: composition root wiring all trait implementations together
+- **Dispatcher: background task that bridges scheduler output to node agent RunAllocation RPCs. Runs only on the Raft leader (DEC-DISP-04). Stateless-over-Raft — derives all state from GlobalState reads. See `interfaces/allocation-dispatch.md`.**
 
 **Does NOT own:** Business logic, scheduling decisions, state mutation (delegates to quorum/scheduler/node-agent).
 

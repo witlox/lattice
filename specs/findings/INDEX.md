@@ -1,19 +1,67 @@
 # Adversarial Findings
 Last sweep: 2026-03-20
-Status: COMPLETE — ALL RESOLVED
+Last targeted review: 2026-04-16 (dispatch analyst output)
+Status: ALL PRIOR SWEEP FINDINGS RESOLVED; DISPATCH REVIEW OPEN
 
 ## Summary
 
 | Severity | Count | Resolved | Open |
 |----------|-------|----------|------|
-| Critical | 2 | 2 | 0 |
-| High | 8 | 8 | 0 |
-| Medium | 10 | 10 | 0 |
-| Low | 0 | 0 | 0 |
+| Critical | 7 | 7 | 0 |
+| High | 18 | 18 | 0 |
+| Medium | 17 | 17 | 0 |
+| Low | 2 | 2 | 0 |
 
-## Open findings
+All dispatch findings closed. Ready for implementer phase, pending consistency review.
 
-(none)
+## Resolved during analyst text-edit phase (dispatch, 2026-04-16)
+
+| # | Title | Severity | Resolution |
+|---|---|---|---|
+| D-ADV-ARCH-04 | Leadership flap effectively doubles retry budget | High | DEC-DISP-04 amended: new leader pauses Dispatcher for one heartbeat_interval before first tick, allowing in-flight Completion Reports from previous leader to land. Budget amplification bounded to ~1 extra attempt per flap. |
+| D-ADV-ARCH-06 | Malicious agent suppresses silent-sweep via reattach flag | High | INV-D5 reattach flag lifecycle: `reattach_in_progress` may only be set to true on first heartbeat after re-registration; grace timer is absolute from first-true heartbeat; set-to-false is one-way. Cannot be indefinitely suppressed. New field `reattach_first_set_at` on Node. |
+| D-ADV-ARCH-07 | Silent-sweep races freshly-placed allocations | High | INV-D8 amended: silent-sweep only considers allocations whose `assigned_at` is older than `heartbeat_interval + grace_period`. Freshly-placed allocations exempt until they've had a chance to heartbeat. |
+| D-ADV-ARCH-09 | ALREADY_RUNNING ghost case has long detection window | High | INV-D8 extended with second predicate: node heartbeating + no Completion Report advancing this allocation's phase for grace_period → also silent-sweep. New `allocation.last_completion_report_at` field on Allocation. Detects ghosting agents even when node is alive. |
+| D-ADV-ARCH-10 | Unknown `refusal_reason` has no defined handling | Medium | DEC-DISP-05 amended: unknown `refusal_reason` values treated as MALFORMED_REQUEST (safe-fail). Counter `lattice_dispatch_unknown_refusal_reason_total{reason_code}` surfaces rolling-upgrade skew. |
+| D-ADV-ARCH-11 | BareProcessRuntime env allow-list omits common HPC variables | Medium | Env scrubbing contract extended: allow-list now includes OMP_*, CUDA_*, ROCR_*, HIP_*, MKL_*, PMI_*, MPI_*, OMPI_*, MPICH_*, FI_*, NCCL_*, CXI_*, TMPDIR, XDG_RUNTIME_DIR, LD_LIBRARY_PATH, LD_PRELOAD. Merge semantics: user env_vars > site allow-list > agent env, all filtered by block-list. User key in block-list rejected as MALFORMED_REQUEST at prologue. |
+
+## Resolved during architect re-entry (dispatch, 2026-04-16)
+
+| # | Title | Severity | Resolution |
+|---|---|---|---|
+| D-ADV-ARCH-01 | Rollback semantics on multi-node allocations undefined | Critical | DEC-DISP-07: RollbackDispatch is all-or-nothing — releases ALL assigned nodes atomically in one Raft command. Command signature changed to take `released_nodes: Vec<NodeId>`. |
+| D-ADV-ARCH-02 | Orphaned Workload Process after rollback race | Critical | DEC-DISP-08: Dispatcher fires best-effort StopAllocation to every released node that had accepted. Counter `lattice_dispatch_rollback_stop_sent_total`. INV-D9 orphan-cleanup backstops. New FM-D11 documents the race and recovery. |
+| D-ADV-ARCH-03 | AllocationManager.completion_buffer thread-safety unspecified | Critical | DEC-DISP-09: AllocationManager is actor-owned via `mpsc::Sender<AllocationManagerCmd>`. All methods routed through the channel; no locks; no data races by construction. |
+| D-ADV-ARCH-05 | `reattach_in_progress` flag location ambiguous | High | DEC-DISP-10: flag is Raft-committed on the Node record, updated via extended `Command::RecordHeartbeat`. Every heartbeat commits the current value. Scheduler reads from GlobalState unambiguously. |
+| D-ADV-ARCH-08 | Multi-node allocation phase aggregation undefined | High | DEC-DISP-11: conservative aggregation — Staging if any LocalAllocation in Prologue; Running only when ALL past Prologue; Completed only when ALL exit 0; Failed if ANY Failed or any non-zero exit. Matches Slurm + MPI semantics. New scenario added. |
+
+## Open findings (dispatch-analyst-review.md — 2026-04-16)
+
+All findings from the dispatch analyst-review have been addressed in spec (Critical, Medium-09, Medium-11) or resolved during architect phase (Highs, Medium-10/12, Lows). The architect interface spec `specs/architecture/interfaces/allocation-dispatch.md` encodes each resolution; post-architect adversary pass (gate 1) will attack the architect's design choices, not the original analyst findings.
+
+## Resolved during architect phase (dispatch, 2026-04-16)
+
+| # | Title | Severity | Resolution |
+|---|---|---|---|
+| D-ADV-03 | Cluster-wide image corruption causes cluster-wide deadlock | High | DEC-DISP-01: auto-recovery probe every `degraded_probe_interval` + cluster-wide ratio guard that suspends INV-D11 auto-transition when systemic; operators get alarm rather than cluster-dark. |
+| D-ADV-04 | Retry counter location is undefined; leak path exists | High | DEC-DISP-02: both `allocation.dispatch_retry_count` and `node.consecutive_dispatch_failures` are Raft-committed fields, survive crashes. |
+| D-ADV-05 | INV-D5 joint invariant permits a reachable contradiction | High | DEC-DISP-03: agent emits early heartbeat with `reattach_in_progress: bool`; silent-sweep skips allocations on reattaching nodes. Bounded by `reattach_grace_period` (5 min default). |
+| D-ADV-06 | Two-instance Dispatcher multiplies retry budget | High | DEC-DISP-04: single-leader Dispatcher via Raft leadership. Followers observe but don't act. No coordination needed. |
+| D-ADV-07 | `accepted: false` RunAllocation response has no semantics | High | DEC-DISP-05: `refusal_reason` enum with four variants (Busy/UnsupportedCapability/MalformedRequest/AlreadyRunning), each with defined retry semantics. |
+| D-ADV-08 | Agent can self-claim arbitrary agent_address | High | DEC-DISP-06: INV-D14 added — registered `agent_address` must appear as a SAN in the agent's workload cert; mTLS middleware extracts, RegisterNode/UpdateNodeAddress validate. |
+| D-ADV-10 | Dispatcher vs Reconciler race has undefined winner | Medium | Silent-sweep gates on "no heartbeat within grace window" which is naturally disjoint from in-flight dispatch attempts (heartbeats arrive during dispatch). Residual races resolved by `expected_state_version` in both paths. |
+| D-ADV-12 | Dispatch traffic rate has no limit | Medium | DispatcherConfig adds `max_concurrent_attempts` (default 64) and `per_agent_concurrency` (default 8). Assumption A-D9 extended. |
+| D-ADV-13 | Bare-Process runtime inherits agent secrets by design | Low | BareProcessRuntime contract: explicit env block-list (`LATTICE_*`, `VAULT_*`, `*_SECRET*`, `*_TOKEN*`, `*_KEY*`), allow-list (PATH, HOME, USER, LANG, TZ, SLURM_*, LATTICE_ALLOC_ID, LATTICE_JOB_NAME, LATTICE_NODELIST, LATTICE_NNODES). |
+| D-ADV-14 | Orphan cleanup trusts cgroup presence as "scope has live process" | Low | INV-D9 enforcement clarified in architect spec: read scope PID list first, terminate only if non-empty, then remove scope. Empty-scope case is a silent no-op. |
+
+## Recently resolved (dispatch analyst-review — 2026-04-16)
+
+| # | Title | Severity | Resolution |
+|---|---|---|---|
+| D-ADV-01 | Completion Report source-authentication is missing | Critical | INV-D12 added: reports from nodes not in `assigned_nodes` are rejected at Raft apply-time with `lattice_completion_report_cross_node_total` counter. |
+| D-ADV-02 | Final-state report preservation lacks a mechanism | Critical | INV-D13 added: buffer is keyed by `allocation_id` with latest-phase-wins; monotonicity of phases guarantees terminal reports are never overwritten. A-D19 downgraded from `[CRITICAL] unknown` to validated. |
+| D-ADV-09 | Idempotency check at submit-time vs apply-time | Medium | INV-D4 enforcement clause updated: idempotency is evaluated at Raft command-apply step, explicitly not at submit-time. |
+| D-ADV-11 | Phase-regression anomaly is a log line, not a metric | Medium | INV-D7 enforcement clause updated: anomaly emits `lattice_completion_report_phase_regression_total` counter in addition to the log line. |
 
 ## Resolved findings
 

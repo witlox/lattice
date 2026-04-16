@@ -24,6 +24,27 @@ Maps every invariant from `specs/invariants.md` to its enforcement point(s) in t
 | **INV-E5** Network domain tenant scoping | lattice-api | API validation on submission: domain name scoped to tenant ID internally. Cross-tenant domain names resolve to different VNIs. | At submission |
 | **INV-E6** Soft quota self-correction | lattice-scheduler | Cost function f3 (fair_share_deficit) penalizes over-budget tenants. Budget penalty multiplier reduces scores for tenants exceeding soft quotas. | ≤1 scheduling cycle |
 
+## Dispatch Invariants (INV-D)
+
+Introduced 2026-04-16. Full breakdown in `specs/architecture/interfaces/allocation-dispatch.md` § "Enforcement map (INV-D1..D14)". Summarised here for the index.
+
+| Invariant | Enforcement Module | Enforcement Mechanism | Verified By |
+|---|---|---|---|
+| **INV-D1** Node has agent address | lattice-quorum | `Command::RegisterNode` / `UpdateNodeAddress` apply-step validation; empty/invalid rejected | Gherkin `allocation_dispatch.feature`, unit tests |
+| **INV-D2** Addressless nodes scheduler-invisible | lattice-scheduler | `SchedulerStateReader::available_nodes()` filters on `agent_address.is_some() && !is_empty()` | Reader unit test |
+| **INV-D3** Dispatch idempotency (agent) | lattice-node-agent | `NodeAgentServer::run_allocation` consults `AllocationManager::contains_active()` before Runtime.prepare | AllocationManager unit tests |
+| **INV-D4** Completion Report idempotency (quorum) | lattice-quorum | `Command::ApplyCompletionReport` apply-step check — explicitly not submit-time | Apply unit tests |
+| **INV-D5** Running ⇒ live process or recovery | lattice-node-agent + lattice-scheduler | Joint: AllocationManager tracks PID/phase, reattach sets `reattach_in_progress` heartbeat flag, silent-sweep honours flag | Gherkin reattach scenarios |
+| **INV-D6** Dispatch failure atomic rollback | lattice-quorum | `Command::RollbackDispatch` applies state + retry_count + node release + counter in one Raft log entry | Apply unit test |
+| **INV-D7** Phase monotonicity | lattice-quorum | `Command::ApplyCompletionReport` apply-step checks phase advances; counter `lattice_completion_report_phase_regression_total` on rejection | Apply unit test |
+| **INV-D8** Heartbeat-bounded completion | lattice-scheduler | Silent-node sweep pass in SchedulerLoop::run_cycle; respects `reattach_in_progress` | Gherkin `node_silent` scenarios |
+| **INV-D9** Orphan cleanup on boot | lattice-node-agent | Boot sequence scans `workload.slice/`, cross-refs AgentState; unknown scopes terminated + audit | Gherkin orphan scenario |
+| **INV-D10** Per-attempt address resolution | lattice-api Dispatcher | `Dispatcher::attempt_dispatch` reads `node.agent_address` on each attempt; no cache | Dispatcher unit test |
+| **INV-D11** Dispatch failures degrade node | lattice-quorum | `RollbackDispatch` apply increments `node.consecutive_dispatch_failures`; threshold → Degraded when global guard permits | Unit + integration tests |
+| **INV-D12** Completion Report source auth | lattice-quorum | `ApplyCompletionReport` apply-step checks node ∈ allocation.assigned_nodes; `lattice_completion_report_cross_node_total` counter | Apply unit test |
+| **INV-D13** Buffer latest-wins per allocation | lattice-node-agent | `AllocationManager::push_report` upserts into keyed HashMap; monotonic phases preserve terminal reports by construction | AllocationManager unit test |
+| **INV-D14** Agent address bound to cert SAN | lattice-quorum + lattice-api mTLS middleware | mTLS middleware extracts cert SANs at handshake; commands validate `new_address ∈ cert_sans` | Integration test (mTLS path) |
+
 ## Ordering Invariants
 
 | Invariant | Enforcement Module | Enforcement Mechanism |
