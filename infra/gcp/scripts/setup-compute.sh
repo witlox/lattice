@@ -17,7 +17,7 @@ apt-get install -y -qq \
   squashfs-tools \
   squashfuse \
   fuse3 \
-  nsenter \
+  util-linux \
   curl \
   jq
 
