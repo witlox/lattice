@@ -39,6 +39,15 @@ print(f'{msg}.{sig}')
 LATTICE_STATE_FILE=/var/lib/lattice/agent-state.json
 EOF
 
+# INV-D1: advertise the node's internal VPC IP so the Dispatcher can
+# call NodeAgentService.RunAllocation. The default grpc_addr is
+# 0.0.0.0:50052 (bind-any) which is rejected by the control plane's
+# is_trivially_invalid_address check. Evaluate at setup time so the IP
+# is baked into the env file rather than requiring systemd to shell
+# out on every start.
+INTERNAL_IP=$(hostname -I | awk '{print $1}')
+echo "LATTICE_ADVERTISE_ADDR=$INTERNAL_IP:50052" >> /etc/lattice/agent.env
+
 # Install systemd service
 cat > /etc/systemd/system/lattice-agent.service <<EOF
 [Unit]
