@@ -232,6 +232,11 @@ pub struct NodeResponse {
     pub group: u32,
     pub gpu_type: String,
     pub gpu_count: u32,
+    pub cpu_cores: u32,
+    pub memory_gb: u64,
+    pub agent_address: String,
+    pub last_heartbeat: Option<String>,
+    pub owner: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -289,6 +294,12 @@ pub struct DagResponse {
 #[derive(Serialize, Deserialize)]
 pub struct DagStatusResponse {
     pub dag_id: String,
+    /// Aggregate DAG state derived from per-allocation states:
+    /// - "failed" if any allocation is Failed or Cancelled
+    /// - "completed" if every allocation is Completed
+    /// - "running" if any allocation is Running/Staging and none failed
+    /// - "pending" otherwise
+    pub state: String,
     pub allocations: Vec<DagAllocationStatus>,
 }
 
@@ -1085,6 +1096,42 @@ async fn list_dags(
     }
 }
 
+/// Aggregate DAG state from per-allocation states. See
+/// `DagStatusResponse::state` for the precedence rules.
+fn aggregate_dag_state(allocs: &[DagAllocationStatus]) -> String {
+    if allocs.is_empty() {
+        return "pending".to_string();
+    }
+    let mut has_failed = false;
+    let mut has_active = false;
+    let mut all_completed = true;
+    for a in allocs {
+        match a.state.as_str() {
+            "failed" | "cancelled" => {
+                has_failed = true;
+                all_completed = false;
+            }
+            "completed" => {}
+            "running" | "staging" => {
+                has_active = true;
+                all_completed = false;
+            }
+            _ => {
+                all_completed = false;
+            }
+        }
+    }
+    if has_failed {
+        "failed".into()
+    } else if all_completed {
+        "completed".into()
+    } else if has_active {
+        "running".into()
+    } else {
+        "pending".into()
+    }
+}
+
 async fn get_dag(
     State(state): State<Arc<ApiState>>,
     Path(dag_id): Path<String>,
@@ -1110,10 +1157,12 @@ async fn get_dag(
                 )
                     .into_response();
             }
+            let aggregate_state = aggregate_dag_state(&dag_allocs);
             (
                 StatusCode::OK,
                 Json(DagStatusResponse {
                     dag_id,
+                    state: aggregate_state,
                     allocations: dag_allocs,
                 }),
             )
@@ -1795,6 +1844,11 @@ async fn list_nodes(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
                         group: n.group,
                         gpu_type: n.capabilities.gpu_type.clone().unwrap_or_default(),
                         gpu_count: n.capabilities.gpu_count,
+                        cpu_cores: n.capabilities.cpu_cores,
+                        memory_gb: n.capabilities.memory_gb,
+                        agent_address: n.agent_address.clone(),
+                        last_heartbeat: n.last_heartbeat.map(|t| t.to_rfc3339()),
+                        owner: n.owner.as_ref().and_then(|o| serde_json::to_value(o).ok()),
                     }
                 })
                 .collect();
@@ -1820,6 +1874,11 @@ async fn get_node(State(state): State<Arc<ApiState>>, Path(id): Path<String>) ->
                 group: node.group,
                 gpu_type: node.capabilities.gpu_type.clone().unwrap_or_default(),
                 gpu_count: node.capabilities.gpu_count,
+                cpu_cores: node.capabilities.cpu_cores,
+                memory_gb: node.capabilities.memory_gb,
+                agent_address: node.agent_address.clone(),
+                last_heartbeat: node.last_heartbeat.map(|t| t.to_rfc3339()),
+                owner: node.owner.as_ref().and_then(|o| serde_json::to_value(o).ok()),
             };
             (StatusCode::OK, Json(resp)).into_response()
         }

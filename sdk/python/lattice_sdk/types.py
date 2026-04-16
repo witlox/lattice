@@ -82,48 +82,70 @@ class ResourceRequest:
 
 @dataclass
 class Node:
-    """Represents a compute node in the cluster."""
-    name: str
-    host: str
-    status: str
-    total_cpus: float
-    total_memory_gb: float
-    total_gpus: int = 0
-    available_cpus: float = 0.0
-    available_memory_gb: float = 0.0
-    available_gpus: int = 0
+    """Represents a compute node in the cluster.
+
+    Matches the REST `/api/v1/nodes` response shape (see
+    `crates/lattice-api/src/rest.rs` NodeResponse).
+    """
+    id: str
+    state: str
+    group: int = 0
+    gpu_type: str = ""
+    gpu_count: int = 0
+    cpu_cores: int = 0
+    memory_gb: int = 0
+    agent_address: str = ""
     last_heartbeat: Optional[datetime] = None
-    metadata: Dict[str, str] = field(default_factory=dict)
+    owner: Optional[Dict[str, Any]] = None
+
+    # ── Back-compat aliases ───────────────────────────────────────
+    # Older callers used {name, host, status}. Preserve them as
+    # read-only properties so the SDK stays forgiving.
+    @property
+    def name(self) -> str:
+        return self.id
+
+    @property
+    def host(self) -> str:
+        return self.agent_address
+
+    @property
+    def status(self) -> str:
+        return self.state
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "name": self.name,
-            "host": self.host,
-            "status": self.status,
-            "total_cpus": self.total_cpus,
-            "total_memory_gb": self.total_memory_gb,
-            "total_gpus": self.total_gpus,
-            "available_cpus": self.available_cpus,
-            "available_memory_gb": self.available_memory_gb,
-            "available_gpus": self.available_gpus,
+            "id": self.id,
+            "state": self.state,
+            "group": self.group,
+            "gpu_type": self.gpu_type,
+            "gpu_count": self.gpu_count,
+            "cpu_cores": self.cpu_cores,
+            "memory_gb": self.memory_gb,
+            "agent_address": self.agent_address,
             "last_heartbeat": _format_datetime(self.last_heartbeat),
-            "metadata": dict(self.metadata),
+            "owner": self.owner,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Node":
+        # Accept either the current {id, state, ...} shape or the legacy
+        # {name, host, status, ...} shape so tooling pinned to older SDK
+        # versions continues to parse successfully.
+        node_id = data.get("id") or data.get("name") or ""
+        state = data.get("state") or data.get("status") or "unknown"
+        agent_address = data.get("agent_address") or data.get("host") or ""
         return cls(
-            name=data["name"],
-            host=data["host"],
-            status=data["status"],
-            total_cpus=float(data["total_cpus"]),
-            total_memory_gb=float(data["total_memory_gb"]),
-            total_gpus=int(data.get("total_gpus", 0)),
-            available_cpus=float(data.get("available_cpus", 0.0)),
-            available_memory_gb=float(data.get("available_memory_gb", 0.0)),
-            available_gpus=int(data.get("available_gpus", 0)),
+            id=str(node_id),
+            state=str(state),
+            group=int(data.get("group", 0)),
+            gpu_type=str(data.get("gpu_type", "")),
+            gpu_count=int(data.get("gpu_count", 0)),
+            cpu_cores=int(data.get("cpu_cores", 0)),
+            memory_gb=int(data.get("memory_gb", 0)),
+            agent_address=str(agent_address),
             last_heartbeat=_parse_datetime(data.get("last_heartbeat")),
-            metadata=data.get("metadata", {}),
+            owner=data.get("owner"),
         )
 
 
@@ -567,17 +589,35 @@ class Session:
 
 @dataclass
 class DagSpec:
-    """Specification for submitting a DAG of allocations."""
-    name: str
-    allocations: List[Dict[str, Any]]
+    """Specification for submitting a DAG of allocations.
+
+    Fields
+    ------
+    name (or dag_id): identifier used in submissions. Accepts either
+        keyword for backwards-compatibility with older callers that
+        used `dag_id=`; internally normalized to `name`.
+    """
+    name: str = ""
+    allocations: List[Dict[str, Any]] = field(default_factory=list)
     edges: List[Dict[str, str]] = field(default_factory=list)
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     labels: Optional[Dict[str, str]] = None
+    dag_id: Optional[str] = None  # alias accepted via keyword
+
+    def __post_init__(self) -> None:
+        if self.dag_id and not self.name:
+            self.name = self.dag_id
+        # Keep both fields in sync for downstream readers.
+        if self.name and not self.dag_id:
+            self.dag_id = self.name
 
     def to_dict(self) -> Dict[str, Any]:
+        # REST contract expects `dag_id` (see crates/lattice-api/src/rest.rs
+        # SubmitDagRequest). The `name` field is kept as an alias for
+        # ergonomic Python construction but is not sent on the wire.
         d: Dict[str, Any] = {
-            "name": self.name,
+            "dag_id": self.name,
             "allocations": list(self.allocations),
             "edges": list(self.edges),
         }
@@ -592,7 +632,7 @@ class DagSpec:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DagSpec":
         return cls(
-            name=data["name"],
+            name=data.get("dag_id") or data.get("name") or "",
             allocations=data.get("allocations", []),
             edges=data.get("edges", []),
             tenant_id=data.get("tenant_id"),
@@ -635,11 +675,26 @@ class Dag:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Dag":
+        # Accept both the POST /api/v1/dags response ({dag_id, allocation_ids})
+        # and the richer GET /api/v1/dags/{id} shape ({dag_id, allocations,
+        # state, ...}). Older SDK versions used `id`/`name` directly, so keep
+        # those as fallbacks.
+        dag_id = data.get("dag_id") or data.get("id") or ""
+        name = data.get("name") or dag_id
+        allocations_field = data.get("allocations") or data.get("allocation_ids") or []
+        # `allocations` from GET is a list of status objects; we only keep ids.
+        alloc_ids: List[str] = []
+        for item in allocations_field:
+            if isinstance(item, str):
+                alloc_ids.append(item)
+            elif isinstance(item, dict):
+                if "id" in item:
+                    alloc_ids.append(str(item["id"]))
         return cls(
-            id=data["id"],
-            name=data["name"],
+            id=str(dag_id),
+            name=str(name),
             state=data.get("state", "pending"),
-            allocations=data.get("allocations", []),
+            allocations=alloc_ids,
             edges=data.get("edges", []),
             tenant_id=data.get("tenant_id", ""),
             user_id=data.get("user_id", ""),

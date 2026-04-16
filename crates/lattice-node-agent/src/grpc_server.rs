@@ -204,11 +204,10 @@ impl pb::node_agent_service_server::NodeAgentService for NodeAgentServer {
         // Fix for D-ADV-IMPL-02: split the entrypoint string into program
         // + args before calling Runtime::spawn. The RunAllocationRequest
         // carries a whole command line as a single string; Rust's
-        // `Command::new()` expects only the program path. Use a simple
-        // whitespace split for v1 — quoted arguments and env substitution
-        // are not supported and should be rejected or handled upstream.
-        // Full shell-style parsing (`shell_words` crate) is a follow-up.
-        let parts: Vec<String> = entrypoint.split_whitespace().map(str::to_string).collect();
+        // `Command::new()` expects only the program path. Use shell-style
+        // quoted-word parsing so `sh -c 'exit 1'` reaches the runtime as
+        // three argv slots instead of four.
+        let parts: Vec<String> = parse_shell_words(&entrypoint);
         let (program, args) = match parts.split_first() {
             Some((head, tail)) => (head.clone(), tail.to_vec()),
             None => {
@@ -602,6 +601,84 @@ async fn run_allocation_monitor(
     }
 }
 
+/// Shell-style word splitter for allocation entrypoints. Handles
+/// single-quoted and double-quoted substrings (without variable
+/// expansion), plus `\`-escape of quote characters. Not a full POSIX
+/// parser — no subshells, no env expansion, no heredocs — but enough
+/// to let `sh -c 'exit 1'` or `bash -lc "echo hi && sleep 5"` reach
+/// the runtime with the correct argv.
+pub(crate) fn parse_shell_words(input: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut has_token = false;
+
+    while let Some(c) = chars.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            } else {
+                current.push(c);
+            }
+            has_token = true;
+            continue;
+        }
+        if in_double {
+            match c {
+                '"' => in_double = false,
+                '\\' => {
+                    if let Some(&next) = chars.peek() {
+                        if next == '"' || next == '\\' {
+                            current.push(next);
+                            chars.next();
+                        } else {
+                            current.push('\\');
+                        }
+                    } else {
+                        current.push('\\');
+                    }
+                }
+                _ => current.push(c),
+            }
+            has_token = true;
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_single = true;
+                has_token = true;
+            }
+            '"' => {
+                in_double = true;
+                has_token = true;
+            }
+            '\\' => {
+                if let Some(&next) = chars.peek() {
+                    current.push(next);
+                    chars.next();
+                    has_token = true;
+                }
+            }
+            c if c.is_whitespace() => {
+                if has_token {
+                    out.push(std::mem::take(&mut current));
+                    has_token = false;
+                }
+            }
+            _ => {
+                current.push(c);
+                has_token = true;
+            }
+        }
+    }
+    if has_token {
+        out.push(current);
+    }
+    out
+}
+
 fn classify_exit(
     status: &crate::runtime::ExitStatus,
 ) -> (CompletionPhase, Option<i32>, Option<String>) {
@@ -665,6 +742,52 @@ impl FenceTransport for GrpcFenceTransport {
 mod tests {
     use super::*;
     use pb::node_agent_service_server::NodeAgentService;
+
+    #[test]
+    fn shell_words_plain_split() {
+        assert_eq!(
+            parse_shell_words("echo hello world"),
+            vec!["echo", "hello", "world"]
+        );
+    }
+
+    #[test]
+    fn shell_words_single_quoted_preserves_spaces() {
+        assert_eq!(
+            parse_shell_words("sh -c 'exit 1'"),
+            vec!["sh", "-c", "exit 1"]
+        );
+    }
+
+    #[test]
+    fn shell_words_double_quoted_with_spaces() {
+        assert_eq!(
+            parse_shell_words(r#"bash -c "echo hi && sleep 5""#),
+            vec!["bash", "-c", "echo hi && sleep 5"]
+        );
+    }
+
+    #[test]
+    fn shell_words_backslash_escapes() {
+        assert_eq!(
+            parse_shell_words(r"echo a\ b"),
+            vec!["echo", "a b"]
+        );
+    }
+
+    #[test]
+    fn shell_words_empty_is_empty() {
+        assert!(parse_shell_words("").is_empty());
+        assert!(parse_shell_words("   ").is_empty());
+    }
+
+    #[test]
+    fn shell_words_mixed_quotes() {
+        assert_eq!(
+            parse_shell_words(r#"sh -c "echo 'nested quote'""#),
+            vec!["sh", "-c", "echo 'nested quote'"]
+        );
+    }
 
     #[tokio::test]
     async fn run_allocation_accepted() {

@@ -80,7 +80,7 @@ def run_id() -> str:
     return f"ov-{uuid.uuid4().hex[:8]}"
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def client(cluster: TestCluster) -> AsyncIterator[LatticeClient]:
     """Authenticated SDK client for the cluster."""
     # Parse host/port from api_url
@@ -97,7 +97,7 @@ async def client(cluster: TestCluster) -> AsyncIterator[LatticeClient]:
         yield c
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def images(cluster: TestCluster) -> Dict[str, str]:
     """Build and push test images. Skip suite if fails."""
     if not cluster.registry_url:
@@ -125,7 +125,7 @@ async def cleanup_allocations(client: LatticeClient, run_id: str, request):
         pass  # Best-effort cleanup
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
+@pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
 async def session_cleanup(client: LatticeClient, run_id: str):
     """Session-level safety net: cancel all run allocations (ADV-OV-2)."""
     yield
