@@ -528,6 +528,38 @@ async fn main() -> Result<()> {
         let _ = cancel_tx_clone.send(true);
     });
 
+    // ── Dispatcher (DEC-DISP-04: leader-only) ─────────────────────────────
+    // The Dispatcher observes Running-but-un-acked allocations in Raft
+    // state and calls NodeAgentService.RunAllocation. For dev/single-node
+    // deployments we treat the sole replica as permanently leader; a full
+    // leadership-watcher integration is a follow-up (on_leadership_change
+    // is public for that wiring). Fix for adversary finding
+    // D-ADV-IMPL-01: this block was missing.
+    let dispatcher = Arc::new(lattice_api::Dispatcher::new(
+        quorum.clone(),
+        lattice_api::DispatcherConfig::default(),
+    ));
+    dispatcher.on_leadership_change(true).await;
+    let dispatcher_loop = dispatcher.clone();
+    let mut dispatcher_cancel = cancel_rx.clone();
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(lattice_api::DispatcherConfig::default().tick_interval);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(e) = dispatcher_loop.tick().await {
+                        tracing::warn!(error = %e, "Dispatcher tick failed");
+                    }
+                }
+                _ = dispatcher_cancel.changed() => {
+                    if *dispatcher_cancel.borrow() { break; }
+                }
+            }
+        }
+        tracing::info!("Dispatcher loop stopped");
+    });
+
     info!(
         "Scheduler loop starting (interval={}s)",
         sched_config.cycle_interval_seconds

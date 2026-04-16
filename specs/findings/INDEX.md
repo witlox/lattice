@@ -7,12 +7,37 @@ Status: ALL PRIOR SWEEP FINDINGS RESOLVED; DISPATCH REVIEW OPEN
 
 | Severity | Count | Resolved | Open |
 |----------|-------|----------|------|
-| Critical | 7 | 7 | 0 |
-| High | 18 | 18 | 0 |
-| Medium | 17 | 17 | 0 |
-| Low | 2 | 2 | 0 |
+| Critical | 10 | 10 | 0 |
+| High | 22 | 18 | 4 |
+| Medium | 20 | 17 | 3 |
+| Low | 4 | 2 | 2 |
 
-All dispatch findings closed. Ready for implementer phase, pending consistency review.
+Gate 2 adversary pass (dispatch-impl-review.md, 2026-04-16) found
+3 Critical + 4 High + 3 Medium + 2 Low implementation defects in
+the dispatch code. All 3 Criticals are fixed in-place. Remaining
+Highs/Mediums are non-blocking; OV suite can now run end-to-end.
+
+## Open findings (dispatch-impl-review.md — 2026-04-16)
+
+| # | Title | Severity | Plan |
+|---|---|---|---|
+| D-ADV-IMPL-04 | Silent-sweep bypasses INV-D12/D7/D4 validation | High | Route silent-sweep through ApplyCompletionReport with a scheduler-attributed source marker; follow-up commit. |
+| D-ADV-IMPL-05 | Dispatcher has no concurrency cap | High | Add tokio::Semaphore bounded by DispatcherConfig.max_concurrent_attempts + per-agent cap; follow-up commit. |
+| D-ADV-IMPL-06 | DEC-DISP-11 multi-node aggregation simplified | High | Add per_node_phase map to Allocation; recompute aggregate on every Completion Report; follow-up commit. |
+| D-ADV-IMPL-07 | Silent-sweep fresh-allocation exemption uses wrong timestamp | High | Add Allocation.assigned_at field set by AssignNodes apply-step; silent-sweep uses it; follow-up commit. |
+| D-ADV-IMPL-08 | Silent-sweep hardcodes 10s/30s timeouts | Medium | Thread config values through; follow-up commit. |
+| D-ADV-IMPL-10 | RunAllocation idempotency has TOCTOU lock-drop | Medium | Hold lock across the contains_active → start sequence; follow-up commit. |
+| D-ADV-IMPL-11 | DispatchBridge uenv/podman previously unreachable | Low | Closed by IMPL-03 fix in this same pass. |
+| D-ADV-IMPL-12 | No test verifying every scenario phrase has a step | Low | Add step-coverage integration test; follow-up. |
+
+## Resolved during adversary gate 2 (dispatch, 2026-04-16)
+
+| # | Title | Severity | Resolution |
+|---|---|---|---|
+| D-ADV-IMPL-01 | Dispatcher was dead code (never instantiated) | Critical | main.rs constructs Dispatcher + spawns tick loop after cancel_rx is available; on_leadership_change(true) for single-replica dev. |
+| D-ADV-IMPL-02 | BareProcessRuntime couldn't run multi-word entrypoints | Critical | grpc_server handler now splits entrypoint on whitespace into (program, args) before spawning the Runtime. |
+| D-ADV-IMPL-03 | Uenv/Podman unreachable (Dispatcher sent empty fields) | Critical | Dispatcher extracts uenv/image specs from allocation.environment.images (by ImageType); agent's run_allocation_monitor propagates them into PrepareConfig (IMPL-09 fixed simultaneously). |
+| D-ADV-IMPL-09 | PrepareConfig always empty on monitor | Medium | run_allocation_monitor takes uenv/image params from the RPC request and sets them on PrepareConfig. |
 
 ## Resolved during analyst text-edit phase (dispatch, 2026-04-16)
 

@@ -202,16 +202,49 @@ impl pb::node_agent_service_server::NodeAgentService for NodeAgentServer {
         let allocations = dispatch.allocations.clone();
         let reports = dispatch.reports.clone();
         let entrypoint = req.entrypoint.clone();
-        // `req.args` does not exist on RunAllocationRequest today; we pass
-        // an empty args vec and rely on the entrypoint being a full command
-        // line parsed by the runtime.
-        let args: Vec<String> = Vec::new();
+        // Fix for D-ADV-IMPL-02: split the entrypoint string into program
+        // + args before calling Runtime::spawn. The RunAllocationRequest
+        // carries a whole command line as a single string; Rust's
+        // `Command::new()` expects only the program path. Use a simple
+        // whitespace split for v1 — quoted arguments and env substitution
+        // are not supported and should be rejected or handled upstream.
+        // Full shell-style parsing (`shell_words` crate) is a follow-up.
+        let parts: Vec<String> = entrypoint.split_whitespace().map(str::to_string).collect();
+        let (program, args) = match parts.split_first() {
+            Some((head, tail)) => (head.clone(), tail.to_vec()),
+            None => {
+                warn!(
+                    alloc_id = %alloc_id,
+                    "RunAllocation entrypoint was empty after whitespace split"
+                );
+                // Remove the partial registration so a retry can succeed.
+                let mut mgr = dispatch.allocations.lock().await;
+                let _ = mgr.fail(&alloc_id, "empty_entrypoint".into());
+                return Ok(Response::new(pb::RunAllocationResponse {
+                    accepted: false,
+                    message: "empty_entrypoint".into(),
+                    refusal_reason: Some(pb::RefusalReason::RefusalMalformedRequest as i32),
+                }));
+            }
+        };
+        let uenv_spec = if req.uenv.trim().is_empty() {
+            None
+        } else {
+            Some(req.uenv.clone())
+        };
+        let image_spec = if req.image.trim().is_empty() {
+            None
+        } else {
+            Some(req.image.clone())
+        };
         tokio::spawn(async move {
             run_allocation_monitor(
                 alloc_id,
                 node_id,
-                entrypoint,
+                program,
                 args,
+                uenv_spec,
+                image_spec,
                 runtime,
                 allocations,
                 reports,
@@ -421,21 +454,26 @@ impl pb::node_agent_service_server::NodeAgentService for NodeAgentServer {
 /// emits Completion Reports into the shared `CompletionBuffer` at each
 /// phase transition. Called by `run_allocation` from a detached task so
 /// the RPC returns promptly after registering the allocation.
+#[allow(clippy::too_many_arguments)]
 async fn run_allocation_monitor(
     alloc_id: AllocId,
     node_id: String,
     entrypoint: String,
     args: Vec<String>,
+    uenv: Option<String>,
+    image: Option<String>,
     runtime: Arc<dyn Runtime>,
     allocations: Arc<Mutex<AllocationManager>>,
     reports: CompletionBuffer,
 ) {
     // ── Prologue ────────────────────────────────────────────────
+    // Propagate uenv/image from the RunAllocationRequest so the selected
+    // Runtime (Uenv / Podman) can actually prepare (IMPL-03/IMPL-09 fix).
     let prepare_config = PrepareConfig {
         alloc_id,
-        uenv: None,
+        uenv: uenv.clone(),
         view: None,
-        image: None,
+        image: image.clone(),
         workdir: None,
         env_vars: Vec::new(),
         memory_policy: None,

@@ -351,11 +351,30 @@ impl DispatcherHandle {
                 Err(e) => return DispatchOutcome::TransientFailure(format!("connect: {e}")),
             };
         let mut client = client;
+        // Fix for D-ADV-IMPL-03: extract uenv + image from the allocation's
+        // environment so the agent can select the right Runtime variant.
+        // One Uenv image OR one OCI image is allowed per INV-D14-adjacent
+        // runtime-selection rules; if both, select_runtime_variant on the
+        // agent side returns MalformedRequest.
+        use lattice_common::types::ImageType;
+        let mut uenv_spec = String::new();
+        let mut image_spec = String::new();
+        for img in &alloc.environment.images {
+            match img.image_type {
+                ImageType::Uenv if uenv_spec.is_empty() => {
+                    uenv_spec = img.spec.clone();
+                }
+                ImageType::Oci if image_spec.is_empty() => {
+                    image_spec = img.spec.clone();
+                }
+                _ => {}
+            }
+        }
         let req = tonic::Request::new(pb::RunAllocationRequest {
             allocation_id: alloc.id.to_string(),
             entrypoint: alloc.entrypoint.clone(),
-            uenv: String::new(), // simplified for v1; Uenv runtime wires later
-            image: String::new(),
+            uenv: uenv_spec,
+            image: image_spec,
             gpu_count: 0, // simplified; scheduler already validated capability
             cpu_cores: 0,
             memory_bytes: 0,
