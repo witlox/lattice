@@ -304,6 +304,7 @@ impl GlobalState {
             } => self.resolve_image(id, image_index, resolved),
             Command::CreateSession(session) => self.create_session(session),
             Command::DeleteSession { session_id } => self.delete_session(session_id),
+            Command::UnblockDagAllocation { id } => self.unblock_dag_allocation(id),
             Command::RecordAudit(entry) => self.record_audit(entry),
             Command::CompactAuditLog {
                 object_key,
@@ -539,6 +540,22 @@ impl GlobalState {
         alloc.assigned_at = None;
         alloc.dispatch_retry_count = 0;
         alloc.last_completion_report_at = None;
+        CommandResponse::Ok
+    }
+
+    /// Unblock a DAG-dependent allocation by clearing its depends_on list.
+    /// The DagController calls this when all upstream dependencies are satisfied.
+    fn unblock_dag_allocation(&mut self, id: AllocId) -> CommandResponse {
+        let Some(alloc) = self.allocations.get_mut(&id) else {
+            return CommandResponse::Error(format!("Allocation not found: {id}"));
+        };
+        if alloc.state != AllocationState::Pending {
+            return CommandResponse::Error(format!(
+                "Cannot unblock allocation in {:?} state",
+                alloc.state
+            ));
+        }
+        alloc.depends_on.clear();
         CommandResponse::Ok
     }
 

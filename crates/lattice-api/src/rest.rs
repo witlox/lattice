@@ -972,6 +972,9 @@ async fn submit_dag(
     let dag_id = req.dag_id.clone();
     let mut allocation_ids = Vec::new();
     let mut inserted_ids: Vec<uuid::Uuid> = Vec::new();
+    // Map allocation names to UUIDs for resolving dependency edges.
+    let mut name_to_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for dag_alloc in &req.allocations {
         let spec = pb::AllocationSpec {
             tenant: dag_alloc.tenant.clone(),
@@ -1008,6 +1011,7 @@ async fn submit_dag(
         alloc.dag_id = Some(dag_id.clone());
         let alloc_uuid = alloc.id;
         allocation_ids.push(alloc.id.to_string());
+        name_to_id.insert(dag_alloc.name.clone(), alloc.id.to_string());
         for edge in &req.edges {
             if edge.to == dag_alloc.name {
                 let condition = match edge.condition.as_deref() {
@@ -1015,10 +1019,16 @@ async fn submit_dag(
                     Some("any") | Some("afterany") => DependencyCondition::Any,
                     _ => DependencyCondition::Success,
                 };
-                alloc.depends_on.push(lattice_common::types::Dependency {
-                    ref_id: edge.from.clone(),
-                    condition,
-                });
+                // Resolve the upstream name to its UUID. If the name hasn't been
+                // inserted yet (forward reference), fall back to the raw name;
+                // resolve_dependencies matches on allocation id.to_string().
+                let ref_id = name_to_id
+                    .get(&edge.from)
+                    .cloned()
+                    .unwrap_or_else(|| edge.from.clone());
+                alloc
+                    .depends_on
+                    .push(lattice_common::types::Dependency { ref_id, condition });
             }
         }
         if let Err(e) = state.allocations.insert(alloc).await {

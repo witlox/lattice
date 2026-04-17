@@ -19,7 +19,10 @@ use lattice_common::types::{
     AllocId, Allocation, AllocationState, Node, NodeId, NodeState, Tenant, TopologyModel,
 };
 use lattice_quorum::QuorumClient;
-use lattice_scheduler::{SchedulerCommandSink, SchedulerLoopConfig, SchedulerStateReader};
+use lattice_scheduler::{
+    DagCommandSink, DagControllerConfig, DagStateReader, SchedulerCommandSink, SchedulerLoopConfig,
+    SchedulerStateReader,
+};
 
 #[derive(Parser)]
 #[command(
@@ -60,7 +63,13 @@ impl SchedulerStateReader for QuorumStateReader {
         Ok(state
             .allocations
             .values()
-            .filter(|a| a.state == AllocationState::Pending)
+            .filter(|a| {
+                a.state == AllocationState::Pending
+                    // Exclude DAG-blocked allocations: they have unresolved
+                    // dependencies and must wait for the DagController to
+                    // unblock them before entering the scheduling cycle.
+                    && a.depends_on.is_empty()
+            })
             .cloned()
             .collect())
     }
@@ -203,6 +212,67 @@ impl SchedulerCommandSink for QuorumCommandSink {
         self.quorum
             .resolve_image(&alloc_id, image_index, resolved)
             .await
+    }
+}
+
+// ─── DAG Controller ↔ Quorum adapters ────────────────────────────────────────
+
+struct QuorumDagReader {
+    quorum: Arc<QuorumClient>,
+}
+
+#[async_trait::async_trait]
+impl DagStateReader for QuorumDagReader {
+    async fn dag_allocations(&self) -> Result<Vec<Allocation>, LatticeError> {
+        let state = self.quorum.state().read().await;
+        Ok(state
+            .allocations
+            .values()
+            .filter(|a| a.dag_id.is_some())
+            .cloned()
+            .collect())
+    }
+}
+
+struct QuorumDagSink {
+    quorum: Arc<QuorumClient>,
+}
+
+#[async_trait::async_trait]
+impl DagCommandSink for QuorumDagSink {
+    async fn unblock_allocation(&self, alloc_id: AllocId) -> Result<(), LatticeError> {
+        // Unblocking a DAG allocation means clearing its depends_on so the
+        // scheduler will pick it up as a normal Pending allocation.
+        let resp = self
+            .quorum
+            .propose(lattice_quorum::QuorumCommand::UnblockDagAllocation { id: alloc_id })
+            .await?;
+        match resp {
+            lattice_quorum::QuorumResponse::Ok => Ok(()),
+            lattice_quorum::QuorumResponse::Error(e) => Err(LatticeError::Internal(e)),
+            _ => Err(LatticeError::Internal("unexpected response".into())),
+        }
+    }
+
+    async fn cancel_allocation(
+        &self,
+        alloc_id: AllocId,
+        reason: String,
+    ) -> Result<(), LatticeError> {
+        let resp = self
+            .quorum
+            .propose(lattice_quorum::QuorumCommand::UpdateAllocationState {
+                id: alloc_id,
+                state: AllocationState::Cancelled,
+                message: Some(reason),
+                exit_code: None,
+            })
+            .await?;
+        match resp {
+            lattice_quorum::QuorumResponse::Ok => Ok(()),
+            lattice_quorum::QuorumResponse::Error(e) => Err(LatticeError::Internal(e)),
+            _ => Err(LatticeError::Internal("unexpected response".into())),
+        }
     }
 }
 
@@ -573,18 +643,33 @@ async fn main() -> Result<()> {
         tracing::info!("Dispatcher loop stopped");
     });
 
+    // ── DAG Controller ─────────────────────────────────────────────────────
+    let mut dag_controller = lattice_scheduler::DagController::new(
+        Arc::new(QuorumDagReader {
+            quorum: quorum.clone(),
+        }),
+        Arc::new(QuorumDagSink {
+            quorum: quorum.clone(),
+        }),
+        DagControllerConfig::default(),
+    );
+    let dag_cancel_rx = cancel_rx.clone();
+
     info!(
         "Scheduler loop starting (interval={}s)",
         sched_config.cycle_interval_seconds
     );
 
-    // Run scheduler loop and API servers concurrently
+    // Run scheduler loop, DAG controller, and API servers concurrently
     tokio::select! {
         result = serve(state, server_config) => {
             result.map_err(|e| anyhow::anyhow!("{e}"))?;
         }
         _ = scheduler_loop.run(cancel_rx) => {
             info!("Scheduler loop stopped");
+        }
+        _ = dag_controller.run(dag_cancel_rx) => {
+            info!("DAG controller stopped");
         }
     }
 

@@ -1,7 +1,7 @@
 //! Scheduler loop — periodic scheduling cycle that reads quorum state,
 //! runs the solver, and proposes placements.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,6 +18,7 @@ use crate::cycle::{run_cycle, CycleInput};
 use crate::placement::PlacementDecision;
 use crate::resource_timeline::TimelineConfig;
 use crate::scale_executor::ScaleExecutor;
+use crate::walltime::{ExpiryPhase, WalltimeEnforcer};
 
 /// Reads cluster state for the scheduler.
 #[async_trait::async_trait]
@@ -207,6 +208,10 @@ pub struct SchedulerLoop<R: SchedulerStateReader, S: SchedulerCommandSink> {
     config: SchedulerLoopConfig,
     autoscaler: Option<tokio::sync::Mutex<Autoscaler>>,
     scale_executor: Option<Arc<dyn ScaleExecutor>>,
+    walltime_enforcer: tokio::sync::Mutex<WalltimeEnforcer>,
+    /// IDs currently registered in the walltime enforcer (mirrors enforcer's internal state
+    /// so we can unregister stale entries without iterating the enforcer).
+    walltime_tracked: tokio::sync::Mutex<HashSet<lattice_common::types::AllocId>>,
 }
 
 impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
@@ -217,6 +222,8 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
             config,
             autoscaler: None,
             scale_executor: None,
+            walltime_enforcer: tokio::sync::Mutex::new(WalltimeEnforcer::new()),
+            walltime_tracked: tokio::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -497,6 +504,61 @@ impl<R: SchedulerStateReader, S: SchedulerCommandSink> SchedulerLoop<R, S> {
                     }
                 }
                 ScaleDecision::NoChange => {}
+            }
+        }
+
+        // ── Walltime enforcement ───────────────────────────────────────
+        // Register any newly-running Bounded allocations with the enforcer,
+        // unregister allocations no longer Running, then check for expired.
+        {
+            let mut enforcer = self.walltime_enforcer.lock().await;
+            let mut tracked = self.walltime_tracked.lock().await;
+            let running_ids: HashSet<_> = running.iter().map(|a| a.id).collect();
+
+            // Register new Running allocations with walltime.
+            for alloc in &running {
+                if let LifecycleType::Bounded { walltime } = &alloc.lifecycle.lifecycle_type {
+                    if tracked.insert(alloc.id) {
+                        let started = alloc.started_at.unwrap_or(alloc.created_at);
+                        enforcer.register(alloc.id, *walltime, started);
+                    }
+                }
+            }
+
+            // Unregister allocations no longer Running.
+            let stale: Vec<_> = tracked
+                .iter()
+                .filter(|id| !running_ids.contains(id))
+                .copied()
+                .collect();
+            for id in &stale {
+                enforcer.unregister(id);
+                tracked.remove(id);
+            }
+
+            // Check for expired walltimes.
+            let now = Utc::now();
+            let expired = enforcer.check_expired(now);
+            for expiry in &expired {
+                if expiry.phase == ExpiryPhase::Terminate {
+                    info!(
+                        alloc_id = %expiry.allocation_id,
+                        "Walltime exceeded — failing allocation"
+                    );
+                    if let Err(e) = self
+                        .sink
+                        .fail_allocation(expiry.allocation_id, "walltime exceeded".into())
+                        .await
+                    {
+                        warn!(
+                            alloc_id = %expiry.allocation_id,
+                            error = %e,
+                            "Failed to fail walltime-exceeded allocation"
+                        );
+                    }
+                }
+                // Kill phase: already failed in Terminate; StopAllocation fires
+                // as part of the fail path. Nothing extra needed.
             }
         }
 
@@ -1653,5 +1715,109 @@ mod tests {
         // Should succeed without timeout warning
         let placed = sched.run_once().await.unwrap();
         assert_eq!(placed, 0);
+    }
+
+    #[tokio::test]
+    async fn walltime_exceeded_fails_allocation() {
+        // Create a Bounded allocation that started 2 hours ago with 1-hour walltime.
+        let mut alloc = AllocationBuilder::new().tenant("t1").nodes(1).build();
+        alloc.lifecycle.lifecycle_type = LifecycleType::Bounded {
+            walltime: chrono::Duration::hours(1),
+        };
+        alloc.state = AllocationState::Running;
+        alloc.assigned_nodes = vec!["node-0".into()];
+        alloc.started_at = Some(Utc::now() - chrono::Duration::hours(2));
+        alloc.last_completion_report_at = Some(Utc::now()); // prevent silent-sweep false positive
+        let alloc_id = alloc.id;
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![alloc],
+            failed: vec![],
+            draining: vec![],
+            unresolved: vec![],
+            nodes: create_node_batch(1, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 1),
+        });
+        let sink = Arc::new(MockSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let failed = sink.failed.lock().await;
+        assert_eq!(
+            failed.len(),
+            1,
+            "Expected one failed allocation from walltime enforcement"
+        );
+        assert_eq!(failed[0].0, alloc_id);
+        assert!(failed[0].1.contains("walltime exceeded"));
+    }
+
+    #[tokio::test]
+    async fn walltime_not_exceeded_no_failure() {
+        // Create a Bounded allocation that started 30 minutes ago with 1-hour walltime.
+        let mut alloc = AllocationBuilder::new().tenant("t1").nodes(1).build();
+        alloc.lifecycle.lifecycle_type = LifecycleType::Bounded {
+            walltime: chrono::Duration::hours(1),
+        };
+        alloc.state = AllocationState::Running;
+        alloc.assigned_nodes = vec!["node-0".into()];
+        alloc.started_at = Some(Utc::now() - chrono::Duration::minutes(30));
+        alloc.last_completion_report_at = Some(Utc::now()); // prevent silent-sweep false positive
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![alloc],
+            failed: vec![],
+            draining: vec![],
+            unresolved: vec![],
+            nodes: create_node_batch(1, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 1),
+        });
+        let sink = Arc::new(MockSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let failed = sink.failed.lock().await;
+        assert!(
+            failed.is_empty(),
+            "Expected no failures for non-expired walltime"
+        );
+    }
+
+    #[tokio::test]
+    async fn unbounded_allocation_not_tracked_for_walltime() {
+        // Unbounded allocations should never trigger walltime enforcement.
+        let mut alloc = AllocationBuilder::new().tenant("t1").nodes(1).build();
+        alloc.lifecycle.lifecycle_type = LifecycleType::Unbounded;
+        alloc.state = AllocationState::Running;
+        alloc.assigned_nodes = vec!["node-0".into()];
+        alloc.started_at = Some(Utc::now() - chrono::Duration::hours(100));
+        alloc.last_completion_report_at = Some(Utc::now()); // prevent silent-sweep false positive
+
+        let reader = Arc::new(MockReader {
+            pending: vec![],
+            running: vec![alloc],
+            failed: vec![],
+            draining: vec![],
+            unresolved: vec![],
+            nodes: create_node_batch(1, 0),
+            tenants: vec![TenantBuilder::new("t1").build()],
+            topology: create_test_topology(1, 1),
+        });
+        let sink = Arc::new(MockSink::new());
+        let sched = SchedulerLoop::new(reader, sink.clone(), SchedulerLoopConfig::default());
+
+        sched.run_once().await.unwrap();
+
+        let failed = sink.failed.lock().await;
+        assert!(
+            failed.is_empty(),
+            "Unbounded allocations should not be walltime-tracked"
+        );
     }
 }

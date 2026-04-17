@@ -168,6 +168,13 @@ pub enum Command {
         resolved: ImageRef,
     },
 
+    // ── DAG commands ────────────────────────────────────────
+    /// Unblock a DAG-dependent allocation by clearing its depends_on list.
+    /// Called by the DAG controller when all upstream dependencies are satisfied.
+    UnblockDagAllocation {
+        id: AllocId,
+    },
+
     // ── Audit commands ──────────────────────────────────────
     RecordAudit(AuditEntry),
 
@@ -219,6 +226,7 @@ impl fmt::Display for Command {
             Command::ResolveImage {
                 id, image_index, ..
             } => write!(f, "ResolveImage({id}, index={image_index})"),
+            Command::UnblockDagAllocation { id } => write!(f, "UnblockDagAllocation({id})"),
             Command::RecordAudit(e) => write!(f, "RecordAudit({})", e.event.action),
             Command::CompactAuditLog {
                 entries_to_archive, ..
