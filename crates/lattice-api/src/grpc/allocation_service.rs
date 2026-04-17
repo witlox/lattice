@@ -640,10 +640,10 @@ impl AllocationService for LatticeAllocationService {
             tokio::spawn(async move {
                 while let Some(Ok(msg)) = stream.next().await {
                     match msg.input {
-                        Some(pb::attach_input::Input::Data(data)) => {
-                            if pty_write.write(&sid_write, &data).await.is_err() {
-                                break;
-                            }
+                        Some(pb::attach_input::Input::Data(data))
+                            if pty_write.write(&sid_write, &data).await.is_err() =>
+                        {
+                            break;
                         }
                         Some(pb::attach_input::Input::Resize(r)) => {
                             let _ = pty_write
