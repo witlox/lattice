@@ -3,9 +3,30 @@ from __future__ import annotations
 
 import asyncio
 import pytest
+import pytest_asyncio
 
 from lattice_sdk import AllocationSpec
 from .conftest import submit_and_wait, submit_and_get_id
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def undrain_all_nodes_after(client):
+    """Ensure all nodes are undrained after each drain test."""
+    yield
+    try:
+        nodes = await client.list_nodes()
+        for node in nodes:
+            node_id = getattr(node, "id", getattr(node, "name", ""))
+            state = getattr(node, "state", getattr(node, "status", ""))
+            if hasattr(state, "value"):
+                state = state.value
+            if state in ("drained",):
+                try:
+                    await client.undrain_node(node_id)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 @pytest.mark.sequential
@@ -53,8 +74,9 @@ async def test_drain_node_with_running_allocation(client, cluster, run_id, reque
     # Cancel the allocation so the node can finish draining
     await client.cancel(alloc.id)
 
-    # Wait for drained
-    for _ in range(15):
+    # Wait for drained — scheduler tick must detect zero active allocations
+    drained = False
+    for _ in range(30):
         nodes = await client.list_nodes()
         node = next(
             (n for n in nodes if getattr(n, "id", getattr(n, "name", "")) == node_id),
@@ -65,8 +87,11 @@ async def test_drain_node_with_running_allocation(client, cluster, run_id, reque
             if hasattr(state, "value"):
                 state = state.value
             if state == "drained":
+                drained = True
                 break
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
+
+    assert drained, f"Node {node_id} did not reach drained within 60s"
 
     # Undrain
     await client.undrain_node(node_id)

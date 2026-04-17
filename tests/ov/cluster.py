@@ -139,21 +139,40 @@ class GcpCluster(TestCluster):
         zone: str = "europe-west1-b",
         compute_node_count: int = 2,
         registry_url: Optional[str] = None,
+        ssh_key: Optional[str] = None,
+        compute_ips: Optional[List[str]] = None,
     ):
         self.api_url = api_url
         self.token = token
         self.zone = zone
         self.compute_node_count = compute_node_count
         self.registry_url = registry_url
+        self.ssh_key = ssh_key
+        self.compute_ips = compute_ips or []
         self.has_ssh = True
         self.has_gpu = False
 
-    def _gcloud_ssh(self, instance: str, command: str) -> subprocess.CompletedProcess:
+    def _ssh(self, instance_or_ip: str, command: str) -> subprocess.CompletedProcess:
+        """SSH to a node. Uses direct SSH if ssh_key is set, gcloud otherwise."""
+        if self.ssh_key:
+            return subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "UserKnownHostsFile=/dev/null",
+                 "-i", self.ssh_key,
+                 f"lattice@{instance_or_ip}", command],
+                capture_output=True, text=True, timeout=30,
+            )
         return subprocess.run(
-            ["gcloud", "compute", "ssh", instance,
+            ["gcloud", "compute", "ssh", instance_or_ip,
              f"--zone={self.zone}", f"--command={command}"],
             capture_output=True, text=True, timeout=30,
         )
+
+    def _compute_target(self, node_index: int) -> str:
+        """Resolve compute node target (IP if available, instance name otherwise)."""
+        if self.compute_ips and node_index < len(self.compute_ips):
+            return self.compute_ips[node_index]
+        return f"lattice-test-compute-{node_index + 1}"
 
     async def push_image(self, local_tag: str, remote_tag: str) -> bool:
         proc = await asyncio.create_subprocess_exec(
@@ -165,14 +184,14 @@ class GcpCluster(TestCluster):
         return proc.returncode == 0
 
     async def restart_agent(self, node_index: int) -> None:
-        instance = f"lattice-test-compute-{node_index + 1}"
-        result = self._gcloud_ssh(instance, "sudo systemctl restart lattice-agent")
+        target = self._compute_target(node_index)
+        result = self._ssh(target, "sudo systemctl restart lattice-agent")
         if result.returncode != 0:
             raise RuntimeError(f"Failed to restart agent: {result.stderr}")
 
     async def kill_agent(self, node_index: int) -> None:
-        instance = f"lattice-test-compute-{node_index + 1}"
-        result = self._gcloud_ssh(instance, "sudo kill -9 $(pidof lattice-agent)")
+        target = self._compute_target(node_index)
+        result = self._ssh(target, "sudo kill -9 $(pidof lattice-agent)")
         if result.returncode != 0:
             raise RuntimeError(f"Failed to kill agent: {result.stderr}")
 

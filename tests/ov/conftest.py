@@ -25,6 +25,8 @@ def pytest_addoption(parser):
     parser.addoption("--token", default="")
     parser.addoption("--registry-url", default=None)
     parser.addoption("--zone", default="europe-west1-b")
+    parser.addoption("--ssh-key", default=None, help="Path to SSH private key for direct SSH (bypasses gcloud)")
+    parser.addoption("--compute-ips", default=None, help="Comma-separated external IPs of compute nodes")
 
 
 def pytest_configure(config):
@@ -66,11 +68,16 @@ def cluster(request) -> TestCluster:
             registry_url=registry_url or "localhost:5000",
         )
     else:
+        ssh_key = request.config.getoption("--ssh-key")
+        compute_ips_raw = request.config.getoption("--compute-ips")
+        compute_ips = compute_ips_raw.split(",") if compute_ips_raw else None
         return GcpCluster(
             api_url=api_url,
             token=token,
             zone=zone,
             registry_url=registry_url,
+            ssh_key=ssh_key,
+            compute_ips=compute_ips,
         )
 
 

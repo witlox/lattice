@@ -30,8 +30,8 @@ async def test_fair_share_across_tenants(client, cluster, run_id, request):
             )
             alloc_ids[tenant].append(aid)
 
-    # Wait and count how many each tenant gets scheduled
-    await asyncio.sleep(15)
+    # Wait for scheduler to process — give enough time for dispatch + startup
+    await asyncio.sleep(30)
 
     scheduled = {t: 0 for t in tenants}
     for tenant in tenants:
