@@ -16,6 +16,7 @@ class TestCluster(ABC):
     token: str
     compute_node_count: int
     registry_url: Optional[str]
+    registry_external_url: Optional[str] = None
     has_ssh: bool
     has_gpu: bool
 
@@ -141,12 +142,14 @@ class GcpCluster(TestCluster):
         registry_url: Optional[str] = None,
         ssh_key: Optional[str] = None,
         compute_ips: Optional[List[str]] = None,
+        registry_external_url: Optional[str] = None,
     ):
         self.api_url = api_url
         self.token = token
         self.zone = zone
         self.compute_node_count = compute_node_count
         self.registry_url = registry_url
+        self.registry_external_url = registry_external_url
         self.ssh_key = ssh_key
         self.compute_ips = compute_ips or []
         self.has_ssh = True

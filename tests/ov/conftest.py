@@ -27,6 +27,7 @@ def pytest_addoption(parser):
     parser.addoption("--zone", default="europe-west1-b")
     parser.addoption("--ssh-key", default=None, help="Path to SSH private key for direct SSH (bypasses gcloud)")
     parser.addoption("--compute-ips", default=None, help="Comma-separated external IPs of compute nodes")
+    parser.addoption("--registry-external-url", default=None, help="External URL for registry catalog check (if different from --registry-url)")
 
 
 def pytest_configure(config):
@@ -71,6 +72,7 @@ def cluster(request) -> TestCluster:
         ssh_key = request.config.getoption("--ssh-key")
         compute_ips_raw = request.config.getoption("--compute-ips")
         compute_ips = compute_ips_raw.split(",") if compute_ips_raw else None
+        registry_external = request.config.getoption("--registry-external-url")
         return GcpCluster(
             api_url=api_url,
             token=token,
@@ -78,6 +80,7 @@ def cluster(request) -> TestCluster:
             registry_url=registry_url,
             ssh_key=ssh_key,
             compute_ips=compute_ips,
+            registry_external_url=registry_external,
         )
 
 
@@ -106,9 +109,61 @@ async def client(cluster: TestCluster) -> AsyncIterator[LatticeClient]:
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def images(cluster: TestCluster) -> Dict[str, str]:
-    """Build and push test images. Skip suite if fails."""
+    """Resolve test images. Use pre-pushed if available, else build+push."""
     if not cluster.registry_url:
         pytest.skip("No registry available")
+
+    # Check if images are already in the registry (pre-pushed)
+    import httpx
+    registry = cluster.registry_url
+    expected = [d.name for d in IMAGE_DIR.iterdir()
+                if d.is_dir() and (d / "Dockerfile").exists()]
+
+    # Try direct HTTP catalog check (works if registry is reachable)
+    for check_url in filter(None, [
+        cluster.registry_external_url,
+        registry,
+    ]):
+        try:
+            async with httpx.AsyncClient() as http:
+                r = await http.get(f"http://{check_url}/v2/_catalog", timeout=5.0)
+                if r.status_code == 200:
+                    repos = r.json().get("repositories", [])
+                    tags = {}
+                    for name in expected:
+                        full_repo = f"lattice-test/{name}"
+                        if full_repo in repos:
+                            tags[name] = f"{registry}/{full_repo}:latest"
+                    if len(tags) == len(expected):
+                        return tags
+        except Exception:
+            continue
+
+    # Try SSH-based catalog check (for GCP where registry isn't externally exposed)
+    if hasattr(cluster, "ssh_key") and cluster.ssh_key:
+        import subprocess
+        api_host = cluster.api_url.replace("http://", "").replace("https://", "").split(":")[0]
+        try:
+            result = subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                 "-i", cluster.ssh_key, f"lattice@{api_host}",
+                 f"curl -s http://{registry}/v2/_catalog"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                import json
+                repos = json.loads(result.stdout).get("repositories", [])
+                tags = {}
+                for name in expected:
+                    full_repo = f"lattice-test/{name}"
+                    if full_repo in repos:
+                        tags[name] = f"{registry}/{full_repo}:latest"
+                if len(tags) == len(expected):
+                    return tags
+        except Exception:
+            pass
+
+    # Fall back to building locally
     try:
         return await cluster.build_and_push_images(IMAGE_DIR)
     except RuntimeError as e:
