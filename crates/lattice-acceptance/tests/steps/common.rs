@@ -478,11 +478,11 @@ fn when_scheduler_runs_cycle(world: &mut LatticeWorld) {
             .max()
             .map(|g| g + 1)
             .unwrap_or(1);
-        let nodes_per_group: usize = if groups > 0 {
-            world.nodes.len() / groups
-        } else {
-            world.nodes.len()
-        };
+        let nodes_per_group: usize = world
+            .nodes
+            .len()
+            .checked_div(groups)
+            .unwrap_or(world.nodes.len());
         let topology = create_test_topology(groups, nodes_per_group.max(1));
 
         let pending: Vec<Allocation> = world
