@@ -88,7 +88,7 @@ nvml-wrapper = "0.12"
 hex = "0.4"
 
 # Ed25519 signing (audit log)
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 rand = "0.10"
 
 # Secret memory safety
@@ -106,7 +106,7 @@ sha2 = "0.11"
 # Testing
 proptest = "1"
 tokio-test = "0.4"
-cucumber = "0.22"
+cucumber = "0.23"
 wiremock = "0.6"
 tempfile = "3"
 testcontainers = "0.27"
